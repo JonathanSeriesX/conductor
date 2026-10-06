@@ -170,10 +170,19 @@ struct ADFBlock: View {
         case "orderedList":
             list(ordered: true)
         case "codeBlock":
-            ScrollView(.horizontal) {
-                Text(node.plainText).font(.body.monospaced()).padding(10)
+            // Jira wraps a block when its `wrap` attr is set; otherwise it scrolls sideways. Pasted logs often
+            // start with a newline, which would leave a blank first line and the content out of view.
+            let code = node.plainText.trimmingCharacters(in: .newlines)
+            if case .bool(true)? = node.attrs?["wrap"] {
+                Text(code).font(.body.monospaced()).padding(10).fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.quaternary.opacity(0.5), in: .rect(cornerRadius: 8))
+            } else {
+                ScrollView(.horizontal) {
+                    Text(code).font(.body.monospaced()).padding(10)
+                }
+                .background(.quaternary.opacity(0.5), in: .rect(cornerRadius: 8))
             }
-            .background(.quaternary.opacity(0.5), in: .rect(cornerRadius: 8))
         case "blockquote":
             HStack(alignment: .top, spacing: 10) {
                 RoundedRectangle(cornerRadius: 2).fill(.tertiary).frame(width: 3)
@@ -336,6 +345,6 @@ struct InlineImage: View {
         }
         .onTapGesture { preview(attachment) }
         .onHover { inside in inside ? NSCursor.pointingHand.push() : NSCursor.pop() }
-        .help("\(attachment.filename) — click to Quick Look")
+        .help("\(attachment.filename) — click to preview")
     }
 }

@@ -36,6 +36,24 @@ final class IssueListStore {
         return page
     }
 
+    /// Fetches full details for the top rows in one request per account and saves each as `issue-KEY`,
+    /// so opening one shows description and comments from disk. Rows unchanged since the last prefetch are skipped.
+    static func prefetchDetails(_ rows: [ListRow], limit: Int = 15) {
+        let stale = rows.prefix(limit).filter { $0.state.prefetched[$0.issue.key] != $0.issue.fields.updated }
+        for group in Dictionary(grouping: stale, by: \.state.id).values {
+            guard let st = group.first?.state else { continue }
+            let jql = "issuekey in (" + group.map { "\"\($0.issue.key)\"" }.joined(separator: ",") + ")"
+            Task { @MainActor in
+                guard let page = try? await st.client.search(jql: jql, fields: st.client.detailFields) else { return }
+                for issue in page.issues {
+                    DiskCache.saveAsync(issue, account: st.account, name: "issue-\(issue.key)")
+                    st.peek[issue.key] = issue
+                    st.prefetched[issue.key] = issue.fields.updated
+                }
+            }
+        }
+    }
+
     /// Loads a source: one account with pagination, or every account merged by update time.
     func load(_ source: Source, session: Session, search: String, filters: ListFilters) async {
         generation += 1
@@ -86,6 +104,7 @@ final class IssueListStore {
             guard gen == generation else { return }
             rows = fetched.sorted(by: Self.byUpdated)
             isLoading = false
+            if cacheable { Self.prefetchDetails(rows) }
         default:
             guard let id = source.accountID, let st = session.state(id) else { rows = []; return }
             single = (st, jql, cacheable)
@@ -113,6 +132,7 @@ final class IssueListStore {
             let fresh = page.issues.map { ListRow(issue: $0, state: st) }
             rows = replacing ? fresh : rows + fresh
             nextToken = page.isLast == true ? nil : page.nextPageToken
+            if replacing, cacheable { Self.prefetchDetails(rows) }
         } catch {
             guard gen == generation else { return }
             self.error = error.localizedDescription

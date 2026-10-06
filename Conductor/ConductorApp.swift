@@ -9,7 +9,6 @@ struct BoardTarget: Hashable, Codable {
 @main
 struct ConductorApp: App {
     @State private var session = Session()
-    @AppStorage("showInMenuBar") private var showInMenuBar = true
 
     var body: some Scene {
         WindowGroup(id: "main") {
@@ -59,10 +58,6 @@ struct ConductorApp: App {
 
         Settings {
             SettingsView().environment(session)
-        }
-
-        MenuBarExtra("Conductor", systemImage: "ticket", isInserted: $showInMenuBar) {
-            MenuBarMenu().environment(session)
         }
     }
 }
@@ -171,7 +166,7 @@ struct RootView: View {
                 selected = IssueTarget(accountID: id, key: parts[1])
             }
         }
-        // Requests made before this window existed, e.g. from the menu bar extra after the window was closed.
+        // Requests made before this window existed, e.g. from Spotlight or a notification after the window was closed.
         if let req = session.navigationRequest { source = req; session.navigationRequest = nil }
         if let t = session.pendingOpen { selected = t; session.pendingOpen = nil }
         // An account that signed out takes its list and issue with it.
