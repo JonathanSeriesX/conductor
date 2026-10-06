@@ -29,7 +29,7 @@ final class BoardStore {
             boards = try await client.boards(project: project)
             if !boards.contains(where: { $0.id == board?.id }) { board = boards.first { $0.type == "scrum" } ?? boards.first }
             await loadBoard(client)
-        } catch { self.error = error.localizedDescription }
+        } catch { if !error.isOffline { self.error = error.localizedDescription } }
     }
 
     func loadBoard(_ client: JiraClient) async {
@@ -46,7 +46,7 @@ final class BoardStore {
             activeFilters = activeFilters.filter { id in quickFilters.contains { $0.id == id } }
             if !sprints.contains(where: { $0.id == sprint?.id }) { sprint = sprints.first { $0.state == "active" } ?? sprints.first }
             await loadIssues(client)
-        } catch { self.error = error.localizedDescription }
+        } catch { if !error.isOffline { self.error = error.localizedDescription } }
     }
 
     /// Pages through the whole board, showing cards as each page lands.
@@ -164,6 +164,7 @@ struct BoardView: View {
                     ForEach(store.boards) { b in Text(b.name).tag(Optional(b)) }
                 }
                 .frame(maxWidth: 220)
+                .padding(.horizontal, 6)
                 .disabled(store.boards.count < 2)
             }
             ToolbarItem(id: "sprintPicker") {
@@ -175,12 +176,14 @@ struct BoardView: View {
                         ForEach(store.sprints) { s in Text(s.name + (s.state == "active" ? " · active" : "")).tag(Optional(s)) }
                     }
                     .frame(maxWidth: 260)
+                    .padding(.horizontal, 6)
                 }
             }
             ToolbarItem(id: "swimlanes") {
                 Picker("Swimlanes", selection: $swimlanes) {
                     ForEach(Swimlanes.allCases, id: \.self) { Text($0.rawValue) }
                 }
+                .padding(.horizontal, 6)
                 .help("Group cards into swimlanes")
             }
             ToolbarItem(id: "refresh") {

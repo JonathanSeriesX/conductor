@@ -59,7 +59,7 @@ final class IssueDetailStore {
                 if let list = await types { linkTypes = list }
             }
         } catch {
-            self.error = error.localizedDescription
+            if !error.isOffline { self.error = error.localizedDescription }
             return
         }
         if full, canEdit(client.sprintField), let project = issue?.fields.project?.key {

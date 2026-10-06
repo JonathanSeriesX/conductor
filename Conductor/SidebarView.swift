@@ -212,13 +212,22 @@ struct SidebarView: View {
         .navigationSplitViewColumnWidth(min: 200, ideal: 240)
         // A safe-area bar gets the system scroll-edge blur, so no opaque `.bar` backing is needed under the button.
         .safeAreaBar(edge: .bottom) {
-            HStack {
+            VStack(alignment: .leading, spacing: 10) {
+                if Connectivity.shared.isOffline {
+                    HStack {
+                        Label("Working Offline", systemImage: "wifi.slash").foregroundStyle(.secondary)
+                        Spacer()
+                        Button { Task { await session.reconnect() } } label: { Image(systemName: "arrow.clockwise") }
+                            .buttonStyle(.plain).foregroundStyle(.secondary)
+                            .help("Try to reconnect now. Conductor also retries on its own every 20 seconds.")
+                    }
+                }
                 Button { showAddAccount = true } label: { Label("Add Account", systemImage: "plus") }
                     .buttonStyle(.plain)
                     .foregroundStyle(.secondary)
                     .help("Sign in to another Jira site")
-                Spacer()
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 14).padding(.vertical, 8)
         }
         .sheet(isPresented: $showAddAccount) { LoginView(isSheet: true) }

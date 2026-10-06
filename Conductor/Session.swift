@@ -184,6 +184,7 @@ final class Session {
     // MARK: Lifecycle
 
     func restore() async {
+        watchConnectivity()
         defer { isRestoring = false }
         history = (try? JSONDecoder().decode([IssueTarget].self, from: UserDefaults.standard.data(forKey: "history") ?? Data())) ?? []
         #if DEBUG
@@ -270,6 +271,23 @@ final class Session {
     func refreshAll() async {
         let tasks = states.map { st in Task { @MainActor in await st.refreshCatalog(); await st.prefetchLists() } }
         for t in tasks { await t.value }
+    }
+
+    /// Tries the network again; when it answers, every list and open issue reloads.
+    func reconnect() async {
+        await refreshAll()
+        for account in accounts where unreachable[account.id] != nil { await retry(account) }
+        if !Connectivity.shared.isOffline { reloadTick += 1 }
+    }
+
+    /// While offline, retries every 20 s so a dropped VPN or a sleeping laptop recovers on its own.
+    private func watchConnectivity() {
+        Task { @MainActor in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(20))
+                if Connectivity.shared.isOffline { await reconnect() }
+            }
+        }
     }
 
     // MARK: Navigation helpers
@@ -415,5 +433,31 @@ enum Palette {
 
     static func next(avoiding used: [String]) -> String {
         dealOrder.first { !used.contains($0) } ?? dealOrder[used.count % dealOrder.count]
+    }
+}
+
+
+// MARK: - Connectivity
+
+/// Whether Jira is reachable, judged from every request's outcome. Reads fail quietly while offline
+/// (the cached copy stays on screen and the sidebar says so); writes still report their error.
+@MainActor @Observable
+final class Connectivity {
+    static let shared = Connectivity()
+    /// Sites whose last request failed in transport. Per host, so one dead site cannot flap the flag
+    /// while another keeps answering.
+    private(set) var offlineHosts: Set<String> = []
+    var isOffline: Bool { !offlineHosts.isEmpty }
+
+    func report(_ error: any Error, host: String) { if error.isOffline { offlineHosts.insert(host) } }
+    func reportSuccess(host: String) { offlineHosts.remove(host) }
+}
+
+extension Error {
+    /// A transport failure, as opposed to something Jira answered.
+    var isOffline: Bool {
+        guard let e = self as? URLError else { return false }
+        return [.timedOut, .notConnectedToInternet, .networkConnectionLost, .cannotConnectToHost, .cannotFindHost,
+                .dnsLookupFailed, .secureConnectionFailed, .internationalRoamingOff].contains(e.code)
     }
 }

@@ -77,13 +77,17 @@ struct JiraClient: Sendable {
         if !query.isEmpty { comps.queryItems = query.map { URLQueryItem(name: $0.key, value: $0.value) } }
         var req = URLRequest(url: comps.url!)
         req.httpMethod = method
+        req.timeoutInterval = 30
         req.setValue(authHeader, forHTTPHeaderField: "Authorization")
         req.setValue("application/json", forHTTPHeaderField: "Accept")
         if let body {
             req.setValue("application/json", forHTTPHeaderField: "Content-Type")
             req.httpBody = try JSONEncoder().encode(body)
         }
-        let (data, resp) = try await URLSession.shared.data(for: req)
+        let (data, resp): (Data, URLResponse)
+        let host = account.site.host() ?? ""
+        do { (data, resp) = try await URLSession.shared.data(for: req) } catch { await Connectivity.shared.report(error, host: host); throw error }
+        await Connectivity.shared.reportSuccess(host: host)
         let status = (resp as? HTTPURLResponse)?.statusCode ?? 0
         guard (200..<300).contains(status) else { throw JiraError(status: status, data: data) }
         return data

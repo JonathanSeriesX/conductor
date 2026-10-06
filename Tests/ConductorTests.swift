@@ -68,6 +68,15 @@ final class ADFTests: XCTestCase {
 }
 
 final class DecodingTests: XCTestCase {
+    @MainActor func testConnectivityIsPerHostAndOnlyForTransportErrors() {
+        let c = Connectivity()
+        c.report(URLError(.timedOut), host: "a")
+        c.report(JiraError(status: 500, data: Data()), host: "b")   // Jira answered: not offline
+        XCTAssertEqual(c.offlineHosts, ["a"])
+        c.reportSuccess(host: "a")
+        XCTAssertFalse(c.isOffline)
+    }
+
     func testAccountIDIsStableAcrossLaunches() {
         let site = URL(string: "https://x.atlassian.net")!
         XCTAssertEqual(Account(site: site, email: "E@x.com", token: "a").id, Account(site: site, email: "e@x.com", token: "b").id)
