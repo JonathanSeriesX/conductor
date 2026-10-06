@@ -21,7 +21,7 @@ final class AccountState: Identifiable {
 
     nonisolated var id: UUID { account.id }
     var host: String { account.site.host() ?? "" }
-    /// The user's own name for the account, else the company from the email domain ("epicstar.net" → "Epicstar"),
+    /// The user's own name for the account, else the company from the email domain ("acme.com" → "Acme"),
     /// else the site's first label. Jira's own site title is just "Jira" on most sites.
     var title: String {
         if !customTitle.isEmpty { return customTitle }
