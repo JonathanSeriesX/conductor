@@ -166,9 +166,20 @@ struct SidebarView: View {
                 Section(isExpanded: expandedBinding(st)) {
                     accountContent(st)
                 } header: {
-                    Text(st.title)
+                    HStack(spacing: 6) {
+                        Circle().fill(st.color).frame(width: 8, height: 8)
+                        Text(st.title)
+                    }
                         .contextMenu {
                             Button("Rename…", systemImage: "pencil") { newTitle = st.title; renaming = st }
+                            Menu("Colour") {
+                                ForEach(Palette.names, id: \.self) { name in
+                                    Button { st.setColor(name) } label: {
+                                        Label(name.capitalized, systemImage: st.colorName == name ? "checkmark.circle.fill" : "circle.fill")
+                                    }
+                                    .tint(Palette.color(named: name))
+                                }
+                            }
                             Button("Refresh Projects", systemImage: "arrow.clockwise") { Task { await st.refreshCatalog() } }
                             Divider()
                             Button("Sign Out of \(st.title)", systemImage: "rectangle.portrait.and.arrow.right", role: .destructive) { session.remove(st.account) }
@@ -218,10 +229,10 @@ struct SidebarView: View {
     @ViewBuilder
     private func accountContent(_ st: AccountState) -> some View {
         ForEach(Smart.allCases, id: \.self) { s in
-            Label(s.title, systemImage: s.symbol).tag(Source.smart(s, st.id))
+            tinted(s.title, symbol: s.symbol, color: st.color).tag(Source.smart(s, st.id))
         }
         ForEach(st.filters) { f in
-            Label(f.name, systemImage: "line.3.horizontal.decrease.circle").tag(Source.filter(f, st.id))
+            tinted(f.name, symbol: "line.3.horizontal.decrease.circle", color: st.color).tag(Source.filter(f, st.id))
         }
         ForEach(st.starredProjects) { projectRow($0, st) }
         DisclosureGroup(isExpanded: Binding(
@@ -232,6 +243,11 @@ struct SidebarView: View {
         } label: {
             Label("All Projects", systemImage: "folder").foregroundStyle(.secondary)
         }
+    }
+
+    /// A sidebar label whose icon carries the account colour; the text stays as it is.
+    private func tinted(_ title: String, symbol: String, color: Color) -> some View {
+        Label { Text(title) } icon: { Image(systemName: symbol).foregroundStyle(color) }
     }
 
     private func expandedBinding(_ st: AccountState) -> Binding<Bool> {

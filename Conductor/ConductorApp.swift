@@ -66,6 +66,7 @@ struct ConductorApp: App {
 struct RootView: View {
     @Environment(Session.self) private var session
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.openSettings) private var openSettings
     @AppStorage("defaultSource") private var defaultSource = "assigned"
     @SceneStorage("source") private var storedSource = ""
     @SceneStorage("issue") private var storedIssue = ""
@@ -135,6 +136,7 @@ struct RootView: View {
             try? await Task.sleep(for: .seconds(1))
             if let key = env["CONDUCTOR_OPEN"], let st = session.states.first { selected = IssueTarget(accountID: st.id, key: key) }
             if env["CONDUCTOR_SHOW"] == "create" { session.createIssueRequested = true }
+            if env["CONDUCTOR_SHOW"] == "settings" { openSettings() }
             if let show = env["CONDUCTOR_SHOW"], show.hasPrefix("board:"), let st = session.states.first {
                 openWindow(id: "board", value: BoardTarget(accountID: st.id, projectKey: String(show.dropFirst(6))))
             }

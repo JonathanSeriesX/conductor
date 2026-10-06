@@ -19,7 +19,11 @@ Site (`yourteam` or `yourteam.atlassian.net`), your Atlassian email, and an API 
 Several accounts (say, personal and work Jira) stay signed in at once. The sidebar shows an
 All Accounts section with unified Assigned to Me, Reported by Me, Recently Viewed and Watching
 lists, then a section per account with its own lists, favourite filters, starred projects and a
-collapsed All Projects. Right-click a section title to rename it or sign out.
+collapsed All Projects. Right-click a section title to rename it, pick its colour or sign out; the
+colour marks that account's rows in the unified lists.
+
+Settings offers five backgrounds for the glass panes, including a plain one that follows the
+light or dark appearance.
 
 ## Dev shortcuts (Debug builds only)
 
