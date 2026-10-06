@@ -17,6 +17,7 @@ struct Project: Codable, Hashable, Sendable, Identifiable {
     let name: String
     let projectTypeKey: String?
     let avatarUrls: [String: URL]?
+    let favourite: Bool?   // Jira's own star, read-only through the public API
     var avatar: URL? { avatarUrls?["48x48"] }
 }
 

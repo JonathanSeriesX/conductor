@@ -8,6 +8,9 @@ final class Session {
     private(set) var me: JiraUser?
     private(set) var projects: [Project] = []
     private(set) var filters: [Filter] = []
+    /// Starred project keys for the active account. Jira has no public write API for stars,
+    /// so this is local, seeded with whatever is starred on the Jira side.
+    private(set) var starred: Set<String> = []
     var isBusy = false
     private(set) var isRestoring = true
 
@@ -66,7 +69,18 @@ final class Session {
         async let f = client.favouriteFilters()
         projects = (try? await p) ?? []
         filters = (try? await f) ?? []
+        starred = Set(UserDefaults.standard.stringArray(forKey: starredKey) ?? [])
+            .union(projects.filter { $0.favourite == true }.map(\.key))
     }
+
+    var starredProjects: [Project] { projects.filter { starred.contains($0.key) } }
+
+    func toggleStar(_ project: Project) {
+        if starred.contains(project.key) { starred.remove(project.key) } else { starred.insert(project.key) }
+        UserDefaults.standard.set(Array(starred).sorted(), forKey: starredKey)
+    }
+
+    private var starredKey: String { "starred.\(active?.site.host() ?? "")|\(active?.email ?? "")" }
 
     /// Forgets an account; if it was active, falls over to the next one.
     func remove(_ account: Account) {

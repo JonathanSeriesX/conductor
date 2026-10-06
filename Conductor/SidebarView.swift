@@ -48,6 +48,8 @@ struct SidebarView: View {
     @Environment(Session.self) private var session
     @Binding var selection: Source?
     @State private var showAddAccount = false
+    @AppStorage("sidebar.starredExpanded") private var starredExpanded = true
+    @AppStorage("sidebar.allExpanded") private var allExpanded = true
 
     var body: some View {
         List(selection: $selection) {
@@ -63,23 +65,18 @@ struct SidebarView: View {
                     }
                 }
             }
-            Section("Projects") {
-                ForEach(session.projects) { p in
-                    Label {
-                        Text(p.name)
-                    } icon: {
-                        RemoteImage(url: p.avatar, placeholder: "folder")
-                            .frame(width: 18, height: 18)
-                            .clipShape(.rect(cornerRadius: 4))
-                    }
-                    .tag(Source.project(p))
+            if !session.starredProjects.isEmpty {
+                Section("Starred Projects", isExpanded: $starredExpanded) {
+                    ForEach(session.starredProjects) { projectRow($0) }
                 }
+            }
+            Section("All Projects", isExpanded: $allExpanded) {
+                ForEach(session.projects) { projectRow($0) }
             }
         }
         .listStyle(.sidebar)
         .navigationTitle("Conductor")
         .navigationSplitViewColumnWidth(min: 200, ideal: 240)
-        .refreshable { await session.refreshCatalog() }
         .safeAreaInset(edge: .bottom) {
             HStack(spacing: 10) {
                 Avatar(user: session.me, size: 26)
@@ -114,5 +111,20 @@ struct SidebarView: View {
             .padding(10)
         }
         .sheet(isPresented: $showAddAccount) { LoginView(isSheet: true) }
+    }
+
+    private func projectRow(_ p: Project) -> some View {
+        let starred = session.starred.contains(p.key)
+        return Label {
+            Text(p.name)
+        } icon: {
+            RemoteImage(url: p.avatar, placeholder: "folder")
+                .frame(width: 18, height: 18)
+                .clipShape(.rect(cornerRadius: 4))
+        }
+        .tag(Source.project(p))
+        .contextMenu {
+            Button(starred ? "Unstar" : "Star", systemImage: starred ? "star.slash" : "star") { session.toggleStar(p) }
+        }
     }
 }

@@ -125,7 +125,7 @@ struct JiraClient: Sendable {
     func projects() async throws -> [Project] {
         var all: [Project] = []
         while true {
-            let page: ProjectPage = try await get("project/search", query: ["maxResults": "100", "startAt": "\(all.count)", "orderBy": "name"])
+            let page: ProjectPage = try await get("project/search", query: ["maxResults": "100", "startAt": "\(all.count)", "orderBy": "name", "expand": "favourite"])
             all += page.values
             if page.isLast || page.values.isEmpty { return all }
         }
