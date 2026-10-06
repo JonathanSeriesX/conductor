@@ -59,6 +59,7 @@ final class AccountState: Identifiable {
     func loadCached() -> Bool {
         me = DiskCache.load(account: account, name: "me")
         client.sprintField = DiskCache.load(account: account, name: "sprintField")
+        client.pointsFields = DiskCache.load(account: account, name: "pointsFields") ?? []
         projects = DiskCache.load(account: account, name: "projects") ?? []
         filters = DiskCache.load(account: account, name: "filters") ?? []
         issueTypeNames = DiskCache.load(account: account, name: "issueTypes") ?? []
@@ -71,11 +72,16 @@ final class AccountState: Identifiable {
     /// Validates the token and refreshes the catalog, all requests in flight together.
     func load() async throws {
         async let user = client.myself()
-        async let sprint = client.sprintFieldId()
+        async let custom = client.customFieldIds()
         async let catalog: () = refreshCatalog()
         me = try await user
         DiskCache.saveAsync(me, account: account, name: "me")
-        if let id = try? await sprint { client.sprintField = id; DiskCache.saveAsync(id, account: account, name: "sprintField") }
+        if let ids = try? await custom {
+            client.sprintField = ids.sprint
+            client.pointsFields = ids.points
+            DiskCache.saveAsync(ids.sprint, account: account, name: "sprintField")
+            DiskCache.saveAsync(ids.points, account: account, name: "pointsFields")
+        }
         await catalog
         error = nil
         await prefetchLists()

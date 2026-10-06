@@ -84,6 +84,12 @@ struct CommentPage: Codable, Hashable, Sendable {
     let total: Int
 }
 
+/// A component or version: what an issue shows and what editmeta offers.
+struct NamedRef: Codable, Hashable, Sendable, Identifiable {
+    let id: String
+    let name: String
+}
+
 struct IssueRef: Codable, Hashable, Sendable, Identifiable {
     struct Fields: Codable, Hashable, Sendable {
         let summary: String
@@ -116,12 +122,17 @@ struct Issue: Codable, Hashable, Sendable, Identifiable {
         let worklog: WorklogPage?
         let timetracking: TimeTracking?
         let watches: Watches?
+        let duedate: String?   // "2026-10-31", no time or zone
+        let components: [NamedRef]?
+        let fixVersions: [NamedRef]?
     }
 
     let id: String
     let key: String
     let fields: Fields
     let sprints: [Sprint]?
+    /// Story points from whichever of the site's points fields this issue has.
+    let points: Double?
 
     private enum CodingKeys: String, CodingKey { case id, key, fields }
 
@@ -136,6 +147,13 @@ struct Issue: Codable, Hashable, Sendable, Identifiable {
             sprints = try? dyn.decodeIfPresent([Sprint].self, forKey: AnyKey(sprintKey))
         } else {
             sprints = nil
+        }
+        let pointsKeys = decoder.userInfo[.pointsFields] as? [String] ?? []
+        if !pointsKeys.isEmpty {
+            let dyn = try c.nestedContainer(keyedBy: AnyKey.self, forKey: .fields)
+            points = pointsKeys.lazy.compactMap { try? dyn.decodeIfPresent(Double.self, forKey: AnyKey($0)) }.first
+        } else {
+            points = nil
         }
     }
 
@@ -186,6 +204,7 @@ struct AnyKey: CodingKey {
 
 extension CodingUserInfoKey {
     static let sprintField = CodingUserInfoKey(rawValue: "sprintField")!
+    static let pointsFields = CodingUserInfoKey(rawValue: "pointsFields")!
 }
 
 // MARK: - Links, worklogs, watchers
