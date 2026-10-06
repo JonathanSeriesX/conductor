@@ -40,3 +40,9 @@ Set these environment variables in the scheme or shell to skip the login form an
 | `SidebarView.swift` | Smart lists, favourite filters, projects; JQL builder |
 | `IssueListView.swift` | Paginated search with text or raw JQL |
 | `IssueDetailView.swift` | Issue page: description, attachments, subtasks, comments, transitions, assignee |
+
+## Tests
+
+`⌘U` in Xcode, or `xcodebuild -scheme Conductor test`. The live write test is skipped unless
+`TEST_RUNNER_CONDUCTOR_SITE`, `_EMAIL`, `_TOKEN` and `_TEST_ISSUE` are set; it comments on, assigns
+and transitions that issue and puts everything back.

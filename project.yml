@@ -16,7 +16,8 @@ targets:
     type: application
     platform: macOS
     sources: [Conductor]
-    scheme: {}
+    scheme:
+      testTargets: [ConductorTests]
     entitlements:
       path: Conductor/Conductor.entitlements
       properties:
@@ -33,3 +34,13 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: org.evgenii.conductor
         ENABLE_HARDENED_RUNTIME: true
         GENERATE_INFOPLIST_FILE: false
+  ConductorTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources: [Tests]
+    dependencies:
+      - target: Conductor
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.evgenii.conductor.tests
+        GENERATE_INFOPLIST_FILE: true

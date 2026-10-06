@@ -1,0 +1,17 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_26.0.app || ls /Applications | grep Xcode
+      - name: Build and test
+        run: |
+          xcodebuild -project Conductor.xcodeproj -scheme Conductor -destination 'platform=macOS' \
+            CODE_SIGNING_ALLOWED=NO build test | xcbeautify --renderer github-actions || xcodebuild -project Conductor.xcodeproj -scheme Conductor -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO build test

@@ -79,7 +79,7 @@ struct JiraClient: Sendable {
         try decoder.decode(T.self, from: try await request(path, query: query))
     }
 
-    private var decoder: JSONDecoder {
+    var decoder: JSONDecoder {
         let d = JSONDecoder()
         d.dateDecodingStrategy = .custom { dec in
             let s = try dec.singleValueContainer().decode(String.self)
@@ -166,6 +166,10 @@ struct JiraClient: Sendable {
     func addComment(_ key: String, text: String) async throws {
         struct Body: Encodable { let body: ADFNode }
         _ = try await request("issue/\(key)/comment", method: "POST", body: Body(body: .document(text: text)))
+    }
+
+    func deleteComment(_ key: String, id: String) async throws {
+        _ = try await request("issue/\(key)/comment/\(id)", method: "DELETE")
     }
 
     func browseURL(_ key: String) -> URL { account.site.appending(path: "browse/\(key)") }

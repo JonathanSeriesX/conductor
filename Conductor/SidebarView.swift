@@ -111,6 +111,9 @@ struct SidebarView: View {
             .padding(10)
         }
         .sheet(isPresented: $showAddAccount) { LoginView(isSheet: true) }
+        #if DEBUG
+        .onAppear { if ProcessInfo.processInfo.environment["CONDUCTOR_SHOW"] == "addAccount" { showAddAccount = true } }
+        #endif
     }
 
     private func projectRow(_ p: Project) -> some View {
