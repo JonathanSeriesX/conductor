@@ -1,0 +1,328 @@
+import SwiftUI
+
+// MARK: - Atlassian Document Format model
+
+enum JSONValue: Codable, Hashable, Sendable {
+    case string(String), number(Double), bool(Bool), null
+    case array([JSONValue]), object([String: JSONValue])
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.singleValueContainer()
+        if c.decodeNil() { self = .null }
+        else if let b = try? c.decode(Bool.self) { self = .bool(b) }
+        else if let n = try? c.decode(Double.self) { self = .number(n) }
+        else if let s = try? c.decode(String.self) { self = .string(s) }
+        else if let a = try? c.decode([JSONValue].self) { self = .array(a) }
+        else { self = .object(try c.decode([String: JSONValue].self)) }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.singleValueContainer()
+        switch self {
+        case .string(let s): try c.encode(s)
+        case .number(let n): try c.encode(n)
+        case .bool(let b): try c.encode(b)
+        case .null: try c.encodeNil()
+        case .array(let a): try c.encode(a)
+        case .object(let o): try c.encode(o)
+        }
+    }
+
+    var string: String? { if case .string(let s) = self { return s }; return nil }
+    var number: Double? { if case .number(let n) = self { return n }; return nil }
+}
+
+struct ADFMark: Codable, Hashable, Sendable {
+    let type: String
+    let attrs: [String: JSONValue]?
+}
+
+struct ADFNode: Codable, Hashable, Sendable {
+    var type: String
+    var version: Int?
+    var text: String?
+    var attrs: [String: JSONValue]?
+    var marks: [ADFMark]?
+    var content: [ADFNode]?
+
+    func attr(_ k: String) -> String? { attrs?[k]?.string }
+
+    /// Plain-text document from user input: one paragraph per line.
+    static func document(text: String) -> ADFNode {
+        let paragraphs = text.split(separator: "\n", omittingEmptySubsequences: false).map { line in
+            ADFNode(type: "paragraph", content: line.isEmpty ? [] : [ADFNode(type: "text", text: String(line))])
+        }
+        return ADFNode(type: "doc", version: 1, content: paragraphs)
+    }
+
+    var plainText: String {
+        if let text { return text }
+        return (content ?? []).map(\.plainText).joined(separator: type == "paragraph" ? "" : "\n")
+    }
+}
+
+// MARK: - Inline rendering
+
+extension ADFNode {
+    func inlineAttributed() -> AttributedString {
+        var out = AttributedString()
+        for n in content ?? [] { out += n.inlineRun() }
+        return out
+    }
+
+    private func inlineRun() -> AttributedString {
+        switch type {
+        case "text":
+            var s = AttributedString(text ?? "")
+            var bold = false, italic = false, code = false
+            for m in marks ?? [] {
+                switch m.type {
+                case "strong": bold = true
+                case "em": italic = true
+                case "code": code = true
+                case "strike": s.strikethroughStyle = .single
+                case "underline": s.underlineStyle = .single
+                case "link": if let u = m.attrs?["href"]?.string.flatMap(URL.init) { s.link = u }
+                case "textColor": if let hex = m.attrs?["color"]?.string { s.foregroundColor = Color(hex: hex) }
+                default: break
+                }
+            }
+            var font: Font = .system(.body, design: code ? .monospaced : .default).weight(bold ? .semibold : .regular)
+            if italic { font = font.italic() }
+            s.font = font
+            if code { s.backgroundColor = Color.primary.opacity(0.08) }
+            return s
+        case "hardBreak":
+            return AttributedString("\n")
+        case "mention":
+            var s = AttributedString(attr("text") ?? "@someone")
+            s.foregroundColor = .accentColor
+            s.font = .body.weight(.medium)
+            return s
+        case "inlineCard":
+            let url = attr("url") ?? ""
+            var s = AttributedString(url.replacingOccurrences(of: "https://", with: ""))
+            s.link = URL(string: url)
+            return s
+        case "emoji":
+            return AttributedString(attr("text") ?? attr("shortName") ?? "")
+        case "status":
+            var s = AttributedString(" \(attr("text")?.uppercased() ?? "") ")
+            s.font = .caption.weight(.bold)
+            s.backgroundColor = Color.primary.opacity(0.1)
+            return s
+        case "date":
+            if let ms = attrs?["timestamp"]?.string.flatMap(Double.init) {
+                return AttributedString(Date(timeIntervalSince1970: ms / 1000).formatted(date: .abbreviated, time: .omitted))
+            }
+            return AttributedString()
+        case "mediaInline":
+            return AttributedString("📎")
+        default:
+            return inlineAttributed()
+        }
+    }
+}
+
+extension Color {
+    init(hex: String) {
+        var h = hex.trimmingCharacters(in: CharacterSet(charactersIn: "#"))
+        if h.count == 3 { h = h.map { "\($0)\($0)" }.joined() }
+        let v = UInt64(h, radix: 16) ?? 0
+        self.init(red: Double((v >> 16) & 0xFF) / 255, green: Double((v >> 8) & 0xFF) / 255, blue: Double(v & 0xFF) / 255)
+    }
+}
+
+// MARK: - Block rendering
+
+struct ADFView: View {
+    let node: ADFNode
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            ADFBlocks(nodes: node.content ?? [])
+        }
+        .textSelection(.enabled)
+    }
+}
+
+struct ADFBlocks: View {
+    let nodes: [ADFNode]
+    var body: some View {
+        ForEach(Array(nodes.enumerated()), id: \.offset) { _, n in
+            ADFBlock(node: n)
+        }
+    }
+}
+
+struct ADFBlock: View {
+    let node: ADFNode
+    @Environment(\.adfAttachments) private var attachments
+
+    var body: some View {
+        switch node.type {
+        case "paragraph":
+            Text(node.inlineAttributed()).fixedSize(horizontal: false, vertical: true)
+        case "heading":
+            Text(node.inlineAttributed()).font(headingFont).padding(.top, 4)
+        case "bulletList":
+            list(ordered: false)
+        case "orderedList":
+            list(ordered: true)
+        case "codeBlock":
+            ScrollView(.horizontal) {
+                Text(node.plainText).font(.body.monospaced()).padding(10)
+            }
+            .background(.quaternary.opacity(0.5), in: .rect(cornerRadius: 8))
+        case "blockquote":
+            HStack(alignment: .top, spacing: 10) {
+                RoundedRectangle(cornerRadius: 2).fill(.tertiary).frame(width: 3)
+                VStack(alignment: .leading, spacing: 8) { ADFBlocks(nodes: node.content ?? []) }
+            }
+        case "rule":
+            Divider()
+        case "panel":
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: panelIcon).foregroundStyle(panelColor)
+                VStack(alignment: .leading, spacing: 8) { ADFBlocks(nodes: node.content ?? []) }
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(panelColor.opacity(0.1), in: .rect(cornerRadius: 10))
+        case "table":
+            Grid(alignment: .topLeading, horizontalSpacing: 0, verticalSpacing: 0) {
+                ForEach(Array((node.content ?? []).enumerated()), id: \.offset) { _, row in
+                    GridRow {
+                        ForEach(Array((row.content ?? []).enumerated()), id: \.offset) { _, cell in
+                            VStack(alignment: .leading, spacing: 6) { ADFBlocks(nodes: cell.content ?? []) }
+                                .font(cell.type == "tableHeader" ? .body.weight(.semibold) : .body)
+                                .padding(8)
+                                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                                .background(cell.type == "tableHeader" ? Color.primary.opacity(0.06) : .clear)
+                                .border(Color.primary.opacity(0.12), width: 0.5)
+                        }
+                    }
+                }
+            }
+        case "mediaSingle", "mediaGroup":
+            HStack(alignment: .top, spacing: 8) {
+                ForEach(Array((node.content ?? []).enumerated()), id: \.offset) { _, m in
+                    if let a = attachments.first(where: { $0.filename == m.attr("alt") }), a.mimeType.hasPrefix("image/") {
+                        InlineImage(attachment: a)
+                    } else {
+                        Label(m.attr("alt") ?? "Attached media", systemImage: "photo")
+                            .font(.callout).foregroundStyle(.secondary)
+                            .padding(.horizontal, 10).padding(.vertical, 6)
+                            .background(.quaternary.opacity(0.5), in: .capsule)
+                    }
+                }
+            }
+        case "taskList":
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(Array((node.content ?? []).enumerated()), id: \.offset) { _, item in
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Image(systemName: item.attr("state") == "DONE" ? "checkmark.circle.fill" : "circle")
+                            .foregroundStyle(item.attr("state") == "DONE" ? .green : .secondary)
+                        Text(item.inlineAttributed())
+                    }
+                }
+            }
+        case "expand", "nestedExpand":
+            DisclosureGroup(node.attr("title") ?? "Details") {
+                VStack(alignment: .leading, spacing: 8) { ADFBlocks(nodes: node.content ?? []) }.padding(.top, 6)
+            }
+        case "layoutSection":
+            HStack(alignment: .top, spacing: 16) {
+                ForEach(Array((node.content ?? []).enumerated()), id: \.offset) { _, col in
+                    VStack(alignment: .leading, spacing: 8) { ADFBlocks(nodes: col.content ?? []) }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+        default:
+            // Unknown block: render children if any, else inline text.
+            if node.content != nil, node.type != "text" {
+                VStack(alignment: .leading, spacing: 8) { ADFBlocks(nodes: node.content ?? []) }
+            } else {
+                Text(node.inlineAttributed())
+            }
+        }
+    }
+
+    private func list(ordered: Bool) -> some View {
+        let start = Int(node.attrs?["order"]?.number ?? 1)
+        return VStack(alignment: .leading, spacing: 4) {
+            ForEach(Array((node.content ?? []).enumerated()), id: \.offset) { i, item in
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(ordered ? "\(start + i)." : "•")
+                        .foregroundStyle(.secondary)
+                        .frame(minWidth: 16, alignment: .trailing)
+                    VStack(alignment: .leading, spacing: 4) { ADFBlocks(nodes: item.content ?? []) }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+        }
+        .padding(.leading, 4)
+    }
+
+    private var headingFont: Font {
+        switch Int(node.attrs?["level"]?.number ?? 3) {
+        case 1: .title
+        case 2: .title2
+        case 3: .title3
+        default: .headline
+        }
+    }
+
+    private var panelColor: Color {
+        switch node.attr("panelType") {
+        case "warning": .orange
+        case "error": .red
+        case "success": .green
+        case "note": .purple
+        default: .blue
+        }
+    }
+
+    private var panelIcon: String {
+        switch node.attr("panelType") {
+        case "warning": "exclamationmark.triangle.fill"
+        case "error": "xmark.octagon.fill"
+        case "success": "checkmark.circle.fill"
+        case "note": "note.text"
+        default: "info.circle.fill"
+        }
+    }
+}
+
+// MARK: - Inline media
+
+extension EnvironmentValues {
+    /// Attachments of the issue being rendered, so inline media can resolve to real images by filename.
+    @Entry var adfAttachments: [Attachment] = []
+}
+
+struct InlineImage: View {
+    let attachment: Attachment
+    @Environment(Session.self) private var session
+    @State private var image: NSImage?
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(nsImage: image).resizable().scaledToFit()
+            } else {
+                RoundedRectangle(cornerRadius: 10).fill(.quaternary.opacity(0.4)).frame(width: 240, height: 140)
+                    .overlay { ProgressView().controlSize(.small) }
+            }
+        }
+        .frame(maxWidth: 520, maxHeight: 360, alignment: .leading)
+        .clipShape(.rect(cornerRadius: 10))
+        .task(id: attachment.id) {
+            if let cached = ImageCache.shared.object(forKey: attachment.content as NSURL) { image = cached; return }
+            guard let client = session.client, let data = try? await client.data(for: attachment.content), let img = NSImage(data: data) else { return }
+            ImageCache.shared.setObject(img, forKey: attachment.content as NSURL)
+            image = img
+        }
+        .onTapGesture { if let client = session.client { Task { await AttachmentOpener.open(attachment, client: client) } } }
+        .help(attachment.filename)
+    }
+}

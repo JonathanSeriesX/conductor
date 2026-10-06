@@ -1,0 +1,35 @@
+name: Conductor
+options:
+  bundleIdPrefix: org.evgenii
+  deploymentTarget:
+    macOS: "26.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    SWIFT_STRICT_CONCURRENCY: complete
+    CODE_SIGN_IDENTITY: "-"
+    CODE_SIGN_STYLE: Manual
+    DEVELOPMENT_TEAM: ""
+targets:
+  Conductor:
+    type: application
+    platform: macOS
+    sources: [Conductor]
+    scheme: {}
+    entitlements:
+      path: Conductor/Conductor.entitlements
+      properties:
+        com.apple.security.app-sandbox: true
+        com.apple.security.network.client: true
+    info:
+      path: Conductor/Info.plist
+      properties:
+        CFBundleDisplayName: Conductor
+        LSMinimumSystemVersion: "26.0"
+        LSApplicationCategoryType: public.app-category.productivity
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.evgenii.conductor
+        ENABLE_HARDENED_RUNTIME: true
+        GENERATE_INFOPLIST_FILE: false
