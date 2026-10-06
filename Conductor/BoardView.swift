@@ -157,33 +157,41 @@ struct BoardView: View {
         .toolbar(id: "board") {
             ToolbarItem(id: "boardPicker") {
                 // Setters, not onChange: only a user's pick reloads, not the store's own assignments.
-                Picker("Board", selection: Binding(get: { store.board }, set: { b in
-                    store.board = b
-                    if let c = state?.client { Task { await store.loadBoard(c) } }
-                })) {
-                    ForEach(store.boards) { b in Text(b.name).tag(Optional(b)) }
-                }
+                // Menus pull down under the button; a pop-up picker centres its chosen row on the pointer and
+                // can run off the top of the screen.
+                Menu {
+                    Picker("", selection: Binding(get: { store.board }, set: { b in
+                        store.board = b
+                        if let c = state?.client { Task { await store.loadBoard(c) } }
+                    })) {
+                        ForEach(store.boards) { b in Text(b.name).tag(Optional(b)) }
+                    }
+                    .pickerStyle(.inline)
+                } label: { Text(store.board?.name ?? "Board").lineLimit(1) }
                 .frame(maxWidth: 220)
-                .padding(.horizontal, 6)
                 .disabled(store.boards.count < 2)
             }
             ToolbarItem(id: "sprintPicker") {
                 if !store.sprints.isEmpty {
-                    Picker("Sprint", selection: Binding(get: { store.sprint }, set: { sp in
-                        store.sprint = sp
-                        if let c = state?.client { Task { await store.loadIssues(c) } }
-                    })) {
-                        ForEach(store.sprints) { s in Text(s.name + (s.state == "active" ? " · active" : "")).tag(Optional(s)) }
-                    }
+                    Menu {
+                        Picker("", selection: Binding(get: { store.sprint }, set: { sp in
+                            store.sprint = sp
+                            if let c = state?.client { Task { await store.loadIssues(c) } }
+                        })) {
+                            ForEach(store.sprints) { s in Text(s.name + (s.state == "active" ? " · active" : "")).tag(Optional(s)) }
+                        }
+                        .pickerStyle(.inline)
+                    } label: { Text(store.sprint.map { $0.name + ($0.state == "active" ? " · active" : "") } ?? "Sprint").lineLimit(1) }
                     .frame(maxWidth: 260)
-                    .padding(.horizontal, 6)
                 }
             }
             ToolbarItem(id: "swimlanes") {
-                Picker("Swimlanes", selection: $swimlanes) {
-                    ForEach(Swimlanes.allCases, id: \.self) { Text($0.rawValue) }
-                }
-                .padding(.horizontal, 6)
+                Menu {
+                    Picker("", selection: $swimlanes) {
+                        ForEach(Swimlanes.allCases, id: \.self) { Text($0.rawValue) }
+                    }
+                    .pickerStyle(.inline)
+                } label: { Text(swimlanes.rawValue) }
                 .help("Group cards into swimlanes")
             }
             ToolbarItem(id: "refresh") {

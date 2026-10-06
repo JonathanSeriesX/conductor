@@ -103,7 +103,7 @@ struct RootView: View {
                                 return nil
                             })
                     } else {
-                        ContentUnavailableView("Select an issue", systemImage: "ticket")
+                        StatsView()
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                             .background(Backdrop())
                             .toolbar(id: "issue") { NewIssueToolbarItem() }
