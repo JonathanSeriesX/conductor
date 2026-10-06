@@ -91,8 +91,6 @@ struct IssueDetailView: View {
     @State private var summaryDraft: String?
     @State private var descriptionDraft: String?
     @State private var descriptionMentions: [String: String] = [:]
-    @State private var commentDraft = ""
-    @State private var commentMentions: [String: String] = [:]
     @State private var editingComment: Comment?
     @State private var editDraft = ""
     @State private var editMentions: [String: String] = [:]
@@ -105,7 +103,6 @@ struct IssueDetailView: View {
     @State private var showRemind = false
     @State private var isDropTargeted = false
     @FocusState private var summaryFocused: Bool
-    @FocusState private var commentFocused: Bool
     @State private var commentRequest = 0
 
     var body: some View {
@@ -182,7 +179,6 @@ struct IssueDetailView: View {
             .scrollEdgeEffectStyle(.soft, for: .top)
             .onChange(of: commentRequest) {
                 withAnimation { proxy.scrollTo("comments", anchor: .bottom) }
-                commentFocused = true
             }
             #if DEBUG
             .task {
@@ -599,13 +595,8 @@ struct IssueDetailView: View {
                 }
             }
             Divider()
-            HStack(alignment: .top, spacing: 10) {
-                Composer(text: $commentDraft, mentions: $commentMentions, placeholder: "Add a comment…  ⌘↩ to send", minHeight: 44, uploadImage: uploadPasted, focus: $commentFocused)
-                Button("Comment") { postComment() }
-                    .buttonStyle(.glassProminent)
-                    .keyboardShortcut(.return, modifiers: .command)
-                    .disabled(commentDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.isWorking || editingComment != nil)
-                    .padding(.top, 6)
+            CommentComposer(disabled: store.isWorking || editingComment != nil, focusRequest: commentRequest, uploadImage: uploadPasted) { doc in
+                run { try await $0.addComment(key, body: doc) }
             }
         }
     }
@@ -653,7 +644,7 @@ struct IssueDetailView: View {
         ToolbarItem(id: "star") {
             let starred = session.isStarred(target)
             Button { perform(.star) } label: { Label(starred ? "Unstar" : "Star", systemImage: starred ? "star.fill" : "star") }
-                .help(starred ? "Unstar (⌘D)" : "Star: keep it in the sidebar and the menu bar (⌘D)")
+                .help(starred ? "Unstar (⌘D)" : "Star: keep it in the sidebar (⌘D)")
         }
         ToolbarItem(id: "copy") {
             Button { perform(.copyLink) } label: { Label("Copy Link", systemImage: "link") }
@@ -739,15 +730,6 @@ struct IssueDetailView: View {
     private func setSprint(_ id: Int?) {
         guard let field = jira?.client.sprintField else { return }
         run { try await $0.editIssue(key, fields: [field: id.map { .number(Double($0)) } ?? .null]) }
-    }
-
-    private func postComment() {
-        let text = commentDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
-        let doc = ADFNode.document(markdown: text, mentions: commentMentions)
-        commentDraft = ""
-        commentMentions = [:]
-        run { try await $0.addComment(key, body: doc) }
     }
 
     private func beginCommentEdit(_ c: Comment) {
@@ -850,7 +832,7 @@ struct AttachmentTile: View {
             .contentShape(.rect)
         }
         .buttonStyle(.plain)
-        .help("\(attachment.filename) — click to Quick Look")
+        .help("\(attachment.filename) — click to preview")
     }
 
     private var icon: String {
@@ -871,13 +853,47 @@ struct AttachmentTile: View {
     }
 }
 
+/// Owns the comment draft, so each keystroke re-evaluates this small view and not the whole issue page.
+struct CommentComposer: View {
+    let disabled: Bool
+    let focusRequest: Int
+    let uploadImage: (Data, String) async throws -> URL
+    let send: (ADFNode) -> Void
+    @State private var text = ""
+    @State private var mentions: [String: String] = [:]
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Composer(text: $text, mentions: $mentions, placeholder: "Add a comment…  ⌘↩ to send", minHeight: 44, uploadImage: uploadImage, focus: $focused)
+            Button("Comment") { post() }
+                .buttonStyle(.glassProminent)
+                .keyboardShortcut(.return, modifiers: .command)
+                .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || disabled)
+                .padding(.top, 6)
+        }
+        .onChange(of: focusRequest) { focused = true }
+    }
+
+    private func post() {
+        let body = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !body.isEmpty else { return }
+        send(ADFNode.document(markdown: body, mentions: mentions))
+        text = ""
+        mentions = [:]
+    }
+}
+
 enum AttachmentOpener {
     /// Downloads with auth into the app's temp folder; the same file is reused on later calls.
     static func download(_ attachment: Attachment, client: JiraClient) async -> URL? {
         let dir = FileManager.default.temporaryDirectory.appending(path: "attachments/\(attachment.id)", directoryHint: .isDirectory)
         let file = dir.appending(path: attachment.filename)
         if FileManager.default.fileExists(atPath: file.path) { return file }
-        guard let data = try? await client.data(for: attachment.content) else { return nil }
+        // An inline image already has its bytes in the image cache; reuse them instead of fetching again.
+        var data = await DiskCache.imageData(for: attachment.content)
+        if data == nil { data = try? await client.data(for: attachment.content) }
+        guard let data else { return nil }
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         try? data.write(to: file)
         return file

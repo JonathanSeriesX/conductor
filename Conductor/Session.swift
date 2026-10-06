@@ -42,9 +42,8 @@ final class AccountState: Identifiable {
         return label.prefix(1).uppercased() + label.dropFirst()
     }
     var starredProjects: [Project] { projects.filter { starred.contains($0.key) } }
-    /// Open issues assigned to me, from the last prefetch; `assignedMore` when there are more than a page.
-    var assignedCount: Int?
-    var assignedMore = false
+    /// `updated` of each issue whose full details were prefetched to disk, so unchanged ones are skipped.
+    var prefetched: [String: Date] = [:]
 
     init(account: Account) {
         self.account = account
@@ -115,7 +114,7 @@ final class AccountState: Identifiable {
             let jql = Source.smart(smart, id).jql(search: "")
             return Task { @MainActor in
                 guard let page = try? await IssueListStore.fetch(jql: jql, state: self, cache: true) else { return }
-                if smart == .assigned { assignedCount = page.issues.count; assignedMore = page.isLast == false }
+                if smart == .assigned { IssueListStore.prefetchDetails(page.issues.map { ListRow(issue: $0, state: self) }) }
             }
         }
         for t in tasks { await t.value }

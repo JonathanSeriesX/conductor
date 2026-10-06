@@ -7,7 +7,6 @@ struct SettingsView: View {
     @AppStorage("pollMinutes") private var pollMinutes = 3
     @AppStorage("checkForUpdates") private var checkForUpdates = true
     @AppStorage("backdrop") private var backdrop = "mesh"
-    @AppStorage("showInMenuBar") private var showInMenuBar = true
     @Environment(Session.self) private var session
 
     var body: some View {
@@ -39,7 +38,6 @@ struct SettingsView: View {
                 }
                 Toggle("Hide Done issues in project lists", isOn: $hideDone)
                     .onChange(of: hideDone) { session.reloadTick += 1 }
-                Toggle("Show starred issues in the menu bar", isOn: $showInMenuBar)
             }
             Section("Notifications") {
                 Toggle("Notify about assignments, comments and status changes", isOn: $notifications)

@@ -129,51 +129,7 @@ struct IssueWindow: View {
     }
 }
 
-/// The menu bar extra: starred issues and how much is assigned to me on each account.
-struct MenuBarMenu: View {
-    @Environment(Session.self) private var session
-    @Environment(\.openWindow) private var openWindow
-
-    var body: some View {
-        let starred = session.starredTargets
-        if !starred.isEmpty {
-            Section("Starred") {
-                ForEach(starred, id: \.target) { s in
-                    Button("\(s.target.key)  \(s.summary)") { show { session.pendingOpen = s.target } }
-                }
-            }
-        }
-        Section("Assigned to Me") {
-            ForEach(session.states) { st in
-                let count = st.assignedCount.map { "\($0)\(st.assignedMore ? "+" : "")" } ?? "–"
-                Button("\(st.title)    \(count)") { show { session.navigationRequest = .smart(.assigned, st.id) } }
-            }
-        }
-        Divider()
-        Button("New Issue…") { show { session.createIssueRequested = true } }
-        Button("Open Conductor") { show {} }
-        Divider()
-        Button("Quit Conductor") { NSApp.terminate(nil) }
-    }
-
-    private func show(_ request: () -> Void) {
-        request()
-        bringMainWindowForward(openWindow)
-    }
-}
-
 func copyToPasteboard(_ string: String) {
     NSPasteboard.general.clearContents()
     NSPasteboard.general.setString(string, forType: .string)
-}
-
-/// Brings the main window forward, reopening it if it was closed. Requests set on the session before
-/// calling this are picked up by the window either way.
-@MainActor func bringMainWindowForward(_ openWindow: OpenWindowAction) {
-    NSApp.activate()
-    if let w = NSApp.windows.first(where: { $0.identifier?.rawValue.hasPrefix("main") == true && $0.isVisible }) {
-        w.makeKeyAndOrderFront(nil)
-    } else {
-        openWindow(id: "main")
-    }
 }
