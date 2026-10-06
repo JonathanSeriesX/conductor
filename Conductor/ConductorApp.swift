@@ -61,20 +61,6 @@ struct ConductorApp: App {
             SettingsView().environment(session)
         }
 
-        Window("Command Palette", id: "palette") {
-            CommandPalette().environment(session)
-        }
-        .windowStyle(.plain)
-        .windowLevel(.floating)
-        .windowResizability(.contentSize)
-        .restorationBehavior(.disabled)
-        .defaultWindowPlacement { _, context in
-            // Near the top of the screen, where VS Code puts it.
-            let screen = context.defaultDisplay.visibleRect
-            return WindowPlacement(CGPoint(x: screen.midX - 310, y: screen.minY + screen.height * 0.12))
-        }
-        .commandsRemoved()
-
         MenuBarExtra("Conductor", systemImage: "ticket", isInserted: $showInMenuBar) {
             MenuBarMenu().environment(session)
         }

@@ -116,6 +116,7 @@ enum Swimlanes: String, CaseIterable {
 struct BoardView: View {
     let target: BoardTarget
     @Environment(Session.self) private var session
+    @Environment(\.dismiss) private var dismiss
     @State private var store = BoardStore()
     @AppStorage("boardSwimlanes") private var swimlanes = Swimlanes.none
     private var projectKey: String { target.projectKey }
@@ -139,7 +140,16 @@ struct BoardView: View {
         .background(Backdrop())
         .safeAreaInset(edge: .top, spacing: 0) { quickFilterBar }
         .overlay {
-            if store.isLoading || state == nil, store.issues.isEmpty { ProgressView() }
+            if state == nil, !session.isRestoring {
+                // A restored window whose account signed out, or one from a dev launch with a fresh account id.
+                ContentUnavailableView {
+                    Label("\(projectKey) isn't available", systemImage: "person.crop.circle.badge.xmark")
+                } description: {
+                    Text("The account this board belongs to is no longer signed in.")
+                } actions: {
+                    Button("Close") { dismiss() }
+                }
+            } else if store.isLoading || state == nil, store.issues.isEmpty { ProgressView() }
             else if store.boards.isEmpty { ContentUnavailableView("No boards for \(projectKey)", systemImage: "rectangle.split.3x1") }
         }
         .navigationTitle(store.board?.name ?? projectKey)

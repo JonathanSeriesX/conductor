@@ -178,6 +178,8 @@ struct IssueDetailView: View {
                 }
                 .padding(20)
             }
+            // The toolbar has no background, so blur what scrolls under it instead of letting buttons sit on text.
+            .scrollEdgeEffectStyle(.soft, for: .top)
             .onChange(of: commentRequest) {
                 withAnimation { proxy.scrollTo("comments", anchor: .bottom) }
                 commentFocused = true

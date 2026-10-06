@@ -38,14 +38,7 @@ struct AppCommands: Commands {
 
     var body: some Commands {
         CommandGroup(replacing: .printItem) {}
-        CommandGroup(before: .toolbar) {
-            Button("Command Palette…") { palette(">") }
-                .keyboardShortcut("p", modifiers: [.command, .shift])
-            Divider()
-        }
         CommandMenu("Go") {
-            Button("Go to Issue, List or Project…") { palette("") }.keyboardShortcut("p")
-            Divider()
             Button("Assigned to Me") { session.navigationRequest = session.source(for: .assigned) }.keyboardShortcut("1")
             Button("Reported by Me") { session.navigationRequest = session.source(for: .reported) }.keyboardShortcut("2")
             Button("Recently Viewed") { session.navigationRequest = session.source(for: .recent) }.keyboardShortcut("3")
@@ -96,15 +89,6 @@ struct AppCommands: Commands {
         }
     }
 
-    /// The palette becomes the key window, so it takes this window's actions along.
-    private func palette(_ mode: String) {
-        guard session.isSignedIn else { return }
-        session.paletteMode = mode
-        session.paletteIssue = issue
-        session.paletteList = list
-        openWindow(id: "palette")
-    }
-
     private func item(_ title: String, _ action: IssueActions.Action, _ key: KeyEquivalent? = nil, _ modifiers: EventModifiers = .command) -> some View {
         Button(title) { issue?.perform(action) }
             .keyboardShortcut(key.map { KeyboardShortcut($0, modifiers: modifiers) })
@@ -116,6 +100,7 @@ struct AppCommands: Commands {
 struct IssueWindow: View {
     @State var target: IssueTarget
     @Environment(Session.self) private var session
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         Group {
@@ -123,8 +108,19 @@ struct IssueWindow: View {
                 IssueDetailView(target: target, open: { target = $0 })
                     .environment(\.jira, st)
                     .id(target)
-            } else {
+            } else if session.isRestoring {
                 ZStack { Backdrop(); ProgressView() }
+            } else {
+                // A restored window whose account signed out, or one from a dev launch with a fresh account id.
+                ContentUnavailableView {
+                    Label("\(target.key) isn't available", systemImage: "person.crop.circle.badge.xmark")
+                } description: {
+                    Text("The account this issue belongs to is no longer signed in.")
+                } actions: {
+                    Button("Close") { dismiss() }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Backdrop())
             }
         }
         .writingToolsBehavior(.disabled)
@@ -169,4 +165,15 @@ struct MenuBarMenu: View {
 func copyToPasteboard(_ string: String) {
     NSPasteboard.general.clearContents()
     NSPasteboard.general.setString(string, forType: .string)
+}
+
+/// Brings the main window forward, reopening it if it was closed. Requests set on the session before
+/// calling this are picked up by the window either way.
+@MainActor func bringMainWindowForward(_ openWindow: OpenWindowAction) {
+    NSApp.activate()
+    if let w = NSApp.windows.first(where: { $0.identifier?.rawValue.hasPrefix("main") == true && $0.isVisible }) {
+        w.makeKeyAndOrderFront(nil)
+    } else {
+        openWindow(id: "main")
+    }
 }
