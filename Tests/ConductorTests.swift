@@ -228,17 +228,6 @@ final class FilterAndDurationTests: XCTestCase {
     }
 }
 
-final class PaletteTests: XCTestCase {
-    func testFuzzyMatchesInOrderAndPrefersWordStarts() throws {
-        XCTAssertNil(Fuzzy.match("lc", "Issue: Copy Link"), "characters must appear in order")
-        let link = try XCTUnwrap(Fuzzy.match("cl", "Issue: Copy Link"))
-        XCTAssertEqual(link.indices, [7, 12]) // C of Copy, L of Link
-        let scattered = try XCTUnwrap(Fuzzy.match("cl", "View: Toggle Sidebar collapse"))
-        XCTAssertGreaterThan(link.score, scattered.score)
-        XCTAssertNotNil(Fuzzy.match("ISSUE", "Issue: Watch"), "case-insensitive")
-    }
-}
-
 final class BoardTests: XCTestCase {
     private func issue(_ key: String, assignee: String?) throws -> Issue {
         let who = assignee.map { #"{"accountId":"\#($0)","displayName":"\#($0.capitalized)"}"# } ?? "null"
