@@ -72,13 +72,32 @@ extension StatusCategory {
 
 struct StatusPill: View {
     let status: Status
+    /// `.increased` inside a selected list row, where the accent colour is the background.
+    @Environment(\.backgroundProminence) private var prominence
+
     var body: some View {
+        let tint: Color = prominence == .increased ? .white : status.statusCategory.color
         Text(status.name)
             .font(.caption.weight(.semibold))
             .lineLimit(1)
             .padding(.horizontal, 8).padding(.vertical, 3)
-            .foregroundStyle(status.statusCategory.color)
-            .background(status.statusCategory.color.opacity(0.16), in: .capsule)
+            .foregroundStyle(tint)
+            .background(tint.opacity(prominence == .increased ? 0.28 : 0.16), in: .capsule)
+    }
+}
+
+/// Jira's coloured priority SVG, given a light disc when sitting on a selection colour.
+struct PriorityIcon: View {
+    let priority: Priority
+    var size: CGFloat = 14
+    @Environment(\.backgroundProminence) private var prominence
+
+    var body: some View {
+        RemoteImage(url: priority.iconUrl, placeholder: "minus")
+            .frame(width: size, height: size)
+            .padding(prominence == .increased ? 2 : 0)
+            .background(prominence == .increased ? .white.opacity(0.9) : .clear, in: .circle)
+            .help(priority.name)
     }
 }
 

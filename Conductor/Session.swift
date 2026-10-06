@@ -2,6 +2,8 @@ import SwiftUI
 
 @MainActor @Observable
 final class Session {
+    private(set) var accounts: [Account] = []
+    private(set) var active: Account?
     private(set) var client: JiraClient?
     private(set) var me: JiraUser?
     private(set) var projects: [Project] = []
@@ -16,26 +18,37 @@ final class Session {
         #if DEBUG
         // Dev convenience: launch with CONDUCTOR_SITE/EMAIL/TOKEN set to skip the login form.
         let env = ProcessInfo.processInfo.environment
-        if let site = env["CONDUCTOR_SITE"].flatMap(Credentials.normalizeSite), let email = env["CONDUCTOR_EMAIL"], let token = env["CONDUCTOR_TOKEN"] {
-            try? await signIn(Credentials(site: site, email: email, token: token), persist: false)
+        if let site = env["CONDUCTOR_SITE"].flatMap(Account.normalizeSite), let email = env["CONDUCTOR_EMAIL"], let token = env["CONDUCTOR_TOKEN"] {
+            try? await signIn(Account(site: site, email: email, token: token), persist: false)
             return
         }
         #endif
-        guard let creds = Keychain.load() else { return }
-        do { try await signIn(creds, persist: false) }
-        catch let e as JiraError where e.status == 401 { Keychain.clear() }
-        catch { /* offline: keep creds, user can retry */ }
+        accounts = Keychain.load()
+        let lastID = UserDefaults.standard.string(forKey: "activeAccount").flatMap(UUID.init)
+        guard let account = accounts.first(where: { $0.id == lastID }) ?? accounts.first else { return }
+        do { try await signIn(account, persist: false) }
+        catch let e as JiraError where e.status == 401 { remove(account) }
+        catch { /* offline: keep the account, user can retry */ }
     }
 
-    func signIn(_ creds: Credentials, persist: Bool = true) async throws {
+    /// Validates the token, makes the account active and (optionally) remembers it.
+    func signIn(_ account: Account, persist: Bool = true) async throws {
         isBusy = true
         defer { isBusy = false }
-        var c = JiraClient(credentials: creds)
+        var c = JiraClient(account: account)
         let user = try await c.myself()
         c.sprintField = try? await c.sprintFieldId()
-        if persist { Keychain.save(creds) }
+        if persist {
+            accounts.removeAll { $0.site == account.site && $0.email == account.email }
+            accounts.append(account)
+            Keychain.save(accounts)
+        }
+        UserDefaults.standard.set(account.id.uuidString, forKey: "activeAccount")
+        active = account
         me = user
         client = c
+        projects = []
+        filters = []
         await refreshCatalog()
     }
 
@@ -47,11 +60,18 @@ final class Session {
         filters = (try? await f) ?? []
     }
 
-    func signOut() {
-        Keychain.clear()
+    /// Forgets an account; if it was active, falls over to the next one.
+    func remove(_ account: Account) {
+        accounts.removeAll { $0.id == account.id }
+        Keychain.save(accounts)
+        guard active?.id == account.id else { return }
+        active = nil
         client = nil
         me = nil
         projects = []
         filters = []
+        if let next = accounts.first { Task { try? await signIn(next, persist: false) } }
     }
+
+    func signOut() { if let active { remove(active) } }
 }

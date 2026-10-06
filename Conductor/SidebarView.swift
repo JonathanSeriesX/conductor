@@ -47,6 +47,7 @@ enum Source: Hashable {
 struct SidebarView: View {
     @Environment(Session.self) private var session
     @Binding var selection: Source?
+    @State private var showAddAccount = false
 
     var body: some View {
         List(selection: $selection) {
@@ -84,13 +85,24 @@ struct SidebarView: View {
                 Avatar(user: session.me, size: 26)
                 VStack(alignment: .leading, spacing: 0) {
                     Text(session.me?.displayName ?? "").font(.callout.weight(.medium)).lineLimit(1)
-                    Text(session.client?.credentials.site.host() ?? "").font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                    Text(session.active?.site.host() ?? "").font(.caption2).foregroundStyle(.secondary).lineLimit(1)
                 }
                 Spacer()
                 Menu {
-                    Button("Refresh projects") { Task { await session.refreshCatalog() } }
+                    if session.accounts.count > 1 {
+                        Section("Switch Account") {
+                            ForEach(session.accounts) { a in
+                                Button { Task { try? await session.signIn(a, persist: false) } } label: {
+                                    if a.id == session.active?.id { Label(a.label, systemImage: "checkmark") } else { Text(a.label) }
+                                }
+                                .disabled(a.id == session.active?.id)
+                            }
+                        }
+                    }
+                    Button("Add Account…") { showAddAccount = true }
+                    Button("Refresh Projects") { Task { await session.refreshCatalog() } }
                     Divider()
-                    Button("Sign Out", role: .destructive) { session.signOut() }
+                    Button("Sign Out of \(session.active?.site.host() ?? "Jira")", role: .destructive) { session.signOut() }
                 } label: {
                     Image(systemName: "ellipsis.circle")
                 }
@@ -101,5 +113,6 @@ struct SidebarView: View {
             .glassEffect(.regular, in: .rect(cornerRadius: 14))
             .padding(10)
         }
+        .sheet(isPresented: $showAddAccount) { LoginView(isSheet: true) }
     }
 }

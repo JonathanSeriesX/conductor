@@ -1,10 +1,13 @@
 import Foundation
 import Security
 
-struct Credentials: Codable, Sendable, Equatable {
+struct Account: Codable, Sendable, Equatable, Identifiable {
+    var id = UUID()
     var site: URL      // https://team.atlassian.net
     var email: String
     var token: String
+
+    var label: String { "\(site.host() ?? "") (\(email))" }
 
     /// Accepts "team", "team.atlassian.net", or a full URL.
     static func normalizeSite(_ raw: String) -> URL? {
@@ -38,12 +41,12 @@ struct JiraError: LocalizedError, Sendable {
 }
 
 struct JiraClient: Sendable {
-    let credentials: Credentials
+    let account: Account
     var sprintField: String?
 
-    private var api: URL { credentials.site.appending(path: "rest/api/3") }
+    private var api: URL { account.site.appending(path: "rest/api/3") }
     private var authHeader: String {
-        "Basic " + Data("\(credentials.email):\(credentials.token)".utf8).base64EncodedString()
+        "Basic " + Data("\(account.email):\(account.token)".utf8).base64EncodedString()
     }
 
     static let listFields = "summary,status,assignee,priority,issuetype,updated,project"
@@ -103,7 +106,7 @@ struct JiraClient: Sendable {
     /// Raw bytes for images hosted on the site (avatars, thumbnails). Adds auth only for our own host.
     func data(for url: URL) async throws -> Data {
         var req = URLRequest(url: url)
-        if url.host == credentials.site.host { req.setValue(authHeader, forHTTPHeaderField: "Authorization") }
+        if url.host == account.site.host { req.setValue(authHeader, forHTTPHeaderField: "Authorization") }
         let (data, resp) = try await URLSession.shared.data(for: req)
         let status = (resp as? HTTPURLResponse)?.statusCode ?? 0
         guard (200..<300).contains(status) else { throw JiraError(status: status, data: data) }
@@ -165,7 +168,7 @@ struct JiraClient: Sendable {
         _ = try await request("issue/\(key)/comment", method: "POST", body: Body(body: .document(text: text)))
     }
 
-    func browseURL(_ key: String) -> URL { credentials.site.appending(path: "browse/\(key)") }
+    func browseURL(_ key: String) -> URL { account.site.appending(path: "browse/\(key)") }
 }
 
 // MARK: - Keychain
@@ -174,25 +177,23 @@ enum Keychain {
     private static var query: [String: Any] {
         [kSecClass as String: kSecClassGenericPassword,
          kSecAttrService as String: "org.evgenii.conductor",
-         kSecAttrAccount as String: "credentials"]
+          kSecAttrAccount as String: "accounts"]
     }
 
-    static func load() -> Credentials? {
+    static func load() -> [Account] {
         var q = query
         q[kSecReturnData as String] = true
         q[kSecMatchLimit as String] = kSecMatchLimitOne
         var out: CFTypeRef?
-        guard SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess, let data = out as? Data else { return nil }
-        return try? JSONDecoder().decode(Credentials.self, from: data)
+        guard SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess, let data = out as? Data else { return [] }
+        return (try? JSONDecoder().decode([Account].self, from: data)) ?? []
     }
 
-    static func save(_ c: Credentials) {
-        let data = try! JSONEncoder().encode(c)
+    static func save(_ accounts: [Account]) {
         SecItemDelete(query as CFDictionary)
+        guard !accounts.isEmpty, let data = try? JSONEncoder().encode(accounts) else { return }
         var q = query
         q[kSecValueData as String] = data
         SecItemAdd(q as CFDictionary, nil)
     }
-
-    static func clear() { SecItemDelete(query as CFDictionary) }
 }

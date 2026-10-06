@@ -149,7 +149,7 @@ struct IssueDetailView: View {
                 }
                 if let p = issue.fields.priority {
                     field("Priority") {
-                        HStack(spacing: 6) { RemoteImage(url: p.iconUrl).frame(width: 14, height: 14); Text(p.name) }
+                        HStack(spacing: 6) { PriorityIcon(priority: p); Text(p.name) }
                     }
                 }
                 field("Type") { Text(issue.fields.issuetype.name) }

@@ -51,6 +51,10 @@ struct RootView: View {
                         .background(Backdrop())
                 }
             }
+            .id(session.active?.id) // different site, different projects: start the navigation over
+            .onChange(of: session.active?.id) { old, _ in
+                if old != nil { source = .assignedToMe; selectedKey = nil }
+            }
         } else {
             LoginView()
         }

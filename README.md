@@ -16,6 +16,9 @@ two stay in sync.
 Site (`yourteam` or `yourteam.atlassian.net`), your Atlassian email, and an API token from
 <https://id.atlassian.com/manage-profile/security/api-tokens>. Credentials live in the Keychain only.
 
+Several accounts (say, personal and work Jira) can be added from the menu in the sidebar footer
+and switched there; the last used one is restored on launch.
+
 ## Dev shortcuts (Debug builds only)
 
 Set these environment variables in the scheme or shell to skip the login form and jump to an issue:

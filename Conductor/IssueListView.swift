@@ -96,9 +96,7 @@ struct IssueRow: View {
                     Text(issue.key).font(.caption.monospaced()).foregroundStyle(.secondary)
                     StatusPill(status: issue.fields.status)
                     Spacer(minLength: 0)
-                    if let p = issue.fields.priority {
-                        RemoteImage(url: p.iconUrl, placeholder: "minus").frame(width: 14, height: 14).help(p.name)
-                    }
+                    if let p = issue.fields.priority { PriorityIcon(priority: p) }
                     Avatar(user: issue.fields.assignee, size: 18)
                 }
             }
