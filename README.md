@@ -1,79 +1,56 @@
 # Conductor
 
-A native macOS client for Jira Cloud. SwiftUI, Liquid Glass, zero dependencies.
-Requires macOS 26 (Tahoe) or later and Xcode 26+.
+A native Mac app for Jira Cloud. Built with SwiftUI and Liquid Glass for macOS 26 Tahoe, no Electron, no web views, no dependencies.
 
-## Build
+Jira's own Mac app was discontinued. Conductor is what it should have become: every account signed in at once, your lists in the sidebar like mailboxes, an issue page that opens instantly, and boards you can drag cards across.
 
-Open `Conductor.xcodeproj` and run the `Conductor` scheme. No extra tools needed.
+## Highlights
 
-The project file is checked in, but it is generated from `project.yml`. If you add files or
-change settings, edit `project.yml` and run `xcodegen generate` (`brew install xcodegen`) so the
-two stay in sync.
+- **All your Jira sites in one window.** Personal and work accounts stay signed in together. An All Accounts section unifies Assigned to Me, Reported by Me and Watching across sites, each row tagged with the account's colour. Every account also has its own section with its lists, favourite filters, starred projects and all projects.
+- **Instant.** Everything you have seen is cached on disk. Launch, lists and issues appear at once and refresh in the background.
+- **A real issue page.** Description, attachments, subtasks, child issues, linked issues, work log and comments. Edit the summary, description, priority, labels, sprint, assignee and status inline. Comments and descriptions are written in Markdown with @mention suggestions.
+- **Attachments the Mac way.** Drop files onto the issue, paste a screenshot, Quick Look anything with a click.
+- **Boards.** Each project's board in its own window, with sprint selection and drag between columns to transition.
+- **Search that understands you.** Type words, an issue key, raw JQL with field and value suggestions, or paste a Jira link. Filter chips for status, assignee, type and recency. Save any search as a Jira filter.
+- **Notifications.** Assignments, status changes and new comments on issues you are involved in, on every account, with a dock badge.
+- **Spotlight.** Every issue you have seen is indexed. Search "ES-123" or a summary from anywhere and land in Conductor.
+- **Mac details.** ⌘N new issue, ⌘F find, ⌘1 to ⌘4 for your lists, ⌘R reload, `conductor://issue/KEY` links, window restoration, five glass backgrounds including a plain one for light and dark mode.
+
+## Requirements
+
+- macOS 26 Tahoe or later
+- A Jira Cloud account and an API token from <https://id.atlassian.com/manage-profile/security/api-tokens>
+
+Jira Server and Data Center are not supported.
+
+## Install
+
+Download the latest release from the Releases page, unzip and move Conductor to Applications. Or build it yourself: open `Conductor.xcodeproj` in Xcode 26 and run.
 
 ## Sign in
 
-Site (`yourteam` or `yourteam.atlassian.net`), your Atlassian email, and an API token from
-<https://id.atlassian.com/manage-profile/security/api-tokens>. Credentials live in the Keychain only.
+Enter your site (`yourteam` or `yourteam.atlassian.net`), your Atlassian email and an API token. Tokens are stored in the macOS Keychain and sent only to that site. Add more accounts from the sidebar footer.
 
-Several accounts (say, personal and work Jira) stay signed in at once. The sidebar shows an
-All Accounts section with unified Assigned to Me, Reported by Me, Recently Viewed and Watching
-lists, then a section per account with its own lists, favourite filters, starred projects and a
-collapsed All Projects. Right-click a section title to rename it, pick its colour or sign out; the
-colour marks that account's rows in the unified lists.
+Right-click an account's section title to rename it, pick its colour or sign out.
 
-Settings offers five backgrounds for the glass panes, including a plain one that follows the
-light or dark appearance.
+## Keyboard
 
-## Dev shortcuts (Debug builds only)
-
-Set these environment variables in the scheme or shell to skip the login form and jump to an issue:
-
-| Variable | Effect |
+| Shortcut | Action |
 |---|---|
-| `CONDUCTOR_SITE`, `CONDUCTOR_EMAIL`, `CONDUCTOR_TOKEN` | Sign in without touching the Keychain; add `_2`, `_3` suffixes for more accounts |
-| `CONDUCTOR_OPEN=KEY-123` | Open that issue at launch |
-| `CONDUCTOR_SCROLL=comments` | Scroll the opened issue to its comments |
-| `CONDUCTOR_SHOW=create` / `addAccount` / `board:KEY` | Open that sheet or window at launch |
+| ⌘N | New issue |
+| ⌘F | Find issues |
+| ⌘1 ⌘2 ⌘3 ⌘4 | Assigned to Me, Reported by Me, Recently Viewed, Watching |
+| ⌘R | Reload the list |
+| ⌘⇧R | Refresh the issue |
+| ⌘⇧C | Copy the issue link |
+| ⌘⇧O | Open the issue in the browser |
+| ⌘↩ | Send a comment or save an edit |
+| Double-click the title | Edit the summary |
 
-## Layout
+## Privacy
 
-| File | Role |
-|---|---|
-| `Models.swift` | Codable Jira types; sprint custom field resolved at runtime |
-| `JiraClient.swift` | REST v3 calls, auth, error parsing, Keychain |
-| `ADF.swift` | Atlassian Document Format → SwiftUI |
-| `Session.swift` | Sign-in state, project and filter catalog |
-| `SidebarView.swift` | Smart lists, favourite filters, projects; JQL builder |
-| `IssueListView.swift` | Paginated search with text or raw JQL |
-| `IssueDetailView.swift` | Issue page: editing, attachments, links, work log, comments |
-| `CreateIssueView.swift` | New Issue / Subtask sheet from create metadata |
-| `ADFMarkdown.swift`, `Composer.swift` | Markdown ⇄ ADF and the editor with mention autocomplete |
-| `BoardView.swift` | Board window (Agile API) |
-| `Notifier.swift` | Polling notifications and dock badge |
-| `UpdateChecker.swift` | GitHub Releases update check |
+Conductor talks only to your Jira sites. There is no account, no server and no analytics. Credentials live in the Keychain; cached issues live in your Library folder and can be cleared from Settings.
 
-## Releases
+## Contributing
 
-Push a `v*` tag; `.github/workflows/release.yml` builds, zips and publishes the app. Add the
-Developer ID secrets named in that file to get a signed and notarized build.
-
-## What it does
-
-- Sidebar: Assigned to me, Reported by me, Recently viewed, Watching, favourite filters, starred and all projects
-- Issue list with filter chips, free text / issue key / raw JQL search with field and value suggestions,
-  recent searches, Save as Filter, and pasting a Jira link to jump to it (switching account by site)
-- Issue page: Markdown-editable summary and description, attachments (drop, paste, Quick Look), subtasks,
-  child issues, linked issues, work log, comments with @mentions and edit/delete, transitions, assignee,
-  priority, labels, sprint, watch
-- New Issue (⌘N) and Create Subtask, driven by the site's create metadata
-- Boards: a per-project board window with drag-and-drop between columns
-- Notifications for assignments, status changes and comments on every account, with a dock badge
-- `conductor://issue/KEY` and `conductor://open?url=…` deep links
-- Go menu: ⌘1–4 smart lists, ⌥⌘F search, ⌘R reload; Settings for defaults, notifications and updates
-
-## Tests
-
-`⌘U` in Xcode, or `xcodebuild -scheme Conductor test`. The live write test is skipped unless
-`TEST_RUNNER_CONDUCTOR_SITE`, `_EMAIL`, `_TOKEN` and `_TEST_ISSUE` are set; it comments on, assigns
-and transitions that issue and puts everything back.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the project layout, debug switches, tests and releases. Issues and pull requests are welcome.
