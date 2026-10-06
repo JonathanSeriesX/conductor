@@ -2,24 +2,32 @@ import XCTest
 @testable import Conductor
 
 final class JQLTests: XCTestCase {
+    let account = UUID()
     let project = Project(id: "1", key: "IN", name: "Infrastructure", projectTypeKey: nil, avatarUrls: nil, favourite: nil)
 
     func testProjectKeysAreQuoted() {
         // IN is a JQL reserved word; unquoted it fails server-side.
-        XCTAssertEqual(Source.project(project).jql(search: ""), "project = \"IN\" ORDER BY updated DESC")
+        XCTAssertEqual(Source.project(project, account).jql(search: ""), "project = \"IN\" ORDER BY updated DESC")
     }
 
     func testFreeTextBecomesTextSearch() {
-        XCTAssertEqual(Source.assignedToMe.jql(search: "billing \"engine\""),
+        XCTAssertEqual(Source.smart(.assigned, account).jql(search: "billing \"engine\""),
                        "assignee = currentUser() AND statusCategory != Done AND text ~ \"billing \\\"engine\\\"\" ORDER BY updated DESC")
     }
 
     func testIssueKeyIsLookedUpDirectly() {
-        XCTAssertEqual(Source.recent.jql(search: "es-2284"), "key = \"ES-2284\"")
+        XCTAssertEqual(Source.all(.recent).jql(search: "es-2284"), "key = \"ES-2284\"")
     }
 
     func testRawJQLPassesThrough() {
-        XCTAssertEqual(Source.recent.jql(search: "status = Done order by created"), "status = Done order by created")
+        XCTAssertEqual(Source.all(.recent).jql(search: "status = Done order by created"), "status = Done order by created")
+    }
+
+    func testSourceIdsRoundTripShape() {
+        XCTAssertEqual(Source.all(.watching).id, "all:watching")
+        XCTAssertEqual(Source.project(project, account).id, "\(account):project:IN")
+        XCTAssertTrue(Source.all(.assigned).isUnified)
+        XCTAssertEqual(Source.filter(Filter(id: "7", name: "x", jql: ""), account).accountID, account)
     }
 }
 
@@ -183,9 +191,9 @@ final class FilterAndDurationTests: XCTestCase {
         f.assignee = .me
         f.type = "Bug"
         f.updated = .week
-        XCTAssertEqual(Source.recent.jql(search: "", filters: f),
+        XCTAssertEqual(Source.all(.recent).jql(search: "", filters: f),
                        "issuekey IN issueHistory() AND statusCategory = \"In Progress\" AND assignee = currentUser() AND issuetype = \"Bug\" AND updated >= startOfWeek() ORDER BY lastViewed DESC")
-        XCTAssertEqual(Source.recent.jql(search: "status = Done", filters: f), "status = Done", "raw JQL ignores chips")
+        XCTAssertEqual(Source.all(.recent).jql(search: "status = Done", filters: f), "status = Done", "raw JQL ignores chips")
     }
 
     func testDurationParsing() {

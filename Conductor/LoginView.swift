@@ -9,8 +9,9 @@ struct LoginView: View {
     @State private var token = ""
     @State private var error: String?
 
+    @State private var busy = false
     private var canSubmit: Bool {
-        Account.normalizeSite(site) != nil && email.contains("@") && !token.isEmpty && !session.isBusy
+        Account.normalizeSite(site) != nil && email.contains("@") && !token.isEmpty && !busy
     }
 
     var body: some View {
@@ -47,7 +48,7 @@ struct LoginView: View {
                         Button("Cancel") { dismiss() }.buttonStyle(.glass).controlSize(.large).keyboardShortcut(.cancelAction)
                     }
                     Button(action: submit) {
-                        if session.isBusy { ProgressView().controlSize(.small).frame(maxWidth: .infinity) }
+                        if busy { ProgressView().controlSize(.small).frame(maxWidth: .infinity) }
                         else { Text(isSheet ? "Add" : "Sign In").frame(maxWidth: .infinity) }
                     }
                     .buttonStyle(.glassProminent)
@@ -66,9 +67,11 @@ struct LoginView: View {
     private func submit() {
         guard let url = Account.normalizeSite(site) else { return }
         error = nil
+        busy = true
         Task {
+            defer { busy = false }
             do {
-                try await session.signIn(Account(site: url, email: email.trimmingCharacters(in: .whitespaces), token: token.trimmingCharacters(in: .whitespaces)))
+                try await session.add(Account(site: url, email: email.trimmingCharacters(in: .whitespaces), token: token.trimmingCharacters(in: .whitespaces)))
                 if isSheet { dismiss() }
             } catch { self.error = error.localizedDescription }
         }

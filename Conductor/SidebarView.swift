@@ -1,50 +1,93 @@
 import SwiftUI
 
-enum Source: Hashable {
-    case assignedToMe, reportedByMe, recent, watching
-    case project(Project)
-    case filter(Filter)
+/// The four lists every account has. Unified across accounts, or per account.
+enum Smart: String, CaseIterable, Codable {
+    case assigned, reported, recent, watching
 
     var title: String {
         switch self {
-        case .assignedToMe: "Assigned to me"
-        case .reportedByMe: "Reported by me"
-        case .recent: "Recently viewed"
+        case .assigned: "Assigned to Me"
+        case .reported: "Reported by Me"
+        case .recent: "Recently Viewed"
         case .watching: "Watching"
-        case .project(let p): p.name
-        case .filter(let f): f.name
         }
     }
+
+    var symbol: String {
+        switch self {
+        case .assigned: "person.crop.circle"
+        case .reported: "square.and.pencil"
+        case .recent: "clock"
+        case .watching: "eye"
+        }
+    }
+
+    var whereClause: String {
+        switch self {
+        case .assigned: "assignee = currentUser() AND statusCategory != Done"
+        case .reported: "reporter = currentUser()"
+        case .recent: "issuekey IN issueHistory()"
+        case .watching: "watcher = currentUser() AND statusCategory != Done"
+        }
+    }
+
+    var orderClause: String {
+        switch self {
+        case .reported: "created DESC"
+        case .recent: "lastViewed DESC"
+        default: "updated DESC"
+        }
+    }
+}
+
+enum Source: Hashable {
+    case all(Smart)
+    case smart(Smart, UUID)
+    case project(Project, UUID)
+    case filter(Filter, UUID)
+
+    var title: String {
+        switch self {
+        case .all(let s): s.title
+        case .smart(let s, _): s.title
+        case .project(let p, _): p.name
+        case .filter(let f, _): f.name
+        }
+    }
+
+    /// Account the list belongs to; nil for unified lists.
+    var accountID: UUID? {
+        switch self {
+        case .all: nil
+        case .smart(_, let id), .project(_, let id), .filter(_, let id): id
+        }
+    }
+
+    var isUnified: Bool { accountID == nil }
 
     /// Stable string for scene restoration and settings.
     var id: String {
         switch self {
-        case .assignedToMe: "assigned"
-        case .reportedByMe: "reported"
-        case .recent: "recent"
-        case .watching: "watching"
-        case .project(let p): "project:\(p.key)"
-        case .filter(let f): "filter:\(f.id)"
+        case .all(let s): "all:\(s.rawValue)"
+        case .smart(let s, let id): "\(id):\(s.rawValue)"
+        case .project(let p, let id): "\(id):project:\(p.key)"
+        case .filter(let f, let id): "\(id):filter:\(f.id)"
         }
     }
 
     private var whereClause: String {
         switch self {
-        case .assignedToMe: "assignee = currentUser() AND statusCategory != Done"
-        case .reportedByMe: "reporter = currentUser()"
-        case .recent: "issuekey IN issueHistory()"
-        case .watching: "watcher = currentUser() AND statusCategory != Done"
-        case .project(let p):
+        case .all(let s), .smart(let s, _): s.whereClause
+        case .project(let p, _):
             // Keys like IN or AND are JQL reserved words, hence the quotes.
             UserDefaults.standard.bool(forKey: "hideDoneInProjects") ? "project = \"\(p.key)\" AND statusCategory != Done" : "project = \"\(p.key)\""
-        case .filter(let f): "filter = \(f.id)"
+        case .filter(let f, _): "filter = \(f.id)"
         }
     }
 
     private var orderClause: String {
         switch self {
-        case .reportedByMe: "created DESC"
-        case .recent: "lastViewed DESC"
+        case .all(let s), .smart(let s, _): s.orderClause
         default: "updated DESC"
         }
     }
@@ -53,7 +96,7 @@ enum Source: Hashable {
         q.range(of: #"(?i)(=|~|\bin\b|\bis\b|order by)"#, options: .regularExpression) != nil
     }
 
-    /// Final JQL for this source plus the search box contents and filter chips.
+    /// JQL for this source on one account, with the search box contents and filter chips applied.
     func jql(search: String, filters: ListFilters = ListFilters()) -> String {
         let q = search.trimmingCharacters(in: .whitespacesAndNewlines)
         if Self.looksLikeJQL(q) { return q }
@@ -104,71 +147,64 @@ struct SidebarView: View {
     @Environment(\.openWindow) private var openWindow
     @Binding var selection: Source?
     @State private var showAddAccount = false
-    @AppStorage("sidebar.starredExpanded") private var starredExpanded = true
-    @AppStorage("sidebar.allExpanded") private var allExpanded = false // companies have dozens; starred is the working set
+    @State private var collapsed: Set<UUID> = []
+    @State private var expandedAllProjects: Set<UUID> = []
+    @State private var renaming: AccountState?
+    @State private var newTitle = ""
 
     var body: some View {
         List(selection: $selection) {
-            Section("For You") {
-                Label("Assigned to me", systemImage: "person.crop.circle").tag(Source.assignedToMe)
-                Label("Reported by me", systemImage: "square.and.pencil").tag(Source.reportedByMe)
-                Label("Recently viewed", systemImage: "clock").tag(Source.recent)
-                Label("Watching", systemImage: "eye").tag(Source.watching)
-            }
-            if !session.filters.isEmpty {
-                Section("Favourite Filters") {
-                    ForEach(session.filters) { f in
-                        Label(f.name, systemImage: "line.3.horizontal.decrease.circle").tag(Source.filter(f))
+            if session.states.count > 1 {
+                Section("All Accounts") {
+                    ForEach(Smart.allCases, id: \.self) { s in
+                        Label(s.title, systemImage: s.symbol).tag(Source.all(s))
                     }
                 }
             }
-            if !session.starredProjects.isEmpty {
-                Section("Starred Projects", isExpanded: $starredExpanded) {
-                    ForEach(session.starredProjects) { projectRow($0) }
+            ForEach(session.states) { st in
+                Section(isExpanded: expandedBinding(st)) {
+                    accountContent(st)
+                } header: {
+                    Text(st.title)
+                        .contextMenu {
+                            Button("Rename…", systemImage: "pencil") { newTitle = st.title; renaming = st }
+                            Button("Refresh Projects", systemImage: "arrow.clockwise") { Task { await st.refreshCatalog() } }
+                            Divider()
+                            Button("Sign Out of \(st.title)", systemImage: "rectangle.portrait.and.arrow.right", role: .destructive) { session.remove(st.account) }
+                        }
                 }
             }
-            Section("All Projects", isExpanded: $allExpanded) {
-                ForEach(session.projects) { projectRow($0) }
+            ForEach(session.accounts.filter { session.unreachable[$0.id] != nil }, id: \.id) { account in
+                Section(account.site.host() ?? "Account") {
+                    Label("Couldn't connect", systemImage: "wifi.exclamationmark").foregroundStyle(.secondary)
+                        .help(session.unreachable[account.id] ?? "")
+                    Button("Retry") { Task { await session.retry(account) } }
+                    Button("Remove Account", role: .destructive) { session.remove(account) }
+                }
             }
         }
         .listStyle(.sidebar)
         .navigationTitle("Conductor")
         .navigationSplitViewColumnWidth(min: 200, ideal: 240)
         .safeAreaInset(edge: .bottom) {
-            HStack(spacing: 10) {
-                Avatar(user: session.me, size: 26)
-                VStack(alignment: .leading, spacing: 0) {
-                    Text(session.me?.displayName ?? "").font(.callout.weight(.medium)).lineLimit(1)
-                    Text(session.active?.site.host() ?? "").font(.caption2).foregroundStyle(.secondary).lineLimit(1)
-                }
+            HStack {
+                Button { showAddAccount = true } label: { Label("Add Account", systemImage: "plus") }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .help("Sign in to another Jira site")
                 Spacer()
-                Menu {
-                    if session.accounts.count > 1 {
-                        Section("Switch Account") {
-                            ForEach(session.accounts) { a in
-                                Button { Task { try? await session.signIn(a, persist: false) } } label: {
-                                    if a.id == session.active?.id { Label(a.label, systemImage: "checkmark") } else { Text(a.label) }
-                                }
-                                .disabled(a.id == session.active?.id)
-                            }
-                        }
-                    }
-                    Button("Add Account…") { showAddAccount = true }
-                    Button("Refresh Projects") { Task { await session.refreshCatalog() } }
-                    Divider()
-                    Button("Sign Out of \(session.active?.site.host() ?? "Jira")", role: .destructive) { session.signOut() }
-                } label: {
-                    Image(systemName: "ellipsis.circle")
-                }
-                .menuStyle(.borderlessButton)
-                .fixedSize()
-                .help("Accounts and sign out")
             }
-            .padding(10)
-            .glassEffect(.regular, in: .rect(cornerRadius: 14))
-            .padding(10)
+            .padding(.horizontal, 14).padding(.vertical, 8)
+            .background(.bar)
         }
         .sheet(isPresented: $showAddAccount) { LoginView(isSheet: true) }
+        .alert("Rename Account", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
+            TextField("Name", text: $newTitle)
+            Button("Rename") { renaming?.rename(newTitle); renaming = nil }
+            Button("Cancel", role: .cancel) { renaming = nil }
+        } message: {
+            Text("Shown as the section title in the sidebar.")
+        }
         #if DEBUG
         .task {
             guard ProcessInfo.processInfo.environment["CONDUCTOR_SHOW"] == "addAccount" else { return }
@@ -178,8 +214,31 @@ struct SidebarView: View {
         #endif
     }
 
-    private func projectRow(_ p: Project) -> some View {
-        let starred = session.starred.contains(p.key)
+    @ViewBuilder
+    private func accountContent(_ st: AccountState) -> some View {
+        ForEach(Smart.allCases, id: \.self) { s in
+            Label(s.title, systemImage: s.symbol).tag(Source.smart(s, st.id))
+        }
+        ForEach(st.filters) { f in
+            Label(f.name, systemImage: "line.3.horizontal.decrease.circle").tag(Source.filter(f, st.id))
+        }
+        ForEach(st.starredProjects) { projectRow($0, st) }
+        DisclosureGroup(isExpanded: Binding(
+            get: { expandedAllProjects.contains(st.id) },
+            set: { if $0 { expandedAllProjects.insert(st.id) } else { expandedAllProjects.remove(st.id) } }
+        )) {
+            ForEach(st.projects) { projectRow($0, st) }
+        } label: {
+            Label("All Projects", systemImage: "folder").foregroundStyle(.secondary)
+        }
+    }
+
+    private func expandedBinding(_ st: AccountState) -> Binding<Bool> {
+        Binding(get: { !collapsed.contains(st.id) }, set: { if $0 { collapsed.remove(st.id) } else { collapsed.insert(st.id) } })
+    }
+
+    private func projectRow(_ p: Project, _ st: AccountState) -> some View {
+        let starred = st.starred.contains(p.key)
         return Label {
             Text(p.name)
         } icon: {
@@ -187,11 +246,11 @@ struct SidebarView: View {
                 .frame(width: 18, height: 18)
                 .clipShape(.rect(cornerRadius: 4))
         }
-        .tag(Source.project(p))
+        .tag(Source.project(p, st.id))
         .contextMenu {
-            Button(starred ? "Unstar" : "Star", systemImage: starred ? "star.slash" : "star") { session.toggleStar(p) }
-            Button("Open Board", systemImage: "rectangle.split.3x1") { openWindow(id: "board", value: p.key) }
-            Button("New Issue in \(p.name)…", systemImage: "plus") { session.createIssueRequested = true; selection = .project(p) }
+            Button(starred ? "Unstar" : "Star", systemImage: starred ? "star.slash" : "star") { st.toggleStar(p) }
+            Button("Open Board", systemImage: "rectangle.split.3x1") { openWindow(id: "board", value: BoardTarget(accountID: st.id, projectKey: p.key)) }
+            Button("New Issue in \(p.name)…", systemImage: "plus") { selection = .project(p, st.id); session.createIssueRequested = true }
         }
     }
 }

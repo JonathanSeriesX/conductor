@@ -1,6 +1,11 @@
 import SwiftUI
 import CoreSpotlight
 
+struct BoardTarget: Hashable, Codable {
+    let accountID: UUID
+    let projectKey: String
+}
+
 @main
 struct ConductorApp: App {
     @State private var session = Session()
@@ -28,12 +33,13 @@ struct ConductorApp: App {
                     .disabled(!session.isSignedIn)
             }
             CommandMenu("Go") {
-                Button("Assigned to Me") { session.navigationRequest = .assignedToMe }.keyboardShortcut("1")
-                Button("Reported by Me") { session.navigationRequest = .reportedByMe }.keyboardShortcut("2")
-                Button("Recently Viewed") { session.navigationRequest = .recent }.keyboardShortcut("3")
-                Button("Watching") { session.navigationRequest = .watching }.keyboardShortcut("4")
+                Button("Assigned to Me") { session.navigationRequest = session.source(for: .assigned) }.keyboardShortcut("1")
+                Button("Reported by Me") { session.navigationRequest = session.source(for: .reported) }.keyboardShortcut("2")
+                Button("Recently Viewed") { session.navigationRequest = session.source(for: .recent) }.keyboardShortcut("3")
+                Button("Watching") { session.navigationRequest = session.source(for: .watching) }.keyboardShortcut("4")
                 Divider()
                 Button("Reload") { session.reloadTick += 1 }.keyboardShortcut("r")
+                Button("Refresh Projects") { Task { await session.refreshAll() } }
             }
             // Takes ⌘F away from the text-editing Find panel: in this app, Find means the issue search.
             CommandGroup(replacing: .textEditing) {
@@ -41,15 +47,12 @@ struct ConductorApp: App {
             }
             CommandGroup(after: .appSettings) {
                 Button("Check for Updates…") { UpdateChecker.shared.check(interactive: true) }
-                Divider()
-                Button("Sign Out…") { session.signOut() }
-                    .disabled(!session.isSignedIn)
             }
         }
 
-        WindowGroup("Board", id: "board", for: String.self) { $projectKey in
-            if let projectKey {
-                BoardView(projectKey: projectKey).environment(session)
+        WindowGroup("Board", id: "board", for: BoardTarget.self) { $target in
+            if let target {
+                BoardView(target: target).environment(session)
             }
         }
         .defaultSize(width: 1400, height: 820)
@@ -66,16 +69,12 @@ struct RootView: View {
     @AppStorage("defaultSource") private var defaultSource = "assigned"
     @SceneStorage("source") private var storedSource = ""
     @SceneStorage("issue") private var storedIssue = ""
-    @State private var source: Source? = .assignedToMe
+    @State private var source: Source?
+    @State private var selected: IssueTarget?
     @State private var restored = false
-    #if DEBUG
-    @State private var selectedKey: String? = ProcessInfo.processInfo.environment["CONDUCTOR_OPEN"]
-    #else
-    @State private var selectedKey: String?
-    #endif
 
-    private var currentProject: Project? {
-        if case .project(let p) = source { return p }
+    private var currentProject: (Project, AccountState)? {
+        if case .project(let p, let id) = source, let st = session.state(id) { return (p, st) }
         return nil
     }
 
@@ -88,13 +87,14 @@ struct RootView: View {
                     SidebarView(selection: $source)
                 } content: {
                     if let source {
-                        IssueListView(source: source, selection: $selectedKey)
+                        IssueListView(source: source, selection: $selected)
                             .navigationSplitViewColumnWidth(min: 300, ideal: 380)
                     }
                 } detail: {
-                    if let selectedKey {
-                        IssueDetailView(key: selectedKey, open: { self.selectedKey = $0 })
-                            .id(selectedKey)
+                    if let selected, let st = session.state(selected.accountID) {
+                        IssueDetailView(target: selected, open: { self.selected = $0 })
+                            .environment(\.jira, st)
+                            .id(selected)
                     } else {
                         ContentUnavailableView("Select an issue", systemImage: "ticket")
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -102,26 +102,24 @@ struct RootView: View {
                             .toolbar(id: "issue") { NewIssueToolbarItem() }
                     }
                 }
-                .id(session.active?.id) // different site, different projects: start the navigation over
                 .sheet(isPresented: Bindable(session).createIssueRequested) {
-                    CreateIssueView(defaultProject: currentProject) { selectedKey = $0 }
+                    CreateIssueView(defaultProject: currentProject) { selected = $0 }
                 }
             } else {
                 LoginView()
             }
         }
-        // Lives outside the re-identified split view so it survives the switch.
-        .onChange(of: session.active?.id) { old, _ in
-            if old != nil { source = session.source(for: defaultSource) ?? .assignedToMe; selectedKey = nil }
-        }
-        .onChange(of: session.projects.count) { restoreOnce() }
+        .onChange(of: session.states.count) { restoreOnce() }
         .onChange(of: source) { _, new in if let new { storedSource = new.id } }
-        .onChange(of: selectedKey) { _, new in storedIssue = new.map { "\(session.active?.site.host() ?? "")|\($0)" } ?? "" }
+        .onChange(of: selected) { _, new in
+            storedIssue = new.map { "\($0.accountID.uuidString)|\($0.key)" } ?? ""
+            if let new { session.recordView(new) }
+        }
         .onChange(of: session.navigationRequest) { _, req in
             if let req { source = req; session.navigationRequest = nil }
         }
-        .onChange(of: session.pendingOpen) { _, key in
-            if let key { selectedKey = key; session.pendingOpen = nil; NSApp.activate() }
+        .onChange(of: session.pendingOpen) { _, target in
+            if let target { selected = target; session.pendingOpen = nil; NSApp.activate() }
         }
         .onOpenURL { session.open(url: $0) }
         .onContinueUserActivity(CSSearchableItemActionType) { activity in
@@ -129,22 +127,33 @@ struct RootView: View {
         }
         #if DEBUG
         .task {
-            // CONDUCTOR_SHOW=create opens the New Issue sheet; CONDUCTOR_SHOW=board:KEY opens a board window.
-            guard let show = ProcessInfo.processInfo.environment["CONDUCTOR_SHOW"] else { return }
+            // CONDUCTOR_OPEN=KEY opens that issue in the first account; CONDUCTOR_SHOW=create|board:KEY opens a sheet or window.
+            let env = ProcessInfo.processInfo.environment
+            guard env["CONDUCTOR_OPEN"] != nil || env["CONDUCTOR_SHOW"] != nil else { return }
             while !session.isSignedIn { try? await Task.sleep(for: .milliseconds(200)) }
             try? await Task.sleep(for: .seconds(1))
-            if show == "create" { session.createIssueRequested = true }
-            if show.hasPrefix("board:") { openWindow(id: "board", value: String(show.dropFirst(6))) }
+            if let key = env["CONDUCTOR_OPEN"], let st = session.states.first { selected = IssueTarget(accountID: st.id, key: key) }
+            if env["CONDUCTOR_SHOW"] == "create" { session.createIssueRequested = true }
+            if let show = env["CONDUCTOR_SHOW"], show.hasPrefix("board:"), let st = session.states.first {
+                openWindow(id: "board", value: BoardTarget(accountID: st.id, projectKey: String(show.dropFirst(6))))
+            }
         }
         #endif
     }
 
     /// Puts the window back where it was, once the catalog can resolve project and filter ids.
     private func restoreOnce() {
-        guard !restored, !session.projects.isEmpty else { return }
-        restored = true
-        if let s = session.source(for: storedSource.isEmpty ? defaultSource : storedSource) { source = s }
-        let parts = storedIssue.split(separator: "|", maxSplits: 1).map(String.init)
-        if selectedKey == nil, parts.count == 2, parts[0] == session.active?.site.host() { selectedKey = parts[1] }
+        guard !session.isRestoring, session.isSignedIn else { return }
+        if source == nil || !restored {
+            restored = true
+            source = session.source(for: storedSource) ?? Smart(rawValue: defaultSource).flatMap(session.source) ?? session.source(for: .assigned)
+            let parts = storedIssue.split(separator: "|", maxSplits: 1).map(String.init)
+            if selected == nil, parts.count == 2, let id = UUID(uuidString: parts[0]), session.state(id) != nil {
+                selected = IssueTarget(accountID: id, key: parts[1])
+            }
+        }
+        // An account that signed out takes its list and issue with it.
+        if let s = source, let id = s.accountID, session.state(id) == nil { source = session.source(for: .assigned) }
+        if let sel = selected, session.state(sel.accountID) == nil { selected = nil }
     }
 }
