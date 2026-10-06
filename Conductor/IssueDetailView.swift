@@ -23,42 +23,45 @@ final class IssueDetailStore {
 
     func canEdit(_ field: String?) -> Bool { field.flatMap { editMeta?.fields[$0] } != nil }
 
-    func load(_ client: JiraClient, key: String) async {
-        if issue == nil { issue = DiskCache.load(account: client.account, name: "issue-\(key)") }
+    /// A row from a list has the summary and status but no description or comments yet.
+    var isPartial: Bool { issue?.fields.comment == nil }
+
+    func load(_ state: AccountState, key: String, full: Bool = true) async {
+        let client = state.client
+        if issue == nil {
+            // Last opened copy from disk, else what the list row already knows: either way, no blank page.
+            issue = await DiskCache.loadAsync(account: state.account, name: "issue-\(key)") ?? state.peek[key]
+        }
         do {
             async let i = client.issue(key)
             async let t = client.transitions(key)
             async let m = client.editMeta(key)
+            async let kids = full ? client.search(jql: "parent = \"\(key)\" ORDER BY created ASC") : nil
+            async let types = full ? state.linkTypes() : nil
             issue = try await i
-            DiskCache.save(issue, account: client.account, name: "issue-\(key)")
-            Spotlight.index([issue!], host: client.account.site.host() ?? "")
+            DiskCache.saveAsync(issue, account: state.account, name: "issue-\(key)")
+            Spotlight.index([issue!], host: state.host)
             transitions = (try? await t) ?? []
             editMeta = try? await m
+            if full {
+                if let page = try? await kids { children = page.issues.filter { !$0.fields.issuetype.isSubtask } }
+                if let list = await types { linkTypes = list }
+            }
         } catch {
             self.error = error.localizedDescription
             return
         }
-        async let kids = client.search(jql: "parent = \"\(key)\" ORDER BY created ASC")
-        async let types = client.linkTypes()
-        children = ((try? await kids)?.issues ?? []).filter { !$0.fields.issuetype.isSubtask }
-        linkTypes = (try? await types) ?? []
-        await loadSprints(client)
+        if full, canEdit(client.sprintField), let project = issue?.fields.project?.key {
+            sprints = await state.sprints(project: project)
+        }
     }
 
-    private func loadSprints(_ client: JiraClient) async {
-        guard canEdit(client.sprintField), let project = issue?.fields.project?.key else { return }
-        guard let boards = try? await client.boards(project: project) else { return }
-        var all: [Sprint] = []
-        for b in boards where b.type == "scrum" { all += (try? await client.sprints(board: b.id)) ?? [] }
-        var seen = Set<Int>()
-        sprints = all.filter { seen.insert($0.id).inserted }
-    }
-
-    func perform(_ client: JiraClient, key: String, _ op: @Sendable (JiraClient) async throws -> Void) async {
+    /// Runs a write, then refreshes only what a write can change: the issue, its transitions and editmeta.
+    func perform(_ state: AccountState, key: String, _ op: @Sendable (JiraClient) async throws -> Void) async {
         isWorking = true
         defer { isWorking = false }
-        do { try await op(client) } catch { self.error = error.localizedDescription }
-        await load(client, key: key)
+        do { try await op(state.client) } catch { self.error = error.localizedDescription }
+        await load(state, key: key, full: false)
     }
 }
 
@@ -105,7 +108,7 @@ struct IssueDetailView: View {
         .navigationSubtitle(store.issue?.fields.project?.name ?? "")
         .toolbar(id: "issue") { toolbar }
         .toolbarBackgroundVisibility(.hidden, for: .windowToolbar) // let the backdrop run under the glass buttons
-        .task(id: key) { if let c = jira?.client { await store.load(c, key: key) } }
+        .task(id: key) { if let jira { await store.load(jira, key: key) } }
         .errorAlert($store.error)
         .quickLookPreview($store.previewURL)
         .dropDestination(for: URL.self) { urls, _ in upload(urls: urls); return true } isTargeted: { isDropTargeted = $0 }
@@ -233,6 +236,8 @@ struct IssueDetailView: View {
                 }
             } else if let d = issue.fields.description, !(d.content ?? []).isEmpty {
                 ADFView(node: d)
+            } else if store.isPartial {
+                ProgressView().controlSize(.small)
             } else {
                 Text("No description").foregroundStyle(.tertiary)
             }
@@ -336,7 +341,7 @@ struct IssueDetailView: View {
                 }
                 if let w = issue.fields.watches {
                     field("Watchers") {
-                        Button { run { try await $0.watch(key, !w.isWatching) } } label: {
+                        Button { let me = jira?.me?.accountId; run { try await $0.watch(key, !w.isWatching, me: me) } } label: {
                             Label("\(w.watchCount) watching", systemImage: w.isWatching ? "eye.fill" : "eye")
                                 .foregroundStyle(w.isWatching ? Color.accentColor : .primary)
                         }
@@ -478,7 +483,8 @@ struct IssueDetailView: View {
     private func comments(_ issue: Issue) -> some View {
         VStack(alignment: .leading, spacing: 16) {
             let list = issue.fields.comment?.comments ?? []
-            if list.isEmpty { Text("No comments yet").foregroundStyle(.tertiary) }
+            if store.isPartial { ProgressView().controlSize(.small) }
+            else if list.isEmpty { Text("No comments yet").foregroundStyle(.tertiary) }
             ForEach(list) { c in
                 HStack(alignment: .top, spacing: 10) {
                     Avatar(user: c.author, size: 26)
@@ -528,7 +534,7 @@ struct IssueDetailView: View {
         NewIssueToolbarItem()
         ToolbarSpacer(.flexible)
         ToolbarItem(id: "refresh") {
-            Button { if let c = jira?.client { Task { await store.load(c, key: key) } } } label: { Label("Refresh", systemImage: "arrow.clockwise") }
+            Button { if let jira { Task { await store.load(jira, key: key) } } } label: { Label("Refresh", systemImage: "arrow.clockwise") }
                 .keyboardShortcut("r", modifiers: [.command, .shift])
                 .help("Refresh (⌘⇧R)")
         }
@@ -578,8 +584,8 @@ struct IssueDetailView: View {
     // MARK: Actions
 
     private func run(_ op: @escaping @Sendable (JiraClient) async throws -> Void) {
-        guard let c = jira?.client else { return }
-        Task { await store.perform(c, key: key, op) }
+        guard let jira else { return }
+        Task { await store.perform(jira, key: key, op) }
     }
 
     private func saveSummary() {

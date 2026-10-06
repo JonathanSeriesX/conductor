@@ -287,14 +287,14 @@ struct JiraClient: Sendable {
         _ = try await request("issue/\(key)/worklog/\(id)", method: "DELETE")
     }
 
-    func watch(_ key: String, _ on: Bool) async throws {
+    func watch(_ key: String, _ on: Bool, me: String? = nil) async throws {
+        let accountId: String
+        if let me { accountId = me } else { accountId = try await myself().accountId }
         if on {
             struct Body: Encodable { let accountId: String }
-            let me = try await myself()
-            _ = try await request("issue/\(key)/watchers", method: "POST", body: Body(accountId: me.accountId))
+            _ = try await request("issue/\(key)/watchers", method: "POST", body: Body(accountId: accountId))
         } else {
-            let me = try await myself()
-            _ = try await request("issue/\(key)/watchers", query: ["accountId": me.accountId], method: "DELETE")
+            _ = try await request("issue/\(key)/watchers", query: ["accountId": accountId], method: "DELETE")
         }
     }
 

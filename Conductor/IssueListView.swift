@@ -16,12 +16,24 @@ final class IssueListStore {
     var isLoading = false
     var error: String?
     private var generation = 0
-    private var single: (AccountState, String)?
+    private var single: (AccountState, String, Bool)?
     private var loadedKey = ""
 
     private static func byUpdated(_ a: ListRow, _ b: ListRow) -> Bool {
         let (ua, ub) = (a.issue.fields.updated ?? .distantPast, b.issue.fields.updated ?? .distantPast)
         return ua != ub ? ua > ub : a.id < b.id
+    }
+
+    /// One page of a query for one account. With `cache` on, the page is saved to disk, indexed for
+    /// Spotlight and remembered as a peek for the issue page. Shared by the list and the launch prefetch.
+    static func fetch(jql: String, state: AccountState, nextPageToken: String? = nil, cache: Bool) async throws -> SearchPage {
+        let page = try await state.client.search(jql: jql, nextPageToken: nextPageToken)
+        for issue in page.issues { state.peek[issue.key] = issue }
+        if cache {
+            if nextPageToken == nil { DiskCache.saveAsync(page.issues, account: state.account, name: "list-" + DiskCache.hash(jql)) }
+            Spotlight.index(page.issues, host: state.host)
+        }
+        return page
     }
 
     /// Loads a source: one account with pagination, or every account merged by update time.
@@ -30,37 +42,49 @@ final class IssueListStore {
         let gen = generation
         nextToken = nil
         single = nil
+        let jql = source.jql(search: search, filters: filters)
+        // Typed searches are not cached: they change with every keystroke and would litter the disk.
+        let cacheable = search.isEmpty
+        let isNewQuery = loadedKey != source.id + jql
+        loadedKey = source.id + jql
         switch source {
         case .all:
-            let jql = source.jql(search: search, filters: filters)
             // Only a new query starts from the cache; a reload keeps the rows in place until fresh ones arrive.
-            if loadedKey != source.id + jql {
-                rows = session.states.flatMap { st in
-                    (DiskCache.load([Issue].self, account: st.account, name: "list-" + DiskCache.hash(jql)) ?? []).map { ListRow(issue: $0, state: st) }
-                }.sorted(by: Self.byUpdated)
-                loadedKey = source.id + jql
+            if isNewQuery {
+                var seeded: [ListRow] = []
+                if cacheable {
+                    for st in session.states {
+                        let cached: [Issue] = await DiskCache.loadAsync(account: st.account, name: "list-" + DiskCache.hash(jql)) ?? []
+                        seeded += cached.map { ListRow(issue: $0, state: st) }
+                    }
+                }
+                guard gen == generation else { return }
+                rows = seeded.sorted(by: Self.byUpdated)
             }
             isLoading = true
             let tasks = session.states.map { st in
                 Task<[ListRow], Never> { @MainActor in
-                    guard let page = try? await st.client.search(jql: jql) else { return [] }
-                    DiskCache.save(page.issues, account: st.account, name: "list-" + DiskCache.hash(jql))
-                    Spotlight.index(page.issues, host: st.host)
+                    guard let page = try? await Self.fetch(jql: jql, state: st, cache: cacheable) else { return [] }
                     return page.issues.map { ListRow(issue: $0, state: st) }
                 }
             }
+            // Merge each account's rows as they arrive instead of waiting for the slowest site.
             var fetched: [ListRow] = []
-            for t in tasks { fetched += await t.value }
+            for t in tasks {
+                fetched += await t.value
+                guard gen == generation else { return }
+                if isNewQuery { rows = fetched.sorted(by: Self.byUpdated) }
+            }
             guard gen == generation else { return }
             rows = fetched.sorted(by: Self.byUpdated)
             isLoading = false
         default:
             guard let id = source.accountID, let st = session.state(id) else { rows = []; return }
-            let jql = source.jql(search: search, filters: filters)
-            single = (st, jql)
-            if loadedKey != source.id + jql {
-                rows = (DiskCache.load([Issue].self, account: st.account, name: "list-" + DiskCache.hash(jql)) ?? []).map { ListRow(issue: $0, state: st) }
-                loadedKey = source.id + jql
+            single = (st, jql, cacheable)
+            if isNewQuery {
+                let cached: [Issue] = cacheable ? (await DiskCache.loadAsync(account: st.account, name: "list-" + DiskCache.hash(jql)) ?? []) : []
+                guard gen == generation else { return }
+                rows = cached.map { ListRow(issue: $0, state: st) }
             }
             await fetchPage(gen: gen, replacing: true)
         }
@@ -72,17 +96,15 @@ final class IssueListStore {
     }
 
     private func fetchPage(gen: Int, replacing: Bool) async {
-        guard let (st, jql) = single else { return }
+        guard let (st, jql, cacheable) = single else { return }
         isLoading = true
         defer { isLoading = false }
         do {
-            let page = try await st.client.search(jql: jql, nextPageToken: nextToken)
+            let page = try await Self.fetch(jql: jql, state: st, nextPageToken: nextToken, cache: cacheable)
             guard gen == generation else { return }
             let fresh = page.issues.map { ListRow(issue: $0, state: st) }
             rows = replacing ? fresh : rows + fresh
             nextToken = page.isLast == true ? nil : page.nextPageToken
-            if replacing { DiskCache.save(page.issues, account: st.account, name: "list-" + DiskCache.hash(jql)) }
-            Spotlight.index(page.issues, host: st.host)
         } catch {
             guard gen == generation else { return }
             self.error = error.localizedDescription

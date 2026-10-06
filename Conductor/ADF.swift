@@ -8,10 +8,11 @@ enum JSONValue: Codable, Hashable, Sendable {
 
     init(from decoder: Decoder) throws {
         let c = try decoder.singleValueContainer()
-        if c.decodeNil() { self = .null }
+        // Strings first: ADF attributes are mostly strings, and every failed attempt throws.
+        if let s = try? c.decode(String.self) { self = .string(s) }
+        else if c.decodeNil() { self = .null }
         else if let b = try? c.decode(Bool.self) { self = .bool(b) }
         else if let n = try? c.decode(Double.self) { self = .number(n) }
-        else if let s = try? c.decode(String.self) { self = .string(s) }
         else if let a = try? c.decode([JSONValue].self) { self = .array(a) }
         else { self = .object(try c.decode([String: JSONValue].self)) }
     }
@@ -320,9 +321,17 @@ struct InlineImage: View {
         .frame(maxWidth: 520, maxHeight: 360, alignment: .leading)
         .clipShape(.rect(cornerRadius: 10))
         .task(id: attachment.id) {
-            if let cached = ImageCache.shared.object(forKey: attachment.content as NSURL) { image = cached; return }
-            guard let client = session.client(for: attachment.content), let data = try? await client.data(for: attachment.content), let img = NSImage(data: data) else { return }
-            ImageCache.shared.setObject(img, forKey: attachment.content as NSURL)
+            let url = attachment.content
+            if let cached = ImageCache.shared.object(forKey: url as NSURL) { image = cached; return }
+            if let data = await DiskCache.imageData(for: url), let img = await DiskCache.decodeImage(data) {
+                ImageCache.shared.setObject(img, forKey: url as NSURL)
+                image = img
+                return
+            }
+            guard let client = session.client(for: url), let data = try? await client.data(for: url),
+                  let img = await DiskCache.decodeImage(data) else { return }
+            DiskCache.saveImage(data, for: url)
+            ImageCache.shared.setObject(img, forKey: url as NSURL)
             image = img
         }
         .onTapGesture { preview(attachment) }

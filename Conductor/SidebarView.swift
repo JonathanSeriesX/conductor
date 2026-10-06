@@ -166,7 +166,12 @@ struct SidebarView: View {
                 Section(isExpanded: expandedBinding(st)) {
                     accountContent(st)
                 } header: {
-                    Text(st.title)
+                    HStack(spacing: 4) {
+                        Text(st.title)
+                        if let e = st.error {
+                            Image(systemName: "wifi.exclamationmark").foregroundStyle(.orange).help("Showing cached data. \(e)")
+                        }
+                    }
                         .contextMenu {
                             Button("Rename…", systemImage: "pencil") { newTitle = st.title; renaming = st }
                             Menu("Colour") {
@@ -176,7 +181,7 @@ struct SidebarView: View {
                                     }
                                 }
                             }
-                            Button("Refresh Projects", systemImage: "arrow.clockwise") { Task { await st.refreshCatalog() } }
+                            Button("Refresh", systemImage: "arrow.clockwise") { Task { try? await st.load() } }
                             Divider()
                             Button("Sign Out of \(st.title)", systemImage: "rectangle.portrait.and.arrow.right", role: .destructive) { session.remove(st.account) }
                         }

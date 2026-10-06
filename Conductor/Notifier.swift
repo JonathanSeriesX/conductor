@@ -51,7 +51,10 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         }
         lastPoll[account.id] = now
         let minutes = max(1, Int(now.timeIntervalSince(since) / 60) + 1)
-        if meIDs[account.id] == nil { meIDs[account.id] = try? await client.myself().accountId }
+        if meIDs[account.id] == nil {
+            if let cached = session?.state(account.id)?.me?.accountId { meIDs[account.id] = cached }
+            else { meIDs[account.id] = try? await client.myself().accountId }
+        }
         guard let me = meIDs[account.id] else { return }
         let involved = "(assignee = currentUser() OR reporter = currentUser() OR watcher = currentUser())"
 
