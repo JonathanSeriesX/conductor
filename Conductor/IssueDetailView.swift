@@ -511,8 +511,7 @@ struct IssueDetailView: View {
                 }
             }
             Divider()
-            HStack(alignment: .top, spacing: 18) { // room for the Writing Tools badge macOS pins to the editor's edge
-                Avatar(user: jira?.me, size: 26).padding(.top, 8)
+            HStack(alignment: .top, spacing: 10) {
                 Composer(text: $commentDraft, mentions: $commentMentions, placeholder: "Add a comment…  ⌘↩ to send", minHeight: 44)
                 Button("Comment") { postComment() }
                     .buttonStyle(.glassProminent)
