@@ -323,9 +323,17 @@ struct JiraClient: Sendable {
         return p.values
     }
 
-    func boardIssues(_ id: Int, sprint: Int?, startAt: Int = 0) async throws -> AgileIssuePage {
+    /// `jql` narrows the board, e.g. with its quick filters. `parent` comes along for swimlanes.
+    func boardIssues(_ id: Int, sprint: Int?, jql: String? = nil, startAt: Int = 0) async throws -> AgileIssuePage {
         let path = sprint.map { "board/\(id)/sprint/\($0)/issue" } ?? "board/\(id)/issue"
-        return try await get(path, query: ["maxResults": "100", "startAt": "\(startAt)", "fields": Self.listFields], base: agile)
+        var q = ["maxResults": "100", "startAt": "\(startAt)", "fields": Self.listFields + ",parent"]
+        if let jql { q["jql"] = jql }
+        return try await get(path, query: q, base: agile)
+    }
+
+    func quickFilters(board: Int) async throws -> [QuickFilter] {
+        let p: QuickFilterPage = try await get("board/\(board)/quickfilter", query: ["maxResults": "50"], base: agile)
+        return p.values
     }
 
     // MARK: Filters & JQL assist

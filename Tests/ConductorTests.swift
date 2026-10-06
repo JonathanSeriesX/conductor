@@ -238,3 +238,19 @@ final class PaletteTests: XCTestCase {
         XCTAssertNotNil(Fuzzy.match("ISSUE", "Issue: Watch"), "case-insensitive")
     }
 }
+
+final class BoardTests: XCTestCase {
+    private func issue(_ key: String, assignee: String?) throws -> Issue {
+        let who = assignee.map { #"{"accountId":"\#($0)","displayName":"\#($0.capitalized)"}"# } ?? "null"
+        let json = #"{"id":"\#(key)","key":"\#(key)","fields":{"summary":"s","status":{"id":"1","name":"To Do","statusCategory":{"key":"new","name":"To Do"}},"issuetype":{"id":"1","name":"Task"},"assignee":\#(who)}}"#
+        return try JSONDecoder().decode(Issue.self, from: Data(json.utf8))
+    }
+
+    func testAssigneeLanesKeepFirstSeenOrderWithUnassignedLast() throws {
+        let issues = try [issue("A-1", assignee: nil), issue("A-2", assignee: "bo"), issue("A-3", assignee: "al"), issue("A-4", assignee: "bo")]
+        let lanes = Swimlanes.assignee.lanes(issues)
+        XCTAssertEqual(lanes.map(\.title), ["Bo", "Al", "Unassigned"])
+        XCTAssertEqual(lanes[0].issues.map(\.key), ["A-2", "A-4"])
+        XCTAssertEqual(Swimlanes.none.lanes(issues).first?.issues.count, 4)
+    }
+}

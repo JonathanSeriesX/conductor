@@ -312,11 +312,22 @@ struct BoardConfiguration: Codable, Sendable {
         var id: String { name + statuses.map(\.id).joined() }
         let name: String
         let statuses: [StatusRef]
+        /// WIP limits, when the board sets them.
+        let min: Int?
+        let max: Int?
     }
     struct ColumnConfig: Codable, Sendable { let columns: [Column] }
     let type: String
     let columnConfig: ColumnConfig
 }
+
+struct QuickFilter: Codable, Hashable, Sendable, Identifiable {
+    let id: Int
+    let name: String
+    let jql: String
+}
+
+struct QuickFilterPage: Codable, Sendable { let values: [QuickFilter] }
 
 struct AgileIssuePage: Codable, Sendable {
     let issues: [Issue]
