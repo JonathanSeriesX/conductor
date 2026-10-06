@@ -17,6 +17,12 @@ final class IssueListStore {
     var error: String?
     private var generation = 0
     private var single: (AccountState, String)?
+    private var loadedKey = ""
+
+    private static func byUpdated(_ a: ListRow, _ b: ListRow) -> Bool {
+        let (ua, ub) = (a.issue.fields.updated ?? .distantPast, b.issue.fields.updated ?? .distantPast)
+        return ua != ub ? ua > ub : a.id < b.id
+    }
 
     /// Loads a source: one account with pagination, or every account merged by update time.
     func load(_ source: Source, session: Session, search: String, filters: ListFilters) async {
@@ -25,12 +31,14 @@ final class IssueListStore {
         nextToken = nil
         single = nil
         switch source {
-        case .all(.recent) where search.isEmpty:
-            rows = await recent(session)
         case .all:
             let jql = source.jql(search: search, filters: filters)
-            rows = session.states.flatMap { st in
-                (DiskCache.load([Issue].self, account: st.account, name: "list-" + DiskCache.hash(jql)) ?? []).map { ListRow(issue: $0, state: st) }
+            // Only a new query starts from the cache; a reload keeps the rows in place until fresh ones arrive.
+            if loadedKey != source.id + jql {
+                rows = session.states.flatMap { st in
+                    (DiskCache.load([Issue].self, account: st.account, name: "list-" + DiskCache.hash(jql)) ?? []).map { ListRow(issue: $0, state: st) }
+                }.sorted(by: Self.byUpdated)
+                loadedKey = source.id + jql
             }
             isLoading = true
             let tasks = session.states.map { st in
@@ -44,13 +52,16 @@ final class IssueListStore {
             var fetched: [ListRow] = []
             for t in tasks { fetched += await t.value }
             guard gen == generation else { return }
-            rows = fetched.sorted { ($0.issue.fields.updated ?? .distantPast) > ($1.issue.fields.updated ?? .distantPast) }
+            rows = fetched.sorted(by: Self.byUpdated)
             isLoading = false
         default:
             guard let id = source.accountID, let st = session.state(id) else { rows = []; return }
             let jql = source.jql(search: search, filters: filters)
             single = (st, jql)
-            rows = (DiskCache.load([Issue].self, account: st.account, name: "list-" + DiskCache.hash(jql)) ?? []).map { ListRow(issue: $0, state: st) }
+            if loadedKey != source.id + jql {
+                rows = (DiskCache.load([Issue].self, account: st.account, name: "list-" + DiskCache.hash(jql)) ?? []).map { ListRow(issue: $0, state: st) }
+                loadedKey = source.id + jql
+            }
             await fetchPage(gen: gen, replacing: true)
         }
     }
@@ -77,23 +88,6 @@ final class IssueListStore {
             self.error = error.localizedDescription
         }
     }
-
-    /// The app's own cross-account history, fetched per account in one query each.
-    private func recent(_ session: Session) async -> [ListRow] {
-        let wanted = session.history.prefix(60)
-        let tasks = session.states.compactMap { st -> Task<[ListRow], Never>? in
-            let keys = wanted.filter { $0.accountID == st.id }.map(\.key)
-            guard !keys.isEmpty else { return nil }
-            return Task { @MainActor in
-                let jql = "key IN (" + keys.map { "\"\($0)\"" }.joined(separator: ",") + ")"
-                guard let page = try? await st.client.search(jql: jql) else { return [] }
-                return page.issues.map { ListRow(issue: $0, state: st) }
-            }
-        }
-        var fetched: [IssueTarget: ListRow] = [:]
-        for t in tasks { for r in await t.value { fetched[r.target] = r } }
-        return wanted.compactMap { fetched[$0] }
-    }
 }
 
 struct IssueListView: View {
@@ -112,7 +106,7 @@ struct IssueListView: View {
 
     private var isRawJQL: Bool { Source.looksLikeJQL(search) }
     private var state: AccountState? { source.accountID.flatMap(session.state) ?? session.states.first }
-    private var loadKey: String { "\(source.id)|\(search)|\(filters)|\(session.reloadTick)|\(session.history.count)" }
+    private var loadKey: String { "\(source.id)|\(search)|\(filters)|\(session.reloadTick)" }
 
     var body: some View {
         List(selection: $selection) {
@@ -190,9 +184,7 @@ struct IssueListView: View {
 
     // MARK: Chips
 
-    private var typeNames: [String] {
-        source.isUnified ? Array(Set(session.states.flatMap(\.issueTypeNames))).sorted() : (state?.issueTypeNames ?? [])
-    }
+    private var typeNames: [String] { state?.issueTypeNames ?? [] }
 
     private var chips: some View {
         ScrollView(.horizontal, showsIndicators: false) {
@@ -201,9 +193,11 @@ struct IssueListView: View {
                            items: ListFilters.Status.allCases.map { s in ChipItem(s.rawValue, selected: filters.status == s) { filters.status = s } })
                 FilterChip(id: "assignee", title: filters.assignee.rawValue, active: filters.assignee != .any, menus: chipMenus,
                            items: ListFilters.Assignee.allCases.map { a in ChipItem(a.rawValue, selected: filters.assignee == a) { filters.assignee = a } })
-                FilterChip(id: "type", title: filters.type ?? "Any type", active: filters.type != nil, menus: chipMenus,
-                           items: [ChipItem("Any type", selected: filters.type == nil) { filters.type = nil }, .separator]
-                               + typeNames.map { t in ChipItem(t, selected: filters.type == t) { filters.type = t } })
+                if !source.isUnified { // issue types differ per site, so the chip only makes sense inside one account
+                    FilterChip(id: "type", title: filters.type ?? "Any type", active: filters.type != nil, menus: chipMenus,
+                               items: [ChipItem("Any type", selected: filters.type == nil) { filters.type = nil }, .separator]
+                                   + typeNames.map { t in ChipItem(t, selected: filters.type == t) { filters.type = t } })
+                }
                 FilterChip(id: "updated", title: filters.updated.rawValue, active: filters.updated != .any, menus: chipMenus,
                            items: ListFilters.Updated.allCases.map { u in ChipItem(u.rawValue, selected: filters.updated == u) { filters.updated = u } })
                 if filters.isActive {

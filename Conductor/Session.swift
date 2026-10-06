@@ -179,7 +179,7 @@ final class Session {
 
     /// The smart list to show for a shortcut: unified when several accounts are signed in.
     func source(for smart: Smart) -> Source? {
-        if states.count > 1 { return .all(smart) }
+        if states.count > 1, smart != .recent { return .all(smart) }
         return states.first.map { .smart(smart, $0.id) }
     }
 

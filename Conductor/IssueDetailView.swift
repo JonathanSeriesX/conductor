@@ -104,6 +104,7 @@ struct IssueDetailView: View {
         .navigationTitle(key)
         .navigationSubtitle(store.issue?.fields.project?.name ?? "")
         .toolbar(id: "issue") { toolbar }
+        .toolbarBackgroundVisibility(.hidden, for: .windowToolbar) // let the backdrop run under the glass buttons
         .task(id: key) { if let c = jira?.client { await store.load(c, key: key) } }
         .errorAlert($store.error)
         .quickLookPreview($store.previewURL)
