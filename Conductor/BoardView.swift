@@ -104,6 +104,7 @@ struct BoardView: View {
         .navigationSubtitle(subtitle)
         .toolbar {
             ToolbarItemGroup {
+            Group {
                 if store.boards.count > 1 {
                     Picker("Board", selection: $store.board) {
                         ForEach(store.boards) { b in Text(b.name).tag(Optional(b)) }
@@ -116,11 +117,16 @@ struct BoardView: View {
                     }
                     .frame(maxWidth: 260)
                 }
+                }
+                .labelStyle(.titleAndIcon)
             }
             ToolbarSpacer()
             ToolbarItemGroup {
+            Group {
                 Button { if let c = session.client { Task { await store.loadIssues(c) } } } label: { Label("Refresh", systemImage: "arrow.clockwise") }
                     .keyboardShortcut("r")
+                }
+                .labelStyle(.titleAndIcon)
             }
         }
         // Re-runs when the account changes or once sign-in completes after a restored launch.

@@ -65,8 +65,9 @@ final class Session {
         active = account
         me = user
         client = c
-        projects = []
-        filters = []
+        // Last session's catalog shows at once; the network refresh replaces it.
+        projects = DiskCache.load(account: account, name: "projects") ?? []
+        filters = DiskCache.load(account: account, name: "filters") ?? []
         await refreshCatalog()
         #if DEBUG
         print("Conductor: signed in to \(account.site.host() ?? "?") as \(user.displayName); \(projects.count) projects, \(filters.count) filters")
@@ -77,8 +78,8 @@ final class Session {
         guard let client else { return }
         async let p = client.projects()
         async let f = client.favouriteFilters()
-        projects = (try? await p) ?? []
-        filters = (try? await f) ?? []
+        if let fresh = try? await p { projects = fresh; if let a = active { DiskCache.save(fresh, account: a, name: "projects") } }
+        if let fresh = try? await f { filters = fresh; if let a = active { DiskCache.save(fresh, account: a, name: "filters") } }
         starred = Set(UserDefaults.standard.stringArray(forKey: starredKey) ?? [])
             .union(projects.filter { $0.favourite == true }.map(\.key))
         async let types = client.issueTypes()
@@ -141,6 +142,13 @@ final class Session {
         }
     }
 
+    /// Spotlight results carry "host|KEY".
+    func open(spotlightID: String) {
+        let parts = spotlightID.split(separator: "|", maxSplits: 1).map(String.init)
+        guard parts.count == 2, let url = URL(string: "https://\(parts[0])/browse/\(parts[1])") else { return }
+        open(url: url)
+    }
+
     /// "…/browse/ES-123" or "…?selectedIssue=ES-123" → "ES-123".
     nonisolated static func issueKey(in url: URL) -> String? {
         let parts = url.pathComponents
@@ -160,6 +168,7 @@ final class Session {
 
     /// Forgets an account; if it was active, falls over to the next one.
     func remove(_ account: Account) {
+        if let host = account.site.host() { Spotlight.forget(host: host) }
         accounts.removeAll { $0.id == account.id }
         Keychain.save(accounts)
         guard active?.id == account.id else { return }

@@ -38,6 +38,9 @@ struct SettingsView: View {
             }
             Section("Search") {
                 Button("Clear Recent Searches") { session.clearRecentSearches() }
+                Button("Clear Cache and Spotlight Index") { DiskCache.clear() }
+                Text("Issues you open or list are indexed for Spotlight and kept on disk so the app opens instantly.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)

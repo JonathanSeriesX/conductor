@@ -105,7 +105,7 @@ struct SidebarView: View {
     @Binding var selection: Source?
     @State private var showAddAccount = false
     @AppStorage("sidebar.starredExpanded") private var starredExpanded = true
-    @AppStorage("sidebar.allExpanded") private var allExpanded = true
+    @AppStorage("sidebar.allExpanded") private var allExpanded = false // companies have dozens; starred is the working set
 
     var body: some View {
         List(selection: $selection) {
@@ -162,6 +162,7 @@ struct SidebarView: View {
                 }
                 .menuStyle(.borderlessButton)
                 .fixedSize()
+                .help("Accounts and sign out")
             }
             .padding(10)
             .glassEffect(.regular, in: .rect(cornerRadius: 14))

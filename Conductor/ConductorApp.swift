@@ -1,4 +1,5 @@
 import SwiftUI
+import CoreSpotlight
 
 @main
 struct ConductorApp: App {
@@ -32,8 +33,11 @@ struct ConductorApp: App {
                 Button("Recently Viewed") { session.navigationRequest = .recent }.keyboardShortcut("3")
                 Button("Watching") { session.navigationRequest = .watching }.keyboardShortcut("4")
                 Divider()
-                Button("Search Issues") { session.focusSearchRequested = true }.keyboardShortcut("f", modifiers: [.command, .option])
                 Button("Reload") { session.reloadTick += 1 }.keyboardShortcut("r")
+            }
+            // Takes ⌘F away from the text-editing Find panel: in this app, Find means the issue search.
+            CommandGroup(replacing: .textEditing) {
+                Button("Find Issues") { session.focusSearchRequested = true }.keyboardShortcut("f")
             }
             CommandGroup(after: .appSettings) {
                 Button("Check for Updates…") { UpdateChecker.shared.check(interactive: true) }
@@ -119,6 +123,9 @@ struct RootView: View {
             if let key { selectedKey = key; session.pendingOpen = nil; NSApp.activate() }
         }
         .onOpenURL { session.open(url: $0) }
+        .onContinueUserActivity(CSSearchableItemActionType) { activity in
+            if let id = activity.userInfo?[CSSearchableItemActivityIdentifier] as? String { session.open(spotlightID: id) }
+        }
         #if DEBUG
         .task {
             // CONDUCTOR_SHOW=create opens the New Issue sheet; CONDUCTOR_SHOW=board:KEY opens a board window.

@@ -11,24 +11,27 @@ final class IssueListStore {
     func load(_ client: JiraClient, jql: String) async {
         self.jql = jql
         nextToken = nil
-        issues = []
-        await fetch(client)
+        // Show the last result for this query instantly, then replace it.
+        issues = DiskCache.load(account: client.account, name: "list-" + DiskCache.hash(jql)) ?? []
+        await fetch(client, replacing: true)
     }
 
     func loadMore(_ client: JiraClient) async {
         guard nextToken != nil, !isLoading else { return }
-        await fetch(client)
+        await fetch(client, replacing: false)
     }
 
-    private func fetch(_ client: JiraClient) async {
+    private func fetch(_ client: JiraClient, replacing: Bool) async {
         isLoading = true
         defer { isLoading = false }
         let requested = jql
         do {
             let page = try await client.search(jql: jql, nextPageToken: nextToken)
             guard requested == jql else { return } // a newer query superseded this one
-            issues += page.issues
+            issues = replacing ? page.issues : issues + page.issues
             nextToken = page.isLast == true ? nil : page.nextPageToken
+            if replacing { DiskCache.save(page.issues, account: client.account, name: "list-" + DiskCache.hash(jql)) }
+            Spotlight.index(page.issues, host: client.account.site.host() ?? "")
         } catch {
             guard requested == jql else { return }
             self.error = error.localizedDescription
@@ -94,6 +97,7 @@ struct IssueListView: View {
         }
         .toolbar {
             ToolbarItemGroup {
+            Group {
                 if case .project(let p) = source {
                     Button { openWindow(id: "board", value: p.key) } label: { Label("Board", systemImage: "rectangle.split.3x1") }
                         .help("Open the project board")
@@ -102,6 +106,8 @@ struct IssueListView: View {
                     Button { filterName = ""; savingFilter = true } label: { Label("Save as Filter", systemImage: "bookmark") }
                         .help("Save this search as a favourite filter")
                 }
+                }
+                .labelStyle(.titleAndIcon)
             }
         }
         .alert("Save as Filter", isPresented: $savingFilter) {

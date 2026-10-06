@@ -24,11 +24,14 @@ final class IssueDetailStore {
     func canEdit(_ field: String?) -> Bool { field.flatMap { editMeta?.fields[$0] } != nil }
 
     func load(_ client: JiraClient, key: String) async {
+        if issue == nil { issue = DiskCache.load(account: client.account, name: "issue-\(key)") }
         do {
             async let i = client.issue(key)
             async let t = client.transitions(key)
             async let m = client.editMeta(key)
             issue = try await i
+            DiskCache.save(issue, account: client.account, name: "issue-\(key)")
+            Spotlight.index([issue!], host: client.account.site.host() ?? "")
             transitions = (try? await t) ?? []
             editMeta = try? await m
         } catch {
@@ -518,11 +521,15 @@ struct IssueDetailView: View {
 
     @ToolbarContentBuilder private var toolbar: some ToolbarContent {
         ToolbarItemGroup {
+            Group {
             Button { if let c = session.client { Task { await store.load(c, key: key) } } } label: { Label("Refresh", systemImage: "arrow.clockwise") }
                 .keyboardShortcut("r", modifiers: [.command, .shift])
+            }
+            .labelStyle(.titleAndIcon)
         }
         ToolbarSpacer()
         ToolbarItemGroup {
+            Group {
             Button { attachFiles() } label: { Label("Attach Files", systemImage: "paperclip") }
                 .help("Attach files (or drop them anywhere, or paste an image)")
             Menu {
@@ -542,9 +549,12 @@ struct IssueDetailView: View {
                     run { try await $0.addWorklog(key, seconds: seconds, comment: comment.isEmpty ? nil : .document(markdown: comment), started: started) }
                 }
             }
+            }
+            .labelStyle(.titleAndIcon)
         }
         ToolbarSpacer()
         ToolbarItemGroup {
+            Group {
             Button {
                 let url = session.client?.browseURL(key)
                 NSPasteboard.general.clearContents()
@@ -555,6 +565,8 @@ struct IssueDetailView: View {
                 if let url = session.client?.browseURL(key) { NSWorkspace.shared.open(url) }
             } label: { Label("Open in Browser", systemImage: "safari") }
             .keyboardShortcut("o", modifiers: [.command, .shift])
+            }
+            .labelStyle(.titleAndIcon)
         }
     }
 
