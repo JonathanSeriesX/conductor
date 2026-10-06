@@ -334,6 +334,8 @@ struct JiraClient: Sendable {
     }
 
     func browseURL(_ key: String) -> URL { account.site.appending(path: "browse/\(key)") }
+    /// `[ES-123: summary](https://site/browse/ES-123)`, for pasting into Slack, Linear or Notion.
+    func markdownLink(_ key: String, summary: String) -> String { "[\(key): \(summary)](\(browseURL(key).absoluteString))" }
 }
 
 // MARK: - Keychain

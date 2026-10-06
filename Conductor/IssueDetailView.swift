@@ -70,6 +70,7 @@ struct IssueDetailView: View {
     var open: (IssueTarget) -> Void
     @Environment(Session.self) private var session
     @Environment(\.jira) private var jira
+    @Environment(\.openWindow) private var openWindow
     @State private var store = IssueDetailStore()
     private var key: String { target.key }
     /// Keys from subtasks, links and parents live in the same account as this issue.
@@ -91,6 +92,8 @@ struct IssueDetailView: View {
     @State private var showCreateSubtask = false
     @State private var isDropTargeted = false
     @FocusState private var summaryFocused: Bool
+    @FocusState private var commentFocused: Bool
+    @State private var commentRequest = 0
 
     var body: some View {
         Group {
@@ -107,6 +110,7 @@ struct IssueDetailView: View {
         .navigationTitle(key)
         .navigationSubtitle(store.issue?.fields.project?.name ?? "")
         .toolbar(id: "issue") { toolbar }
+        .focusedSceneValue(\.issueActions, actions)
         .toolbarBackgroundVisibility(.hidden, for: .windowToolbar) // let the backdrop run under the glass buttons
         .task(id: "\(key)|\(session.reloadTick)") { if let jira { await store.load(jira, key: key) } }
         .errorAlert($store.error)
@@ -160,6 +164,10 @@ struct IssueDetailView: View {
                     }
                 }
                 .padding(20)
+            }
+            .onChange(of: commentRequest) {
+                withAnimation { proxy.scrollTo("comments", anchor: .bottom) }
+                commentFocused = true
             }
             #if DEBUG
             .task {
@@ -518,7 +526,7 @@ struct IssueDetailView: View {
             }
             Divider()
             HStack(alignment: .top, spacing: 10) {
-                Composer(text: $commentDraft, mentions: $commentMentions, placeholder: "Add a comment…  ⌘↩ to send", minHeight: 44)
+                Composer(text: $commentDraft, mentions: $commentMentions, placeholder: "Add a comment…  ⌘↩ to send", minHeight: 44, focus: $commentFocused)
                 Button("Comment") { postComment() }
                     .buttonStyle(.glassProminent)
                     .keyboardShortcut(.return, modifiers: .command)
@@ -534,8 +542,7 @@ struct IssueDetailView: View {
         NewIssueToolbarItem()
         ToolbarSpacer(.flexible)
         ToolbarItem(id: "refresh") {
-            Button { if let jira { Task { await store.load(jira, key: key) } } } label: { Label("Refresh", systemImage: "arrow.clockwise") }
-                .keyboardShortcut("r", modifiers: [.command, .shift])
+            Button { perform(.refresh) } label: { Label("Refresh", systemImage: "arrow.clockwise") }
                 .help("Refresh (⌘⇧R)")
         }
         ToolbarItem(id: "attach") {
@@ -562,26 +569,57 @@ struct IssueDetailView: View {
                 }
             }
         }
+        // Shortcuts live on the Issue menu items, so the menu bar lists them.
         ToolbarItem(id: "copy") {
-            Button {
-                let url = jira?.client.browseURL(key)
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(url?.absoluteString ?? key, forType: .string)
-            } label: { Label("Copy Link", systemImage: "link") }
-            .keyboardShortcut("c", modifiers: [.command, .shift])
-            .help("Copy link (⌘⇧C)")
+            Button { perform(.copyLink) } label: { Label("Copy Link", systemImage: "link") }
+                .help("Copy link (⌘⇧C)")
         }
         ToolbarItem(id: "browser") {
-            Button {
-                if let url = jira?.client.browseURL(key) { NSWorkspace.shared.open(url) }
-            } label: { Label("Open in Browser", systemImage: "safari") }
-            .keyboardShortcut("o", modifiers: [.command, .shift])
-            .help("Open in browser (⌘⇧O)")
+            Button { perform(.openInBrowser) } label: { Label("Open in Browser", systemImage: "safari") }
+                .help("Open in browser (⌘⇧O)")
         }
         ToolbarSpacer(.flexible)
     }
 
     // MARK: Actions
+
+    private var actions: IssueActions? {
+        guard let issue = store.issue else { return nil }
+        return IssueActions(
+            watching: issue.fields.watches?.isWatching == true,
+            assignedToMe: issue.fields.assignee?.accountId != nil && issue.fields.assignee?.accountId == jira?.me?.accountId,
+            transitions: store.transitions,
+            canEditSummary: store.canEdit("summary"),
+            canEditDescription: store.canEdit("description"),
+            perform: perform
+        )
+    }
+
+    private func perform(_ action: IssueActions.Action) {
+        guard let jira else { return }
+        let summary = store.issue?.fields.summary ?? ""
+        switch action {
+        case .openInBrowser: NSWorkspace.shared.open(jira.client.browseURL(key))
+        case .openInWindow: openWindow(id: "issue", value: target)
+        case .copyLink: copyToPasteboard(jira.client.browseURL(key).absoluteString)
+        case .copyKey: copyToPasteboard(key)
+        case .copyMarkdown: copyToPasteboard(jira.client.markdownLink(key, summary: summary))
+        case .assign: showAssign = true
+        case .assignToMe: let me = jira.me?.accountId; run { try await $0.assign(key, to: me) }
+        case .watch:
+            let on = store.issue?.fields.watches?.isWatching != true, me = jira.me?.accountId
+            run { try await $0.watch(key, on, me: me) }
+        case .transition(let id): run { try await $0.transition(key, to: id) }
+        case .editSummary: summaryDraft = summary
+        case .editDescription: if let issue = store.issue { beginDescriptionEdit(issue) }
+        case .comment: commentRequest += 1
+        case .attach: attachFiles()
+        case .link: showLink = true
+        case .logWork: showLogWork = true
+        case .subtask: showCreateSubtask = true
+        case .refresh: Task { await store.load(jira, key: key) }
+        }
+    }
 
     private func run(_ op: @escaping @Sendable (JiraClient) async throws -> Void) {
         guard let jira else { return }

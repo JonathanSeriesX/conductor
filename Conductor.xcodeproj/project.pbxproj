@@ -24,6 +24,7 @@
 		D54A2B9DFA9140B7870BE582 /* Cache.swift in Sources */ = {isa = PBXBuildFile; fileRef = 90DA3B7AFF888764049D48F4 /* Cache.swift */; };
 		E45F420D257D3079E7328B3B /* BoardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0986CDCD0766891265297AEA /* BoardView.swift */; };
 		EAE506613441C9022B472BD0 /* ADFMarkdown.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3E784D3E21F87E193F9AEC9A /* ADFMarkdown.swift */; };
+		EBDAEAA1408DC0D317B88AE7 /* Commands.swift in Sources */ = {isa = PBXBuildFile; fileRef = F4B50C638EC6F7F633F0C590 /* Commands.swift */; };
 		F30762FB07FD7CD6B4C8E30B /* IssueDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E4DEA254C7CFF930F6E6C347 /* IssueDetailView.swift */; };
 		F62A7E580595D251C5CADDCF /* UpdateChecker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9284E4A1F96E0B4D18D3D3EF /* UpdateChecker.swift */; };
 		F6C07BD09490B240485F4648 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 17DF45FD96E362F6AB0D52A9 /* SettingsView.swift */; };
@@ -64,6 +65,7 @@
 		C95F84CF49AB04DC4D7CAF67 /* ADF.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ADF.swift; sourceTree = "<group>"; };
 		DB81CE90DD0D0F8664E2BB2E /* LoginView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginView.swift; sourceTree = "<group>"; };
 		E4DEA254C7CFF930F6E6C347 /* IssueDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IssueDetailView.swift; sourceTree = "<group>"; };
+		F4B50C638EC6F7F633F0C590 /* Commands.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Commands.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -84,6 +86,7 @@
 				6CF4059610D4F1DF83709373 /* Assets.xcassets */,
 				0986CDCD0766891265297AEA /* BoardView.swift */,
 				90DA3B7AFF888764049D48F4 /* Cache.swift */,
+				F4B50C638EC6F7F633F0C590 /* Commands.swift */,
 				A32C4B21F0DF41B00390C3A0 /* Components.swift */,
 				64A370ABEDA85F1D80C87CC1 /* Composer.swift */,
 				31CFF25D2D75668F493102AB /* Conductor.entitlements */,
@@ -219,6 +222,7 @@
 				EAE506613441C9022B472BD0 /* ADFMarkdown.swift in Sources */,
 				E45F420D257D3079E7328B3B /* BoardView.swift in Sources */,
 				D54A2B9DFA9140B7870BE582 /* Cache.swift in Sources */,
+				EBDAEAA1408DC0D317B88AE7 /* Commands.swift in Sources */,
 				D0E619E671187CAF6FB11B48 /* Components.swift in Sources */,
 				9E2F7A3A2999B0465B02227D /* Composer.swift in Sources */,
 				19AE737E4EC1DE2A22F42975 /* ConductorApp.swift in Sources */,

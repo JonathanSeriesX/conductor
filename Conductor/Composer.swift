@@ -9,6 +9,9 @@ struct Composer: View {
     var minHeight: CGFloat = 60
     var maxHeight: CGFloat = 260
     var showHint = true
+    /// Lets the owner move focus into the editor, e.g. from the Add Comment menu item.
+    var focus: FocusState<Bool>.Binding?
+    @FocusState private var ownFocus: Bool
     @Environment(\.jira) private var jira
     @State private var candidates: [JiraUser] = []
     @State private var query = ""
@@ -16,6 +19,7 @@ struct Composer: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             TextEditor(text: $text)
+                .focused(focus ?? $ownFocus)
                 .font(.body)
                 .scrollContentBackground(.hidden)
                 .frame(minHeight: minHeight, maxHeight: maxHeight)
