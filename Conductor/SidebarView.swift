@@ -222,6 +222,7 @@ struct SidebarView: View {
             .padding(.horizontal, 14).padding(.vertical, 8)
         }
         .sheet(isPresented: $showAddAccount) { LoginView(isSheet: true) }
+        .onChange(of: session.addAccountRequested) { _, on in if on { showAddAccount = true; session.addAccountRequested = false } }
         .alert("Rename Account", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
             TextField("Name", text: $newTitle)
             Button("Rename") { renaming?.rename(newTitle); renaming = nil }

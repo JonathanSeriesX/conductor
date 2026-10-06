@@ -669,6 +669,7 @@ struct IssueDetailView: View {
     private var actions: IssueActions? {
         guard let issue = store.issue else { return nil }
         return IssueActions(
+            key: key,
             watching: issue.fields.watches?.isWatching == true,
             starred: session.isStarred(target),
             assignedToMe: issue.fields.assignee?.accountId != nil && issue.fields.assignee?.accountId == jira?.me?.accountId,

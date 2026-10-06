@@ -172,6 +172,12 @@ final class Session {
     var pendingOpen: IssueTarget?
     var focusSearchRequested = false
     var reloadTick = 0
+    var addAccountRequested = false
+    /// What the palette opens on (">" for commands, "" for quick open) and the actions of the window it
+    /// was summoned from: once the palette is key, that window's focused values are out of reach.
+    @ObservationIgnored var paletteMode = ">"
+    @ObservationIgnored var paletteIssue: IssueActions?
+    @ObservationIgnored var paletteList: ListActions?
 
     var isSignedIn: Bool { !states.isEmpty }
     var accounts: [Account] { stored }
