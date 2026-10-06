@@ -166,18 +166,14 @@ struct SidebarView: View {
                 Section(isExpanded: expandedBinding(st)) {
                     accountContent(st)
                 } header: {
-                    HStack(spacing: 6) {
-                        Circle().fill(st.color).frame(width: 8, height: 8)
-                        Text(st.title)
-                    }
+                    Text(st.title)
                         .contextMenu {
                             Button("Rename…", systemImage: "pencil") { newTitle = st.title; renaming = st }
                             Menu("Colour") {
                                 ForEach(Palette.names, id: \.self) { name in
                                     Button { st.setColor(name) } label: {
-                                        Label(name.capitalized, systemImage: st.colorName == name ? "checkmark.circle.fill" : "circle.fill")
+                                        Label { Text(name.capitalized + (st.colorName == name ? "  ✓" : "")) } icon: { Image(nsImage: Palette.swatch(name)) }
                                     }
-                                    .tint(Palette.color(named: name))
                                 }
                             }
                             Button("Refresh Projects", systemImage: "arrow.clockwise") { Task { await st.refreshCatalog() } }
@@ -241,7 +237,7 @@ struct SidebarView: View {
         )) {
             ForEach(st.projects) { projectRow($0, st) }
         } label: {
-            Label("All Projects", systemImage: "folder").foregroundStyle(.secondary)
+            tinted("All Projects", symbol: "folder", color: st.color)
         }
     }
 

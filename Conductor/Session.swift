@@ -270,24 +270,40 @@ extension EnvironmentValues {
 
 /// The boring system colours, which is the point: they read well on glass in both appearances.
 enum Palette {
-    static let names = ["blue", "green", "orange", "purple", "pink", "teal", "indigo", "brown", "red", "mint"]
+    /// Menu order; defaults are dealt from `dealOrder` so neighbouring accounts contrast.
+    static let names = ["blue", "indigo", "purple", "pink", "red", "orange", "yellow", "green", "mint", "teal", "cyan", "brown", "gray"]
+    private static let dealOrder = ["blue", "green", "orange", "purple", "pink", "teal", "red", "yellow", "indigo", "mint", "cyan", "brown", "gray"]
 
     static func color(named name: String) -> Color {
         switch name {
-        case "green": .green
-        case "orange": .orange
+        case "indigo": .indigo
         case "purple": .purple
         case "pink": .pink
-        case "teal": .teal
-        case "indigo": .indigo
-        case "brown": .brown
         case "red": .red
+        case "orange": .orange
+        case "yellow": .yellow
+        case "green": .green
         case "mint": .mint
+        case "teal": .teal
+        case "cyan": .cyan
+        case "brown": .brown
+        case "gray": .gray
         default: .blue
         }
     }
 
+    /// A filled disc as a real (non-template) image, so menus show the colour instead of a monochrome glyph.
+    @MainActor static func swatch(_ name: String, size: CGFloat = 14) -> NSImage {
+        let image = NSImage(size: NSSize(width: size, height: size), flipped: false) { rect in
+            NSColor(color(named: name)).setFill()
+            NSBezierPath(ovalIn: rect.insetBy(dx: 1, dy: 1)).fill()
+            return true
+        }
+        image.isTemplate = false
+        return image
+    }
+
     static func next(avoiding used: [String]) -> String {
-        names.first { !used.contains($0) } ?? names[used.count % names.count]
+        dealOrder.first { !used.contains($0) } ?? dealOrder[used.count % dealOrder.count]
     }
 }
