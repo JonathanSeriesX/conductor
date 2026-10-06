@@ -50,7 +50,7 @@ struct JiraClient: Sendable {
         "Basic " + Data("\(account.email):\(account.token)".utf8).base64EncodedString()
     }
 
-    static let listFields = "summary,status,assignee,priority,issuetype,updated,project"
+    static let listFields = "summary,status,assignee,priority,issuetype,updated,project,watches"
     var detailFields: String {
         var f = "summary,description,status,assignee,reporter,priority,issuetype,labels,created,updated,comment,attachment,project,parent,subtasks,issuelinks,worklog,timetracking,watches"
         if let sprintField { f += "," + sprintField }
