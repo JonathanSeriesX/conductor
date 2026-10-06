@@ -5,13 +5,16 @@ struct ConductorApp: App {
     @State private var session = Session()
 
     var body: some Scene {
-        WindowGroup {
+        WindowGroup(id: "main") {
             RootView()
                 .environment(session)
                 .task { await session.restore() }
                 .frame(minWidth: 900, minHeight: 560)
         }
         .windowToolbarStyle(.unified)
+        // Always present a window at launch, even when restored state has none (e.g. after a test-host run).
+        .defaultLaunchBehavior(.presented)
+        .defaultSize(width: 1280, height: 820)
         .commands {
             CommandGroup(after: .appSettings) {
                 Button("Sign Out…") { session.signOut() }
