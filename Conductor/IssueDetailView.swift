@@ -63,10 +63,14 @@ final class IssueDetailStore {
 }
 
 struct IssueDetailView: View {
-    let key: String
-    var open: (String) -> Void
+    let target: IssueTarget
+    var open: (IssueTarget) -> Void
     @Environment(Session.self) private var session
+    @Environment(\.jira) private var jira
     @State private var store = IssueDetailStore()
+    private var key: String { target.key }
+    /// Keys from subtasks, links and parents live in the same account as this issue.
+    private func open(_ key: String) { open(IssueTarget(accountID: target.accountID, key: key)) }
 
     // Editing state
     @State private var summaryDraft: String?
@@ -100,7 +104,7 @@ struct IssueDetailView: View {
         .navigationTitle(key)
         .navigationSubtitle(store.issue?.fields.project?.name ?? "")
         .toolbar(id: "issue") { toolbar }
-        .task(id: key) { if let c = session.client { await store.load(c, key: key) } }
+        .task(id: key) { if let c = jira?.client { await store.load(c, key: key) } }
         .errorAlert($store.error)
         .quickLookPreview($store.previewURL)
         .dropDestination(for: URL.self) { urls, _ in upload(urls: urls); return true } isTargeted: { isDropTargeted = $0 }
@@ -115,7 +119,7 @@ struct IssueDetailView: View {
         .animation(.easeOut(duration: 0.15), value: isDropTargeted)
         .onPasteCommand(of: [.fileURL, .png, .tiff, .image]) { _ in pasteAttachment() }
         .sheet(isPresented: $showCreateSubtask) {
-            CreateIssueView(defaultProject: store.issue?.fields.project, parentKey: key) { open($0) }
+            CreateIssueView(defaultProject: store.issue?.fields.project.flatMap { p in jira.map { (p, $0) } }, parentKey: key) { open($0) }
         }
     }
 
@@ -286,7 +290,7 @@ struct IssueDetailView: View {
                     }
                 }
                 field("Type") { Text(issue.fields.issuetype.name) }
-                if store.canEdit(session.client?.sprintField), !store.sprints.isEmpty {
+                if store.canEdit(jira?.client.sprintField), !store.sprints.isEmpty {
                     field("Sprint") {
                         Menu {
                             Button("No sprint") { setSprint(nil) }
@@ -371,7 +375,7 @@ struct IssueDetailView: View {
                     .contextMenu {
                         Button("Quick Look", systemImage: "eye") { preview(a) }
                         Button("Open", systemImage: "arrow.up.forward.app") {
-                            if let c = session.client { Task { await AttachmentOpener.open(a, client: c) } }
+                            if let c = jira?.client { Task { await AttachmentOpener.open(a, client: c) } }
                         }
                         Button("Save As…", systemImage: "square.and.arrow.down") { saveAs(a) }
                         Divider()
@@ -461,7 +465,7 @@ struct IssueDetailView: View {
                         if let c = w.comment, !c.plainText.isEmpty { Text(c.plainText).font(.callout).foregroundStyle(.secondary) }
                     }
                     Spacer()
-                    if w.author?.accountId == session.me?.accountId {
+                    if w.author?.accountId == jira?.me?.accountId {
                         Button { run { try await $0.deleteWorklog(key, id: w.id) } } label: { Image(systemName: "trash") }
                             .buttonStyle(.plain).foregroundStyle(.tertiary).help("Delete work log")
                     }
@@ -483,7 +487,7 @@ struct IssueDetailView: View {
                             Text(c.created.formatted(.relative(presentation: .named))).font(.caption).foregroundStyle(.secondary).help(c.created.formatted())
                             if c.updated.timeIntervalSince(c.created) > 60 { Text("· edited").font(.caption).foregroundStyle(.tertiary) }
                             Spacer()
-                            if c.author?.accountId == session.me?.accountId, editingComment == nil {
+                            if c.author?.accountId == jira?.me?.accountId, editingComment == nil {
                                 Menu {
                                     Button("Edit", systemImage: "pencil") { beginCommentEdit(c) }
                                     Button("Delete", systemImage: "trash", role: .destructive) { run { try await $0.deleteComment(key, id: c.id) } }
@@ -507,7 +511,7 @@ struct IssueDetailView: View {
             }
             Divider()
             HStack(alignment: .top, spacing: 18) { // room for the Writing Tools badge macOS pins to the editor's edge
-                Avatar(user: session.me, size: 26).padding(.top, 8)
+                Avatar(user: jira?.me, size: 26).padding(.top, 8)
                 Composer(text: $commentDraft, mentions: $commentMentions, placeholder: "Add a comment…  ⌘↩ to send", minHeight: 44)
                 Button("Comment") { postComment() }
                     .buttonStyle(.glassProminent)
@@ -522,16 +526,17 @@ struct IssueDetailView: View {
 
     @ToolbarContentBuilder private var toolbar: some CustomizableToolbarContent {
         NewIssueToolbarItem()
-        ToolbarItem(id: "refresh", placement: .principal) {
-            Button { if let c = session.client { Task { await store.load(c, key: key) } } } label: { Label("Refresh", systemImage: "arrow.clockwise") }
+        ToolbarSpacer(.flexible)
+        ToolbarItem(id: "refresh") {
+            Button { if let c = jira?.client { Task { await store.load(c, key: key) } } } label: { Label("Refresh", systemImage: "arrow.clockwise") }
                 .keyboardShortcut("r", modifiers: [.command, .shift])
                 .help("Refresh (⌘⇧R)")
         }
-        ToolbarItem(id: "attach", placement: .principal) {
+        ToolbarItem(id: "attach") {
             Button { attachFiles() } label: { Label("Attach Files", systemImage: "paperclip") }
                 .help("Attach files. You can also drop them anywhere or paste an image.")
         }
-        ToolbarItem(id: "more", placement: .principal) {
+        ToolbarItem(id: "more") {
             Menu {
                 Button("Create Subtask…", systemImage: "plus.square.on.square") { showCreateSubtask = true }
                 Button("Link Issue…", systemImage: "link") { showLink = true }
@@ -551,28 +556,29 @@ struct IssueDetailView: View {
                 }
             }
         }
-        ToolbarItem(id: "copy", placement: .principal) {
+        ToolbarItem(id: "copy") {
             Button {
-                let url = session.client?.browseURL(key)
+                let url = jira?.client.browseURL(key)
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(url?.absoluteString ?? key, forType: .string)
             } label: { Label("Copy Link", systemImage: "link") }
             .keyboardShortcut("c", modifiers: [.command, .shift])
             .help("Copy link (⌘⇧C)")
         }
-        ToolbarItem(id: "browser", placement: .principal) {
+        ToolbarItem(id: "browser") {
             Button {
-                if let url = session.client?.browseURL(key) { NSWorkspace.shared.open(url) }
+                if let url = jira?.client.browseURL(key) { NSWorkspace.shared.open(url) }
             } label: { Label("Open in Browser", systemImage: "safari") }
             .keyboardShortcut("o", modifiers: [.command, .shift])
             .help("Open in browser (⌘⇧O)")
         }
+        ToolbarSpacer(.flexible)
     }
 
     // MARK: Actions
 
     private func run(_ op: @escaping @Sendable (JiraClient) async throws -> Void) {
-        guard let c = session.client else { return }
+        guard let c = jira?.client else { return }
         Task { await store.perform(c, key: key, op) }
     }
 
@@ -598,7 +604,7 @@ struct IssueDetailView: View {
     }
 
     private func setSprint(_ id: Int?) {
-        guard let field = session.client?.sprintField else { return }
+        guard let field = jira?.client.sprintField else { return }
         run { try await $0.editIssue(key, fields: [field: id.map { .number(Double($0)) } ?? .null]) }
     }
 
@@ -625,12 +631,12 @@ struct IssueDetailView: View {
     }
 
     private func preview(_ a: Attachment) {
-        guard let c = session.client else { return }
+        guard let c = jira?.client else { return }
         Task { if let url = await AttachmentOpener.download(a, client: c) { store.previewURL = url } }
     }
 
     private func saveAs(_ a: Attachment) {
-        guard let c = session.client else { return }
+        guard let c = jira?.client else { return }
         let panel = NSSavePanel()
         panel.nameFieldStringValue = a.filename
         guard panel.runModal() == .OK, let dest = panel.url else { return }
@@ -680,6 +686,7 @@ struct AttachmentTile: View {
     var onPreview: (URL) -> Void
     @Environment(Session.self) private var session
     @State private var busy = false
+    private var client: JiraClient? { session.client(for: attachment.content) }
 
     var body: some View {
         Button(action: preview) {
@@ -715,7 +722,7 @@ struct AttachmentTile: View {
     }
 
     private func preview() {
-        guard let client = session.client, !busy else { return }
+        guard let client, !busy else { return }
         busy = true
         Task {
             defer { busy = false }
@@ -770,7 +777,7 @@ struct LinkIssueView: View {
     let key: String
     let types: [LinkType]
     var onLink: (_ type: String, _ outward: String, _ inward: String) -> Void
-    @Environment(Session.self) private var session
+    @Environment(\.jira) private var jira
     @State private var relation: String = ""
     @State private var query = ""
     @State private var results: [IssuePickerResult.Item] = []
@@ -815,7 +822,7 @@ struct LinkIssueView: View {
         .onAppear { if relation.isEmpty { relation = relations.first?.id ?? "" } }
         .task(id: query) {
             try? await Task.sleep(for: .milliseconds(250))
-            guard !Task.isCancelled, let c = session.client else { return }
+            guard !Task.isCancelled, let c = jira?.client else { return }
             results = ((try? await c.pickIssues(query: query, excluding: key)) ?? []).filter { $0.key != key }
         }
     }
@@ -873,7 +880,7 @@ struct LogWorkView: View {
 struct NewIssueToolbarItem: CustomizableToolbarContent {
     @Environment(Session.self) private var session
     var body: some CustomizableToolbarContent {
-        ToolbarItem(id: "new", placement: .navigation) {
+        ToolbarItem(id: "new") {
             Button { session.createIssueRequested = true } label: { Label("New Issue", systemImage: "square.and.pencil") }
                 .help("New issue (⌘N)")
         }

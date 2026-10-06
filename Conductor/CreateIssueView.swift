@@ -1,8 +1,15 @@
 import SwiftUI
 
+struct ProjectChoice: Hashable {
+    let project: Project
+    let accountID: UUID
+}
+
 @MainActor @Observable
 final class CreateIssueModel {
-    var project: Project?
+    var choice: ProjectChoice?
+    var state: AccountState?
+    var project: Project? { choice?.project }
     var types: [IssueType] = []
     var type: IssueType?
     var fields: [CreateField] = []
@@ -77,9 +84,9 @@ final class CreateIssueModel {
 }
 
 struct CreateIssueView: View {
-    var defaultProject: Project?
+    var defaultProject: (Project, AccountState)?
     var parentKey: String?
-    var onCreated: (String) -> Void
+    var onCreated: (IssueTarget) -> Void
     @Environment(Session.self) private var session
     @Environment(\.dismiss) private var dismiss
     @State private var m = CreateIssueModel()
@@ -91,8 +98,12 @@ struct CreateIssueView: View {
             HStack {
                 Text(parentKey == nil ? "New Issue" : "New Subtask of \(parentKey!)").font(.title2.weight(.semibold))
                 Spacer()
-                Picker("Project", selection: $m.project) {
-                    ForEach(session.projects) { p in Text(p.name).tag(Optional(p)) }
+                Picker("Project", selection: $m.choice) {
+                    ForEach(session.states) { st in
+                        Section(session.states.count > 1 ? st.title : "") {
+                            ForEach(st.projects) { p in Text(p.name).tag(Optional(ProjectChoice(project: p, accountID: st.id))) }
+                        }
+                    }
                 }
                 .labelsHidden()
                 .frame(maxWidth: 260)
@@ -120,6 +131,7 @@ struct CreateIssueView: View {
 
             if m.has("description") {
                 Composer(text: $m.text, mentions: $m.mentions, placeholder: "Description", minHeight: 120)
+                    .environment(\.jira, m.state)
             }
 
             HStack(alignment: .top, spacing: 18) {
@@ -134,6 +146,7 @@ struct CreateIssueView: View {
                         .buttonStyle(.plain)
                         .popover(isPresented: $showAssign, arrowEdge: .bottom) {
                             PeoplePicker(scope: .project(m.project?.key ?? ""), current: m.assignee) { m.assignee = $0; showAssign = false }
+                                .environment(\.jira, m.state)
                         }
                     }
                 }
@@ -189,13 +202,23 @@ struct CreateIssueView: View {
         .frame(width: 640)
         .task {
             let last = UserDefaults.standard.string(forKey: "lastCreateProject")
-            m.project = defaultProject ?? session.projects.first { $0.key == last } ?? session.projects.first
+            if let (p, st) = defaultProject {
+                m.choice = ProjectChoice(project: p, accountID: st.id)
+            } else if let st = session.states.first(where: { "\($0.id)|" + ($0.projects.first { "\($0.key)" == last?.split(separator: "|").last.map(String.init) }?.key ?? "-") == last }),
+                      let p = st.projects.first(where: { "\(st.id)|\($0.key)" == last }) {
+                m.choice = ProjectChoice(project: p, accountID: st.id)
+            } else if let st = session.states.first, let p = st.projects.first {
+                m.choice = ProjectChoice(project: p, accountID: st.id)
+            }
             m.parentKey = parentKey ?? ""
-            if let c = session.client { await m.loadTypes(c) }
+            syncState()
+            if let c = m.state?.client { await m.loadTypes(c) }
         }
-        .onChange(of: m.project) { if let c = session.client { Task { await m.loadTypes(c) } } }
-        .onChange(of: m.type) { if let c = session.client { Task { await m.loadFields(c) } } }
+        .onChange(of: m.choice) { syncState(); if let c = m.state?.client { Task { await m.loadTypes(c) } } }
+        .onChange(of: m.type) { if let c = m.state?.client { Task { await m.loadFields(c) } } }
     }
+
+    private func syncState() { m.state = m.choice.flatMap { session.state($0.accountID) } }
 
     private func labeled<V: View>(_ title: String, @ViewBuilder _ content: () -> V) -> some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -212,7 +235,8 @@ struct CreateIssueView: View {
     }
 
     private func create() {
-        guard let c = session.client, m.canSubmit else { return }
+        guard let st = m.state, m.canSubmit else { return }
+        let c = st.client
         addLabel()
         m.isWorking = true
         m.error = nil
@@ -220,9 +244,9 @@ struct CreateIssueView: View {
             defer { m.isWorking = false }
             do {
                 let created = try await c.createIssue(fields: try m.payload())
-                UserDefaults.standard.set(m.project?.key, forKey: "lastCreateProject")
+                UserDefaults.standard.set("\(st.id)|\(m.project?.key ?? "")", forKey: "lastCreateProject")
                 dismiss()
-                onCreated(created.key)
+                onCreated(IssueTarget(accountID: st.id, key: created.key))
             } catch { m.error = error.localizedDescription }
         }
     }

@@ -35,7 +35,7 @@ struct RemoteImage: View {
         .task(id: url) {
             guard let url else { image = nil; return }
             if let cached = ImageCache.shared.object(forKey: url as NSURL) { image = cached; return }
-            guard let client = session.client, let data = try? await client.data(for: url), let img = NSImage(data: data) else { return }
+            guard let client = session.client(for: url), let data = try? await client.data(for: url), let img = NSImage(data: data) else { return }
             ImageCache.shared.setObject(img, forKey: url as NSURL)
             image = img
         }

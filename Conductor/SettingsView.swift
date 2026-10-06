@@ -12,10 +12,7 @@ struct SettingsView: View {
         Form {
             Section("Sidebar") {
                 Picker("Open at launch", selection: $defaultSource) {
-                    Text("Assigned to me").tag("assigned")
-                    Text("Reported by me").tag("reported")
-                    Text("Recently viewed").tag("recent")
-                    Text("Watching").tag("watching")
+                    ForEach(Smart.allCases, id: \.rawValue) { Text($0.title).tag($0.rawValue) }
                 }
                 Toggle("Hide Done issues in project lists", isOn: $hideDone)
                     .onChange(of: hideDone) { session.reloadTick += 1 }

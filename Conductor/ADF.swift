@@ -321,7 +321,7 @@ struct InlineImage: View {
         .clipShape(.rect(cornerRadius: 10))
         .task(id: attachment.id) {
             if let cached = ImageCache.shared.object(forKey: attachment.content as NSURL) { image = cached; return }
-            guard let client = session.client, let data = try? await client.data(for: attachment.content), let img = NSImage(data: data) else { return }
+            guard let client = session.client(for: attachment.content), let data = try? await client.data(for: attachment.content), let img = NSImage(data: data) else { return }
             ImageCache.shared.setObject(img, forKey: attachment.content as NSURL)
             image = img
         }

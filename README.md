@@ -16,8 +16,10 @@ two stay in sync.
 Site (`yourteam` or `yourteam.atlassian.net`), your Atlassian email, and an API token from
 <https://id.atlassian.com/manage-profile/security/api-tokens>. Credentials live in the Keychain only.
 
-Several accounts (say, personal and work Jira) can be added from the menu in the sidebar footer
-and switched there; the last used one is restored on launch.
+Several accounts (say, personal and work Jira) stay signed in at once. The sidebar shows an
+All Accounts section with unified Assigned to Me, Reported by Me, Recently Viewed and Watching
+lists, then a section per account with its own lists, favourite filters, starred projects and a
+collapsed All Projects. Right-click a section title to rename it or sign out.
 
 ## Dev shortcuts (Debug builds only)
 

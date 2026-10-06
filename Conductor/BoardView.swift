@@ -79,17 +79,20 @@ final class BoardStore {
 }
 
 struct BoardView: View {
-    let projectKey: String
+    let target: BoardTarget
     @Environment(Session.self) private var session
     @State private var store = BoardStore()
+    private var projectKey: String { target.projectKey }
+    private var state: AccountState? { session.state(target.accountID) }
 
     var body: some View {
         ScrollView(.horizontal) {
             HStack(alignment: .top, spacing: 12) {
                 ForEach(store.columns) { column in
                     BoardColumn(column: column, issues: store.issues(in: column)) { key in
-                        if let c = session.client { Task { await store.move(key, to: column, client: c) } }
+                        if let c = state?.client { Task { await store.move(key, to: column, client: c) } }
                     }
+                    .environment(\.jira, state)
                 }
             }
             .padding(16)
@@ -97,7 +100,7 @@ struct BoardView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(Backdrop())
         .overlay {
-            if store.isLoading || !session.isSignedIn, store.issues.isEmpty { ProgressView() }
+            if store.isLoading || state == nil, store.issues.isEmpty { ProgressView() }
             else if store.boards.isEmpty { ContentUnavailableView("No boards for \(projectKey)", systemImage: "rectangle.split.3x1") }
         }
         .navigationTitle(store.board?.name ?? projectKey)
@@ -119,17 +122,17 @@ struct BoardView: View {
                 }
             }
             ToolbarItem(id: "refresh") {
-                Button { if let c = session.client { Task { await store.loadIssues(c) } } } label: { Label("Refresh", systemImage: "arrow.clockwise") }
+                Button { if let c = state?.client { Task { await store.loadIssues(c) } } } label: { Label("Refresh", systemImage: "arrow.clockwise") }
                     .keyboardShortcut("r")
                     .help("Refresh (⌘R)")
             }
         }
-        // Re-runs when the account changes or once sign-in completes after a restored launch.
-        .task(id: "\(projectKey)|\(session.active?.id.uuidString ?? "")") {
-            if let c = session.client { await store.load(c, project: projectKey) }
+        // Re-runs once sign-in completes after a restored launch.
+        .task(id: "\(projectKey)|\(state?.id.uuidString ?? "")") {
+            if let c = state?.client { await store.load(c, project: projectKey) }
         }
-        .onChange(of: store.board) { if let c = session.client { Task { await store.loadBoard(c) } } }
-        .onChange(of: store.sprint) { if let c = session.client { Task { await store.loadIssues(c) } } }
+        .onChange(of: store.board) { if let c = state?.client { Task { await store.loadBoard(c) } } }
+        .onChange(of: store.sprint) { if let c = state?.client { Task { await store.loadIssues(c) } } }
         .errorAlert($store.error)
         .frame(minWidth: 700, minHeight: 400)
     }
@@ -147,6 +150,7 @@ struct BoardColumn: View {
     let issues: [Issue]
     var onDrop: (String) -> Void
     @Environment(Session.self) private var session
+    @Environment(\.jira) private var jira
     @State private var targeted = false
 
     var body: some View {
@@ -167,7 +171,7 @@ struct BoardColumn: View {
                             .contextMenu {
                                 Button("Open in Conductor", systemImage: "arrow.up.forward.app") { open(issue.key) }
                                 Button("Open in Browser", systemImage: "safari") {
-                                    if let u = session.client?.browseURL(issue.key) { NSWorkspace.shared.open(u) }
+                                    if let u = jira?.client.browseURL(issue.key) { NSWorkspace.shared.open(u) }
                                 }
                             }
                     }
@@ -190,7 +194,8 @@ struct BoardColumn: View {
     }
 
     private func open(_ key: String) {
-        session.pendingOpen = key
+        guard let jira else { return }
+        session.pendingOpen = IssueTarget(accountID: jira.id, key: key)
         NSApp.windows.first { $0.identifier?.rawValue.hasPrefix("main") == true }?.makeKeyAndOrderFront(nil)
     }
 }

@@ -35,7 +35,7 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         guard enabled, let session, session.isSignedIn else { return }
         let granted = (try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge])) ?? false
         guard granted else { return }
-        for account in session.accounts.isEmpty ? [session.active].compactMap({ $0 }) : session.accounts {
+        for account in session.accounts {
             await poll(account)
         }
     }

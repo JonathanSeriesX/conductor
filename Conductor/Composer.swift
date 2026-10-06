@@ -9,7 +9,7 @@ struct Composer: View {
     var minHeight: CGFloat = 60
     var maxHeight: CGFloat = 260
     var showHint = true
-    @Environment(Session.self) private var session
+    @Environment(\.jira) private var jira
     @State private var candidates: [JiraUser] = []
     @State private var query = ""
 
@@ -57,7 +57,7 @@ struct Composer: View {
             else { query = ""; candidates = [] }
         }
         .task(id: query) {
-            guard !query.isEmpty, let c = session.client else { return }
+            guard !query.isEmpty, let c = jira?.client else { return }
             try? await Task.sleep(for: .milliseconds(200))
             guard !Task.isCancelled else { return }
             let found = (try? await c.users(matching: query)) ?? []
@@ -126,7 +126,7 @@ struct PeoplePicker: View {
     let scope: Scope
     let current: JiraUser?
     var onPick: (JiraUser?) -> Void
-    @Environment(Session.self) private var session
+    @Environment(\.jira) private var jira
     @State private var query = ""
     @State private var users: [JiraUser] = []
 
@@ -134,7 +134,7 @@ struct PeoplePicker: View {
         VStack(spacing: 8) {
             TextField("Search people", text: $query).textFieldStyle(.roundedBorder)
             List {
-                if let me = session.me, me.accountId != current?.accountId {
+                if let me = jira?.me, me.accountId != current?.accountId {
                     Button { onPick(me) } label: { Label("Assign to me", systemImage: "person.fill.checkmark") }
                 }
                 if current != nil {
@@ -154,7 +154,7 @@ struct PeoplePicker: View {
         .frame(width: 280, height: 320)
         .task(id: query) {
             try? await Task.sleep(for: .milliseconds(250))
-            guard !Task.isCancelled, let c = session.client else { return }
+            guard !Task.isCancelled, let c = jira?.client else { return }
             switch scope {
             case .issue(let key): users = (try? await c.assignableUsers(key, query: query)) ?? []
             case .project(let key): users = (try? await c.assignableUsers(project: key, query: query)) ?? []
