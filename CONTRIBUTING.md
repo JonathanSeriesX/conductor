@@ -36,11 +36,13 @@ Environment variables honoured by Debug builds, handy in the scheme's Run argume
 | `CONDUCTOR_SCROLL=comments` | Scroll the opened issue to its comments |
 | `CONDUCTOR_SHOW=create` / `addAccount` / `settings` / `board:KEY` | Open that sheet or window at launch |
 
-From a shell, launch through LaunchServices so the app gets its icon and bundle identity:
+From a shell, launch through LaunchServices so the app gets its icon and bundle identity. Keep the account in a git-ignored `.dev.env` (`CONDUCTOR_SITE=…`, `CONDUCTOR_EMAIL=…`, `CONDUCTOR_TOKEN=…`, one per line) and pass every line along:
 
 ```bash
-open -a build/Build/Products/Debug/Conductor.app --env CONDUCTOR_SITE=… --env CONDUCTOR_EMAIL=… --env CONDUCTOR_TOKEN=…
+open -n build/Build/Products/Debug/Conductor.app $(sed 's/^/--env /' .dev.env | tr '\n' ' ')
 ```
+
+`xcodebuild test` asks for an admin password on every run while Developer Mode is off; `sudo DevToolsSecurity -enable` turns it on once.
 
 ## Tests
 

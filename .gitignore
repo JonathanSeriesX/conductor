@@ -4,3 +4,4 @@ xcuserdata/
 *.xcodeproj/project.xcworkspace/xcuserdata/
 .DS_Store
 build-tests/
+.dev.env
