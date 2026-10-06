@@ -506,7 +506,7 @@ struct IssueDetailView: View {
                 }
             }
             Divider()
-            HStack(alignment: .top, spacing: 10) {
+            HStack(alignment: .top, spacing: 18) { // room for the Writing Tools badge macOS pins to the editor's edge
                 Avatar(user: session.me, size: 26).padding(.top, 8)
                 Composer(text: $commentDraft, mentions: $commentMentions, placeholder: "Add a comment…  ⌘↩ to send", minHeight: 44)
                 Button("Comment") { postComment() }
@@ -521,20 +521,23 @@ struct IssueDetailView: View {
     // MARK: Toolbar
 
     @ToolbarContentBuilder private var toolbar: some CustomizableToolbarContent {
-        ToolbarItem(id: "refresh") {
+        NewIssueToolbarItem()
+        ToolbarItem(id: "refresh", placement: .principal) {
             Button { if let c = session.client { Task { await store.load(c, key: key) } } } label: { Label("Refresh", systemImage: "arrow.clockwise") }
                 .keyboardShortcut("r", modifiers: [.command, .shift])
+                .help("Refresh (⌘⇧R)")
         }
-        ToolbarItem(id: "attach") {
+        ToolbarItem(id: "attach", placement: .principal) {
             Button { attachFiles() } label: { Label("Attach Files", systemImage: "paperclip") }
-                .help("Attach files (or drop them anywhere, or paste an image)")
+                .help("Attach files. You can also drop them anywhere or paste an image.")
         }
-        ToolbarItem(id: "more") {
+        ToolbarItem(id: "more", placement: .principal) {
             Menu {
                 Button("Create Subtask…", systemImage: "plus.square.on.square") { showCreateSubtask = true }
                 Button("Link Issue…", systemImage: "link") { showLink = true }
                 Button("Log Work…", systemImage: "clock") { showLogWork = true }
             } label: { Label("More", systemImage: "ellipsis.circle") }
+            .help("Subtask, link, log work")
             .popover(isPresented: $showLink, arrowEdge: .bottom) {
                 LinkIssueView(key: key, types: store.linkTypes) { type, outward, inward in
                     showLink = false
@@ -548,19 +551,21 @@ struct IssueDetailView: View {
                 }
             }
         }
-        ToolbarItem(id: "copy") {
+        ToolbarItem(id: "copy", placement: .principal) {
             Button {
                 let url = session.client?.browseURL(key)
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(url?.absoluteString ?? key, forType: .string)
             } label: { Label("Copy Link", systemImage: "link") }
             .keyboardShortcut("c", modifiers: [.command, .shift])
+            .help("Copy link (⌘⇧C)")
         }
-        ToolbarItem(id: "browser") {
+        ToolbarItem(id: "browser", placement: .principal) {
             Button {
                 if let url = session.client?.browseURL(key) { NSWorkspace.shared.open(url) }
             } label: { Label("Open in Browser", systemImage: "safari") }
             .keyboardShortcut("o", modifiers: [.command, .shift])
+            .help("Open in browser (⌘⇧O)")
         }
     }
 
@@ -861,5 +866,16 @@ struct LogWorkView: View {
         }
         let leftovers = t.replacing(/(\d+(?:\.\d+)?)\s*[wdhm]/, with: "").trimmingCharacters(in: .whitespaces)
         return matched && leftovers.isEmpty && total > 0 ? Int(total) : nil
+    }
+}
+
+/// Leading "New Issue" button shared by the issue page and the empty detail pane.
+struct NewIssueToolbarItem: CustomizableToolbarContent {
+    @Environment(Session.self) private var session
+    var body: some CustomizableToolbarContent {
+        ToolbarItem(id: "new", placement: .navigation) {
+            Button { session.createIssueRequested = true } label: { Label("New Issue", systemImage: "square.and.pencil") }
+                .help("New issue (⌘N)")
+        }
     }
 }

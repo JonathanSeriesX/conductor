@@ -99,6 +99,7 @@ struct RootView: View {
                         ContentUnavailableView("Select an issue", systemImage: "ticket")
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                             .background(Backdrop())
+                            .toolbar(id: "issue") { NewIssueToolbarItem() }
                     }
                 }
                 .id(session.active?.id) // different site, different projects: start the navigation over

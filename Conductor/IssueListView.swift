@@ -130,32 +130,39 @@ struct IssueListView: View {
 
     // MARK: Chips
 
+    @State private var openChip: String?
+
     private var chips: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-        HStack(spacing: 6) {
-            Picker("Status", selection: $filters.status) {
-                ForEach(ListFilters.Status.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+            HStack(spacing: 6) {
+                FilterChip(id: "status", title: filters.status.rawValue, active: filters.status != .any, open: $openChip) {
+                    ForEach(ListFilters.Status.allCases, id: \.self) { s in
+                        ChipOption(title: s.rawValue, selected: filters.status == s) { filters.status = s }
+                    }
+                }
+                FilterChip(id: "assignee", title: filters.assignee.rawValue, active: filters.assignee != .any, open: $openChip) {
+                    ForEach(ListFilters.Assignee.allCases, id: \.self) { a in
+                        ChipOption(title: a.rawValue, selected: filters.assignee == a) { filters.assignee = a }
+                    }
+                }
+                FilterChip(id: "type", title: filters.type ?? "Any type", active: filters.type != nil, open: $openChip) {
+                    ChipOption(title: "Any type", selected: filters.type == nil) { filters.type = nil }
+                    Divider()
+                    ForEach(session.issueTypeNames, id: \.self) { t in
+                        ChipOption(title: t, selected: filters.type == t) { filters.type = t }
+                    }
+                }
+                FilterChip(id: "updated", title: filters.updated.rawValue, active: filters.updated != .any, open: $openChip) {
+                    ForEach(ListFilters.Updated.allCases, id: \.self) { u in
+                        ChipOption(title: u.rawValue, selected: filters.updated == u) { filters.updated = u }
+                    }
+                }
+                if filters.isActive {
+                    Button { filters = ListFilters() } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }
+                        .buttonStyle(.plain).help("Clear filters")
+                }
             }
-            Picker("Assignee", selection: $filters.assignee) {
-                ForEach(ListFilters.Assignee.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-            }
-            Picker("Type", selection: $filters.type) {
-                Text("Any type").tag(String?.none)
-                Divider()
-                ForEach(session.issueTypeNames, id: \.self) { Text($0).tag(Optional($0)) }
-            }
-            Picker("Updated", selection: $filters.updated) {
-                ForEach(ListFilters.Updated.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-            }
-            if filters.isActive {
-                Button { filters = ListFilters() } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }
-                    .buttonStyle(.plain).help("Clear filters")
-            }
-        }
-        .fixedSize()
-        .labelsHidden()
-        .controlSize(.small)
-        .padding(.horizontal, 10).padding(.vertical, 7)
+            .padding(.horizontal, 10).padding(.vertical, 8)
         }
         .background(.bar)
         .overlay(alignment: .bottom) { Divider() }
@@ -230,5 +237,59 @@ struct IssueRow: View {
             }
         }
         .padding(.vertical, 4)
+    }
+}
+
+/// A capsule that opens its options in a popover. While one chip is open, clicking or hovering
+/// another chip switches to it straight away, like menus in a menu bar.
+struct FilterChip<Options: View>: View {
+    let id: String
+    let title: String
+    let active: Bool
+    @Binding var open: String?
+    @ViewBuilder let options: () -> Options
+
+    var body: some View {
+        Button { open = open == id ? nil : id } label: {
+            HStack(spacing: 3) {
+                Text(title).lineLimit(1)
+                Image(systemName: "chevron.down").font(.system(size: 8, weight: .bold))
+            }
+            .font(.caption.weight(.medium))
+            .padding(.horizontal, 8).padding(.vertical, 4)
+            .foregroundStyle(active ? Color.white : .primary)
+            .background(active ? Color.accentColor : Color.primary.opacity(0.07), in: .capsule)
+            .contentShape(.capsule)
+        }
+        .buttonStyle(.plain)
+        .onHover { inside in if inside, open != nil, open != id { open = id } }
+        .popover(isPresented: Binding(get: { open == id }, set: { open = $0 ? id : nil }), arrowEdge: .bottom) {
+            VStack(alignment: .leading, spacing: 1) { options() }
+                .padding(5)
+                .frame(minWidth: 170)
+        }
+    }
+}
+
+struct ChipOption: View {
+    let title: String
+    let selected: Bool
+    let action: () -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var hovering = false
+
+    var body: some View {
+        Button { action(); dismiss() } label: {
+            HStack {
+                Text(title)
+                Spacer()
+                if selected { Image(systemName: "checkmark").font(.caption.weight(.bold)) }
+            }
+            .padding(.horizontal, 8).padding(.vertical, 5)
+            .background(hovering ? Color.accentColor.opacity(0.15) : .clear, in: .rect(cornerRadius: 6))
+            .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
     }
 }

@@ -121,6 +121,7 @@ struct BoardView: View {
             ToolbarItem(id: "refresh") {
                 Button { if let c = session.client { Task { await store.loadIssues(c) } } } label: { Label("Refresh", systemImage: "arrow.clockwise") }
                     .keyboardShortcut("r")
+                    .help("Refresh (⌘R)")
             }
         }
         // Re-runs when the account changes or once sign-in completes after a restored launch.
