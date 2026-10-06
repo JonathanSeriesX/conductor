@@ -45,21 +45,22 @@ struct JiraClient: Sendable {
     var sprintField: String?
 
     private var api: URL { account.site.appending(path: "rest/api/3") }
+    private var agile: URL { account.site.appending(path: "rest/agile/1.0") }
     private var authHeader: String {
         "Basic " + Data("\(account.email):\(account.token)".utf8).base64EncodedString()
     }
 
     static let listFields = "summary,status,assignee,priority,issuetype,updated,project"
     var detailFields: String {
-        var f = "summary,description,status,assignee,reporter,priority,issuetype,labels,created,updated,comment,attachment,project,parent,subtasks"
+        var f = "summary,description,status,assignee,reporter,priority,issuetype,labels,created,updated,comment,attachment,project,parent,subtasks,issuelinks,worklog,timetracking,watches"
         if let sprintField { f += "," + sprintField }
         return f
     }
 
     // MARK: Requests
 
-    private func request(_ path: String, query: [String: String] = [:], method: String = "GET", body: (any Encodable)? = nil) async throws -> Data {
-        var comps = URLComponents(url: api.appending(path: path), resolvingAgainstBaseURL: false)!
+    private func request(_ path: String, query: [String: String] = [:], method: String = "GET", body: (any Encodable)? = nil, base: URL? = nil) async throws -> Data {
+        var comps = URLComponents(url: (base ?? api).appending(path: path), resolvingAgainstBaseURL: false)!
         if !query.isEmpty { comps.queryItems = query.map { URLQueryItem(name: $0.key, value: $0.value) } }
         var req = URLRequest(url: comps.url!)
         req.httpMethod = method
@@ -75,8 +76,12 @@ struct JiraClient: Sendable {
         return data
     }
 
-    private func get<T: Decodable>(_ path: String, query: [String: String] = [:]) async throws -> T {
-        try decoder.decode(T.self, from: try await request(path, query: query))
+    private func get<T: Decodable>(_ path: String, query: [String: String] = [:], base: URL? = nil) async throws -> T {
+        try decoder.decode(T.self, from: try await request(path, query: query, base: base))
+    }
+
+    private func send<T: Decodable>(_ path: String, method: String, body: some Encodable) async throws -> T {
+        try decoder.decode(T.self, from: try await request(path, method: method, body: body))
     }
 
     var decoder: JSONDecoder {
@@ -168,8 +173,164 @@ struct JiraClient: Sendable {
         _ = try await request("issue/\(key)/comment", method: "POST", body: Body(body: .document(text: text)))
     }
 
+    func addComment(_ key: String, body: ADFNode) async throws {
+        struct Body: Encodable { let body: ADFNode }
+        _ = try await request("issue/\(key)/comment", method: "POST", body: Body(body: body))
+    }
+
+    func updateComment(_ key: String, id: String, body: ADFNode) async throws {
+        struct Body: Encodable { let body: ADFNode }
+        _ = try await request("issue/\(key)/comment/\(id)", method: "PUT", body: Body(body: body))
+    }
+
     func deleteComment(_ key: String, id: String) async throws {
         _ = try await request("issue/\(key)/comment/\(id)", method: "DELETE")
+    }
+
+    /// People search for @mentions; falls back to assignable users when the site hides the directory.
+    func users(matching query: String) async throws -> [JiraUser] {
+        try await get("user/search", query: ["query": query, "maxResults": "8"])
+    }
+
+    func assignableUsers(project: String, query: String) async throws -> [JiraUser] {
+        try await get("user/assignable/search", query: ["project": project, "query": query, "maxResults": "20"])
+    }
+
+    // MARK: Create & edit
+
+    func createIssueTypes(project: String) async throws -> [IssueType] {
+        let m: CreateMetaTypes = try await get("issue/createmeta/\(project)/issuetypes", query: ["maxResults": "50"])
+        return m.issueTypes
+    }
+
+    func createFields(project: String, issueType: String) async throws -> [CreateField] {
+        let m: CreateMetaFields = try await get("issue/createmeta/\(project)/issuetypes/\(issueType)", query: ["maxResults": "200"])
+        return m.fields
+    }
+
+    func createIssue(fields: [String: JSONValue]) async throws -> CreatedIssue {
+        struct Body: Encodable { let fields: [String: JSONValue] }
+        return try await send("issue", method: "POST", body: Body(fields: fields))
+    }
+
+    func editMeta(_ key: String) async throws -> EditMeta { try await get("issue/\(key)/editmeta") }
+
+    func editIssue(_ key: String, fields: [String: JSONValue]) async throws {
+        struct Body: Encodable { let fields: [String: JSONValue] }
+        _ = try await request("issue/\(key)", method: "PUT", body: Body(fields: fields))
+    }
+
+    func priorities() async throws -> [Priority] { try await get("priority") }
+
+    func issueTypes() async throws -> [IssueType] { try await get("issuetype") }
+
+    // MARK: Attachments
+
+    func uploadAttachment(_ key: String, data: Data, filename: String) async throws {
+        let boundary = "conductor-\(UUID().uuidString)"
+        var req = URLRequest(url: api.appending(path: "issue/\(key)/attachments"))
+        req.httpMethod = "POST"
+        req.setValue(authHeader, forHTTPHeaderField: "Authorization")
+        req.setValue("no-check", forHTTPHeaderField: "X-Atlassian-Token")
+        req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        let safeName = filename.replacingOccurrences(of: "\"", with: "_")
+        var body = Data()
+        body.append("--\(boundary)\r\nContent-Disposition: form-data; name=\"file\"; filename=\"\(safeName)\"\r\nContent-Type: application/octet-stream\r\n\r\n".data(using: .utf8)!)
+        body.append(data)
+        body.append("\r\n--\(boundary)--\r\n".data(using: .utf8)!)
+        req.httpBody = body
+        let (resp, http) = try await URLSession.shared.data(for: req)
+        let status = (http as? HTTPURLResponse)?.statusCode ?? 0
+        guard (200..<300).contains(status) else { throw JiraError(status: status, data: resp) }
+    }
+
+    func deleteAttachment(id: String) async throws {
+        _ = try await request("attachment/\(id)", method: "DELETE")
+    }
+
+    // MARK: Links & relations
+
+    func linkTypes() async throws -> [LinkType] {
+        let l: LinkTypeList = try await get("issueLinkType")
+        return l.issueLinkTypes
+    }
+
+    func link(type: String, outward: String, inward: String) async throws {
+        struct Ref: Encodable { let key: String }
+        struct T: Encodable { let name: String }
+        struct Body: Encodable { let type: T; let inwardIssue: Ref; let outwardIssue: Ref }
+        _ = try await request("issueLink", method: "POST", body: Body(type: T(name: type), inwardIssue: Ref(key: inward), outwardIssue: Ref(key: outward)))
+    }
+
+    func deleteLink(id: String) async throws {
+        _ = try await request("issueLink/\(id)", method: "DELETE")
+    }
+
+    func pickIssues(query: String, excluding key: String? = nil) async throws -> [IssuePickerResult.Item] {
+        var q = ["query": query, "showSubTasks": "true"]
+        if let key { q["currentIssueKey"] = key }
+        let r: IssuePickerResult = try await get("issue/picker", query: q)
+        return r.items
+    }
+
+    // MARK: Worklogs & watching
+
+    func addWorklog(_ key: String, seconds: Int, comment: ADFNode?, started: Date) async throws {
+        struct Body: Encodable { let timeSpentSeconds: Int; let comment: ADFNode?; let started: String }
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "yyyy-MM-dd'T'HH:mm:ss.SSSZ"
+        _ = try await request("issue/\(key)/worklog", method: "POST", body: Body(timeSpentSeconds: seconds, comment: comment, started: f.string(from: started)))
+    }
+
+    func deleteWorklog(_ key: String, id: String) async throws {
+        _ = try await request("issue/\(key)/worklog/\(id)", method: "DELETE")
+    }
+
+    func watch(_ key: String, _ on: Bool) async throws {
+        if on {
+            struct Body: Encodable { let accountId: String }
+            let me = try await myself()
+            _ = try await request("issue/\(key)/watchers", method: "POST", body: Body(accountId: me.accountId))
+        } else {
+            let me = try await myself()
+            _ = try await request("issue/\(key)/watchers", query: ["accountId": me.accountId], method: "DELETE")
+        }
+    }
+
+    // MARK: Boards (Agile API)
+
+    func boards(project: String) async throws -> [Board] {
+        let p: BoardPage = try await get("board", query: ["projectKeyOrId": project, "maxResults": "50"], base: agile)
+        return p.values
+    }
+
+    func boardConfiguration(_ id: Int) async throws -> BoardConfiguration {
+        try await get("board/\(id)/configuration", base: agile)
+    }
+
+    func sprints(board: Int, states: String = "active,future") async throws -> [Sprint] {
+        let p: SprintPage = try await get("board/\(board)/sprint", query: ["state": states, "maxResults": "50"], base: agile)
+        return p.values
+    }
+
+    func boardIssues(_ id: Int, sprint: Int?, startAt: Int = 0) async throws -> AgileIssuePage {
+        let path = sprint.map { "board/\(id)/sprint/\($0)/issue" } ?? "board/\(id)/issue"
+        return try await get(path, query: ["maxResults": "100", "startAt": "\(startAt)", "fields": Self.listFields], base: agile)
+    }
+
+    // MARK: Filters & JQL assist
+
+    func createFilter(name: String, jql: String) async throws -> Filter {
+        struct Body: Encodable { let name: String; let jql: String; let favourite: Bool }
+        return try await send("filter", method: "POST", body: Body(name: name, jql: jql, favourite: true))
+    }
+
+    func jqlAutocomplete() async throws -> JQLAutocomplete { try await get("jql/autocompletedata") }
+
+    func jqlSuggestions(field: String, value: String) async throws -> [JQLSuggestions.Result] {
+        let s: JQLSuggestions = try await get("jql/autocompletedata/suggestions", query: ["fieldName": field, "fieldValue": value])
+        return s.results
     }
 
     func browseURL(_ key: String) -> URL { account.site.appending(path: "browse/\(key)") }

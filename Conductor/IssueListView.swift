@@ -76,7 +76,6 @@ struct IssueListView: View {
             guard !Task.isCancelled, let c = session.client else { return }
             await store.load(c, jql: jql)
         }
-        .refreshable { if let c = session.client { await store.load(c, jql: jql) } }
         .errorAlert($store.error)
     }
 }

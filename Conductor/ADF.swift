@@ -163,7 +163,7 @@ struct ADFBlock: View {
         case "paragraph":
             Text(node.inlineAttributed()).fixedSize(horizontal: false, vertical: true)
         case "heading":
-            Text(node.inlineAttributed()).font(headingFont).padding(.top, 4)
+            Text(node.inlineAttributed()).font(headingFont).padding(.top, 4).fixedSize(horizontal: false, vertical: true)
         case "bulletList":
             list(ordered: false)
         case "orderedList":
@@ -222,7 +222,7 @@ struct ADFBlock: View {
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
                         Image(systemName: item.attr("state") == "DONE" ? "checkmark.circle.fill" : "circle")
                             .foregroundStyle(item.attr("state") == "DONE" ? .green : .secondary)
-                        Text(item.inlineAttributed())
+                        Text(item.inlineAttributed()).fixedSize(horizontal: false, vertical: true)
                     }
                 }
             }

@@ -43,18 +43,22 @@ struct Priority: Codable, Hashable, Sendable {
     let iconUrl: URL?
 }
 
-struct IssueType: Codable, Hashable, Sendable {
+struct IssueType: Codable, Hashable, Sendable, Identifiable {
     let id: String
     let name: String
     let iconUrl: URL?
-    let subtask: Bool
+    let subtask: Bool?
+    var isSubtask: Bool { subtask == true }
 }
 
 struct Sprint: Codable, Hashable, Sendable, Identifiable {
     let id: Int
     let name: String
     let state: String
+    let originBoardId: Int?
 }
+
+struct SprintPage: Codable, Sendable { let values: [Sprint]; let isLast: Bool? }
 
 struct Attachment: Codable, Hashable, Sendable, Identifiable {
     let id: String
@@ -108,6 +112,10 @@ struct Issue: Codable, Hashable, Sendable, Identifiable {
         let subtasks: [IssueRef]?
         let comment: CommentPage?
         let attachment: [Attachment]?
+        let issuelinks: [IssueLink]?
+        let worklog: WorklogPage?
+        let timetracking: TimeTracking?
+        let watches: Watches?
     }
 
     let id: String
@@ -178,4 +186,144 @@ struct AnyKey: CodingKey {
 
 extension CodingUserInfoKey {
     static let sprintField = CodingUserInfoKey(rawValue: "sprintField")!
+}
+
+// MARK: - Links, worklogs, watchers
+
+struct LinkType: Codable, Hashable, Sendable, Identifiable {
+    let id: String
+    let name: String
+    let inward: String
+    let outward: String
+}
+
+struct LinkTypeList: Codable, Sendable { let issueLinkTypes: [LinkType] }
+
+struct IssueLink: Codable, Hashable, Sendable, Identifiable {
+    let id: String
+    let type: LinkType
+    let inwardIssue: IssueRef?
+    let outwardIssue: IssueRef?
+
+    /// The issue on the other end plus the wording that describes it from this issue's point of view.
+    var other: IssueRef? { outwardIssue ?? inwardIssue }
+    var relation: String { outwardIssue != nil ? type.outward : type.inward }
+}
+
+struct Worklog: Codable, Hashable, Sendable, Identifiable {
+    let id: String
+    let author: JiraUser?
+    let comment: ADFNode?
+    let started: Date
+    let timeSpent: String
+    let timeSpentSeconds: Int
+}
+
+struct WorklogPage: Codable, Hashable, Sendable { let worklogs: [Worklog]; let total: Int }
+
+struct TimeTracking: Codable, Hashable, Sendable {
+    let originalEstimate: String?
+    let remainingEstimate: String?
+    let timeSpent: String?
+    let originalEstimateSeconds: Int?
+    let remainingEstimateSeconds: Int?
+    let timeSpentSeconds: Int?
+}
+
+struct Watches: Codable, Hashable, Sendable { let watchCount: Int; let isWatching: Bool }
+
+// MARK: - Create / edit metadata
+
+struct FieldSchema: Codable, Hashable, Sendable {
+    let type: String
+    let items: String?
+    let custom: String?
+}
+
+struct CreateField: Codable, Hashable, Sendable, Identifiable {
+    var id: String { fieldId }
+    let fieldId: String
+    let name: String
+    let required: Bool
+    let schema: FieldSchema
+    let allowedValues: [JSONValue]?
+}
+
+struct CreateMetaTypes: Codable, Sendable { let issueTypes: [IssueType] }
+struct CreateMetaFields: Codable, Sendable { let fields: [CreateField] }
+
+struct EditField: Codable, Hashable, Sendable {
+    let name: String
+    let operations: [String]
+    let schema: FieldSchema
+    let allowedValues: [JSONValue]?
+}
+
+struct EditMeta: Codable, Sendable { let fields: [String: EditField] }
+
+struct CreatedIssue: Codable, Sendable { let id: String; let key: String }
+
+struct IssuePickerResult: Codable, Sendable {
+    struct Section: Codable, Sendable { let issues: [Item] }
+    struct Item: Codable, Hashable, Sendable, Identifiable {
+        var id: String { key }
+        let key: String
+        let summaryText: String?
+    }
+    let sections: [Section]
+    var items: [Item] {
+        var seen = Set<String>()
+        return sections.flatMap(\.issues).filter { seen.insert($0.key).inserted }
+    }
+}
+
+// MARK: - Boards
+
+struct Board: Codable, Hashable, Sendable, Identifiable {
+    let id: Int
+    let name: String
+    let type: String   // scrum | kanban | simple
+}
+
+struct BoardPage: Codable, Sendable { let values: [Board]; let isLast: Bool? }
+
+struct BoardConfiguration: Codable, Sendable {
+    struct Column: Codable, Hashable, Sendable, Identifiable {
+        struct StatusRef: Codable, Hashable, Sendable { let id: String }
+        var id: String { name + statuses.map(\.id).joined() }
+        let name: String
+        let statuses: [StatusRef]
+    }
+    struct ColumnConfig: Codable, Sendable { let columns: [Column] }
+    let type: String
+    let columnConfig: ColumnConfig
+}
+
+struct AgileIssuePage: Codable, Sendable {
+    let issues: [Issue]
+    let total: Int
+    let startAt: Int
+    let maxResults: Int
+}
+
+// MARK: - JQL assist
+
+struct JQLAutocomplete: Codable, Sendable {
+    struct Field: Codable, Sendable { let value: String; let displayName: String; let operators: [String]?; let auto: String? }
+    struct Function: Codable, Sendable { let value: String; let displayName: String }
+    let visibleFieldNames: [Field]
+    let visibleFunctionNames: [Function]
+}
+
+struct JQLSuggestions: Codable, Sendable {
+    struct Result: Codable, Sendable { let value: String; let displayName: String }
+    let results: [Result]
+}
+
+extension JSONValue {
+    /// Any Encodable (e.g. an ADF document) as a JSON value, for mixed field payloads.
+    init(_ value: some Encodable) throws {
+        self = try JSONDecoder().decode(JSONValue.self, from: JSONEncoder().encode(value))
+    }
+    var object: [String: JSONValue]? { if case .object(let o) = self { return o }; return nil }
 }

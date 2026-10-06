@@ -14,9 +14,12 @@
 		585C5853464D12C5526D40A2 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8DB7A3B9A271A00BF4756E4E /* Models.swift */; };
 		66AFCF6D1EC169D93BA9753A /* ADF.swift in Sources */ = {isa = PBXBuildFile; fileRef = C95F84CF49AB04DC4D7CAF67 /* ADF.swift */; };
 		76A9311A5D058879C128B031 /* IssueListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5053C19BB732A6216DFB314 /* IssueListView.swift */; };
+		9E2F7A3A2999B0465B02227D /* Composer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 64A370ABEDA85F1D80C87CC1 /* Composer.swift */; };
+		AB5DA4824EB12873EBFCFF88 /* CreateIssueView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7F99CD4B3FFF216DCD114CA3 /* CreateIssueView.swift */; };
 		BA0EE1C8E62951D2F6F2888A /* SidebarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C7C95BB3217B54AB8E5C42D /* SidebarView.swift */; };
 		BB6870EF82D39B976CC71004 /* Session.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F50480EA57B3B44DC187F40 /* Session.swift */; };
 		D0E619E671187CAF6FB11B48 /* Components.swift in Sources */ = {isa = PBXBuildFile; fileRef = A32C4B21F0DF41B00390C3A0 /* Components.swift */; };
+		EAE506613441C9022B472BD0 /* ADFMarkdown.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3E784D3E21F87E193F9AEC9A /* ADFMarkdown.swift */; };
 		F30762FB07FD7CD6B4C8E30B /* IssueDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E4DEA254C7CFF930F6E6C347 /* IssueDetailView.swift */; };
 /* End PBXBuildFile section */
 
@@ -34,11 +37,14 @@
 		2FD033008CD2225DC1DA57D6 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		31CFF25D2D75668F493102AB /* Conductor.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Conductor.entitlements; sourceTree = "<group>"; };
 		33E8C10033A716B98F10ECB9 /* Conductor.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Conductor.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		3E784D3E21F87E193F9AEC9A /* ADFMarkdown.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ADFMarkdown.swift; sourceTree = "<group>"; };
 		50FFC2675F34627ECB4EF79F /* ConductorApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConductorApp.swift; sourceTree = "<group>"; };
 		5FD513BEA49886EA8EE39E9B /* ConductorTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ConductorTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		64A370ABEDA85F1D80C87CC1 /* Composer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Composer.swift; sourceTree = "<group>"; };
 		67F97E045D86B66441506677 /* JiraClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JiraClient.swift; sourceTree = "<group>"; };
 		7C57F3235ED75AE74B3CB3F6 /* ConductorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConductorTests.swift; sourceTree = "<group>"; };
 		7C7C95BB3217B54AB8E5C42D /* SidebarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarView.swift; sourceTree = "<group>"; };
+		7F99CD4B3FFF216DCD114CA3 /* CreateIssueView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CreateIssueView.swift; sourceTree = "<group>"; };
 		8DB7A3B9A271A00BF4756E4E /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 		9F50480EA57B3B44DC187F40 /* Session.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Session.swift; sourceTree = "<group>"; };
 		A32C4B21F0DF41B00390C3A0 /* Components.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Components.swift; sourceTree = "<group>"; };
@@ -62,9 +68,12 @@
 			isa = PBXGroup;
 			children = (
 				C95F84CF49AB04DC4D7CAF67 /* ADF.swift */,
+				3E784D3E21F87E193F9AEC9A /* ADFMarkdown.swift */,
 				A32C4B21F0DF41B00390C3A0 /* Components.swift */,
+				64A370ABEDA85F1D80C87CC1 /* Composer.swift */,
 				31CFF25D2D75668F493102AB /* Conductor.entitlements */,
 				50FFC2675F34627ECB4EF79F /* ConductorApp.swift */,
+				7F99CD4B3FFF216DCD114CA3 /* CreateIssueView.swift */,
 				2FD033008CD2225DC1DA57D6 /* Info.plist */,
 				E4DEA254C7CFF930F6E6C347 /* IssueDetailView.swift */,
 				A5053C19BB732A6216DFB314 /* IssueListView.swift */,
@@ -177,8 +186,11 @@
 			buildActionMask = 2147483647;
 			files = (
 				66AFCF6D1EC169D93BA9753A /* ADF.swift in Sources */,
+				EAE506613441C9022B472BD0 /* ADFMarkdown.swift in Sources */,
 				D0E619E671187CAF6FB11B48 /* Components.swift in Sources */,
+				9E2F7A3A2999B0465B02227D /* Composer.swift in Sources */,
 				19AE737E4EC1DE2A22F42975 /* ConductorApp.swift in Sources */,
+				AB5DA4824EB12873EBFCFF88 /* CreateIssueView.swift in Sources */,
 				F30762FB07FD7CD6B4C8E30B /* IssueDetailView.swift in Sources */,
 				76A9311A5D058879C128B031 /* IssueListView.swift in Sources */,
 				561F42A04A5B7954CEBB5977 /* JiraClient.swift in Sources */,

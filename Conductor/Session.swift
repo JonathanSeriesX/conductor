@@ -13,6 +13,8 @@ final class Session {
     private(set) var starred: Set<String> = []
     var isBusy = false
     private(set) var isRestoring = true
+    /// Set by the ⌘N menu command; the root view presents the sheet.
+    var createIssueRequested = false
 
     var isSignedIn: Bool { client != nil }
 

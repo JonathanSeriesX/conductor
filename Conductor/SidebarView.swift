@@ -112,7 +112,11 @@ struct SidebarView: View {
         }
         .sheet(isPresented: $showAddAccount) { LoginView(isSheet: true) }
         #if DEBUG
-        .onAppear { if ProcessInfo.processInfo.environment["CONDUCTOR_SHOW"] == "addAccount" { showAddAccount = true } }
+        .task {
+            guard ProcessInfo.processInfo.environment["CONDUCTOR_SHOW"] == "addAccount" else { return }
+            try? await Task.sleep(for: .seconds(1))
+            showAddAccount = true
+        }
         #endif
     }
 
