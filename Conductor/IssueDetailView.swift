@@ -23,6 +23,17 @@ final class IssueDetailStore {
 
     func canEdit(_ field: String?) -> Bool { field.flatMap { editMeta?.fields[$0] } != nil }
 
+    /// Values editmeta offers for components or fix versions; archived versions are left out.
+    func options(_ field: String) -> [NamedRef] {
+        editMeta?.fields[field]?.allowedValues?.compactMap { v in
+            guard let o = v.object, o["archived"] != .bool(true), let id = o["id"]?.string, let name = o["name"]?.string else { return nil }
+            return NamedRef(id: id, name: name)
+        } ?? []
+    }
+
+    /// The story points field on this issue's edit screen, out of the site's candidates.
+    func pointsField(_ client: JiraClient?) -> String? { client?.pointsFields.first { editMeta?.fields[$0] != nil } }
+
     /// A row from a list has the summary and status but no description or comments yet.
     var isPartial: Bool { issue?.fields.comment == nil }
 
@@ -90,6 +101,7 @@ struct IssueDetailView: View {
     @State private var showLink = false
     @State private var showLogWork = false
     @State private var showCreateSubtask = false
+    @State private var showDueDate = false
     @State private var isDropTargeted = false
     @FocusState private var summaryFocused: Bool
     @FocusState private var commentFocused: Bool
@@ -321,6 +333,41 @@ struct IssueDetailView: View {
                 } else if let s = issue.activeSprint {
                     field("Sprint") { Text(s.name) }
                 }
+                let due = issue.fields.duedate.flatMap(DueDate.parse)
+                if due != nil || store.canEdit("duedate") {
+                    field("Due") {
+                        Button { showDueDate = true } label: {
+                            let overdue = due.map { $0 < Calendar.current.startOfDay(for: .now) } == true && issue.fields.status.statusCategory.key != "done"
+                            Text(due?.formatted(date: .abbreviated, time: .omitted) ?? "None")
+                                .foregroundStyle(due == nil ? AnyShapeStyle(.secondary) : overdue ? AnyShapeStyle(.red) : AnyShapeStyle(.primary))
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(!store.canEdit("duedate"))
+                        .popover(isPresented: $showDueDate, arrowEdge: .leading) {
+                            DueDatePicker(date: due) { new in
+                                showDueDate = false
+                                run { try await $0.editIssue(key, fields: ["duedate": new.map { .string(DueDate.string($0)) } ?? .null]) }
+                            }
+                        }
+                    }
+                }
+                if let pf = store.pointsField(jira?.client) {
+                    field("Story Points") {
+                        Menu {
+                            Button("None") { run { try await $0.editIssue(key, fields: [pf: .null]) } }
+                            ForEach([0, 0.5, 1, 2, 3, 5, 8, 13, 21], id: \.self) { (n: Double) in
+                                Button(n.formatted()) { run { try await $0.editIssue(key, fields: [pf: .number(n)]) } }
+                            }
+                        } label: {
+                            Text(issue.points?.formatted() ?? "None").foregroundStyle(issue.points == nil ? .secondary : .primary)
+                        }
+                        .menuStyle(.button).buttonStyle(.plain).fixedSize()
+                    }
+                } else if let points = issue.points {
+                    field("Story Points") { Text(points.formatted()) }
+                }
+                multiValue("Components", field: "components", current: issue.fields.components ?? [])
+                multiValue("Fix Versions", field: "fixVersions", current: issue.fields.fixVersions ?? [])
                 field("Labels") {
                     Button { showLabels = true } label: {
                         if let labels = issue.fields.labels, !labels.isEmpty {
@@ -364,6 +411,30 @@ struct IssueDetailView: View {
         }
         .overlay(alignment: .topTrailing) {
             if store.isWorking { ProgressView().controlSize(.small).padding(12) }
+        }
+    }
+
+    /// Components and fix versions: a menu of checkable values when editable, else just the names.
+    @ViewBuilder
+    private func multiValue(_ name: String, field id: String, current: [NamedRef]) -> some View {
+        let options = store.options(id)
+        let selected = Set(current.map(\.id))
+        let label = Text(current.isEmpty ? "None" : current.map(\.name).joined(separator: ", "))
+            .foregroundStyle(current.isEmpty ? .secondary : .primary)
+        if !options.isEmpty {
+            field(name) {
+                Menu {
+                    ForEach(options) { o in
+                        Toggle(o.name, isOn: Binding(get: { selected.contains(o.id) }, set: { on in
+                            let ids = on ? selected.union([o.id]) : selected.subtracting([o.id])
+                            run { try await $0.editIssue(key, fields: [id: .array(ids.sorted().map { .object(["id": .string($0)]) })]) }
+                        }))
+                    }
+                } label: { label }
+                .menuStyle(.button).buttonStyle(.plain).fixedSize()
+            }
+        } else if !current.isEmpty {
+            field(name) { label }
         }
     }
 
@@ -789,6 +860,43 @@ enum AttachmentOpener {
 
     static func open(_ attachment: Attachment, client: JiraClient) async {
         if let file = await download(attachment, client: client) { NSWorkspace.shared.open(file) }
+    }
+}
+
+/// Jira due dates are plain calendar days, read and written in the local calendar.
+enum DueDate {
+    private static let format: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "yyyy-MM-dd"
+        return f
+    }()
+    static func parse(_ s: String) -> Date? { format.date(from: s) }
+    static func string(_ d: Date) -> String { format.string(from: d) }
+}
+
+struct DueDatePicker: View {
+    @State private var date: Date
+    private let hadDate: Bool
+    var onSave: (Date?) -> Void
+
+    init(date: Date?, onSave: @escaping (Date?) -> Void) {
+        _date = State(initialValue: date ?? .now)
+        hadDate = date != nil
+        self.onSave = onSave
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            DatePicker("Due date", selection: $date, displayedComponents: .date)
+                .datePickerStyle(.graphical).labelsHidden()
+            HStack {
+                if hadDate { Button("Clear") { onSave(nil) }.buttonStyle(.glass) }
+                Spacer()
+                Button("Save") { onSave(date) }.buttonStyle(.glassProminent).keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(12)
     }
 }
 

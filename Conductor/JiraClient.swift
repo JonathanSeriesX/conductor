@@ -43,6 +43,8 @@ struct JiraError: LocalizedError, Sendable {
 struct JiraClient: Sendable {
     let account: Account
     var sprintField: String?
+    /// Every numeric field named like story points; which one a project uses shows up in its editmeta.
+    var pointsFields: [String] = []
 
     private var api: URL { account.site.appending(path: "rest/api/3") }
     private var agile: URL { account.site.appending(path: "rest/agile/1.0") }
@@ -52,8 +54,9 @@ struct JiraClient: Sendable {
 
     static let listFields = "summary,status,assignee,priority,issuetype,updated,project,watches"
     var detailFields: String {
-        var f = "summary,description,status,assignee,reporter,priority,issuetype,labels,created,updated,comment,attachment,project,parent,subtasks,issuelinks,worklog,timetracking,watches"
+        var f = "summary,description,status,assignee,reporter,priority,issuetype,labels,created,updated,comment,attachment,project,parent,subtasks,issuelinks,worklog,timetracking,watches,duedate,components,fixVersions"
         if let sprintField { f += "," + sprintField }
+        for p in pointsFields { f += "," + p }
         return f
     }
 
@@ -92,6 +95,7 @@ struct JiraClient: Sendable {
             throw DecodingError.dataCorrupted(.init(codingPath: dec.codingPath, debugDescription: "Bad date \(s)"))
         }
         if let sprintField { d.userInfo[.sprintField] = sprintField }
+        d.userInfo[.pointsFields] = pointsFields
         return d
     }
 
@@ -122,9 +126,12 @@ struct JiraClient: Sendable {
 
     func myself() async throws -> JiraUser { try await get("myself") }
 
-    func sprintFieldId() async throws -> String? {
+    /// Sprint and story points are custom fields whose ids differ per site.
+    func customFieldIds() async throws -> (sprint: String?, points: [String]) {
         let fields: [FieldInfo] = try await get("field")
-        return fields.first { $0.schema?.custom == "com.pyxis.greenhopper.jira:gh-sprint" }?.id
+        let sprint = fields.first { $0.schema?.custom == "com.pyxis.greenhopper.jira:gh-sprint" }?.id
+        let points = fields.filter { ["story points", "story point estimate"].contains($0.name.lowercased()) }.map(\.id)
+        return (sprint, points)
     }
 
     func projects() async throws -> [Project] {

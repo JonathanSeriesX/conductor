@@ -78,6 +78,16 @@ final class DecodingTests: XCTestCase {
         XCTAssertEqual(d.b.timeIntervalSince1970, 1789571040, accuracy: 0.001)
     }
 
+    func testStoryPointsComeFromWhicheverPointsFieldIsSet() throws {
+        var client = JiraClient(account: Account(site: URL(string: "https://x.atlassian.net")!, email: "e", token: "t"))
+        client.pointsFields = ["customfield_10026", "customfield_10016"]
+        let json = #"{"id":"1","key":"ES-1","fields":{"summary":"s","status":{"id":"1","name":"To Do","statusCategory":{"key":"new","name":"To Do"}},"issuetype":{"id":"1","name":"Task"},"customfield_10026":null,"customfield_10016":5,"duedate":"2026-10-31","components":[{"id":"7","name":"API"}]}}"#
+        let issue = try client.decoder.decode(Issue.self, from: Data(json.utf8))
+        XCTAssertEqual(issue.points, 5)
+        XCTAssertEqual(issue.fields.components?.map(\.name), ["API"])
+        XCTAssertEqual(issue.fields.duedate.flatMap(DueDate.parse).map(DueDate.string), "2026-10-31")
+    }
+
     func testSiteNormalization() {
         XCTAssertEqual(Account.normalizeSite("team")?.absoluteString, "https://team.atlassian.net")
         XCTAssertEqual(Account.normalizeSite(" team.atlassian.net ")?.absoluteString, "https://team.atlassian.net")
@@ -95,7 +105,7 @@ final class LiveWriteTests: XCTestCase {
               let email = env["CONDUCTOR_EMAIL"], let token = env["CONDUCTOR_TOKEN"],
               let key = env["CONDUCTOR_TEST_ISSUE"] else { throw XCTSkip("No live credentials in the environment") }
         var c = JiraClient(account: Account(site: site, email: email, token: token))
-        c.sprintField = try await c.sprintFieldId()
+        c.sprintField = try await c.customFieldIds().sprint
         let me = try await c.myself()
         let before = try await c.issue(key)
 
