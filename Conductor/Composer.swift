@@ -133,11 +133,20 @@ struct Composer: View {
     }
 
     private var editor: some View {
-        TextEditor(text: $text, selection: $selection)
-                .focused(focus ?? $ownFocus)
-                .font(.body)
-                .scrollContentBackground(.hidden)
+        // A TextEditor inside a ScrollView sizes itself unpredictably, which left the bottom of the comment
+        // box unreachable. A hidden Text with the same content sets the height; the editor is an overlay,
+        // so it never takes part in layout. Past maxHeight the editor scrolls on its own.
+        Text(text.isEmpty ? " " : text).font(.body).padding(.horizontal, 5).padding(.vertical, 1)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
                 .frame(minHeight: minHeight, maxHeight: maxHeight)
+                .fixedSize(horizontal: false, vertical: true)   // ignore whatever height the page proposes
+                .hidden()
+                .overlay {
+                    TextEditor(text: $text, selection: $selection)
+                        .focused(focus ?? $ownFocus)
+                        .font(.body)
+                        .scrollContentBackground(.hidden)
+                }
                 .padding(6)
                 .background(.quaternary.opacity(0.4), in: .rect(cornerRadius: 10))
                 .overlay(alignment: .topLeading) {

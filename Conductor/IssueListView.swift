@@ -74,35 +74,34 @@ final class IssueListStore {
         loadedKey = queryKey
         switch source {
         case .all, .starred:
-            // Only a new query starts from the cache; a reload keeps the rows in place until fresh ones arrive.
+            // Each account's rows stay put (from cache on a new query, else what is shown) until its own fresh
+            // page lands, so the list never collapses to the fastest site and then grows back.
+            var byAccount: [UUID: [ListRow]] = Dictionary(grouping: rows, by: \.state.id)
             if isNewQuery {
-                var seeded: [ListRow] = []
+                byAccount = [:]
                 if cacheable {
                     for (st, jql) in queries {
                         let cached: [Issue] = await DiskCache.loadAsync(account: st.account, name: "list-" + DiskCache.hash(jql)) ?? []
-                        seeded += cached.map { ListRow(issue: $0, state: st) }
+                        byAccount[st.id] = cached.map { ListRow(issue: $0, state: st) }
                     }
                 }
                 guard gen == generation else { return }
-                rows = seeded.sorted(by: Self.byUpdated)
+                rows = byAccount.values.flatMap { $0 }.sorted(by: Self.byUpdated)
             }
             isLoading = true
             // ponytail: a starred issue that was deleted or moved fails its account's whole query; prune stars on error if that bites.
             let tasks = queries.map { st, jql in
-                Task<[ListRow], Never> { @MainActor in
-                    guard let page = try? await Self.fetch(jql: jql, state: st, cache: cacheable) else { return [] }
+                (st.id, Task<[ListRow]?, Never> { @MainActor in
+                    guard let page = try? await Self.fetch(jql: jql, state: st, cache: cacheable) else { return nil }
                     return page.issues.map { ListRow(issue: $0, state: st) }
-                }
+                })
             }
-            // Merge each account's rows as they arrive instead of waiting for the slowest site.
-            var fetched: [ListRow] = []
-            for t in tasks {
-                fetched += await t.value
+            for (id, t) in tasks {
+                let fresh = await t.value
                 guard gen == generation else { return }
-                if isNewQuery { rows = fetched.sorted(by: Self.byUpdated) }
+                if let fresh { byAccount[id] = fresh }   // a failed site keeps what it had
+                rows = byAccount.values.flatMap { $0 }.sorted(by: Self.byUpdated)
             }
-            guard gen == generation else { return }
-            rows = fetched.sorted(by: Self.byUpdated)
             isLoading = false
             if cacheable { Self.prefetchDetails(rows) }
         default:
@@ -176,8 +175,9 @@ struct IssueListView: View {
         .contextMenu(forSelectionType: IssueTarget.self) { targets in
             if let t = targets.first, let row = store.rows.first(where: { $0.target == t }) { rowMenu(row) }
         } primaryAction: { targets in
-            // Double-click (or ↩) opens the issue in a window of its own, like a message in Mail.
+            // Double-click (or ↩) moves the issue to a window of its own, like a message in Mail.
             for t in targets { openWindow(id: "issue", value: t) }
+            selection = nil
         }
         .safeAreaInset(edge: .top, spacing: 0) { chips }
         .overlay {
@@ -362,10 +362,24 @@ struct IssueListView: View {
     }
 }
 
+/// The account tag on a row in a unified list: square, as opposed to the status capsule. Reads the
+/// prominence itself, like StatusPill: the row's own read did not flip to white on a focused selection.
+struct SiteBadge: View {
+    let name: String
+    let color: Color
+    @Environment(\.backgroundProminence) private var prominence
+
+    var body: some View {
+        let tint: Color = prominence == .increased ? .white : color
+        Text(name).font(.caption2.weight(.semibold)).foregroundStyle(tint)
+            .padding(.horizontal, 5).padding(.vertical, 2)
+            .background(tint.opacity(prominence == .increased ? 0.28 : 0.16), in: .rect(cornerRadius: 4))
+    }
+}
+
 struct IssueRow: View {
     let issue: Issue
     var site: (name: String, color: Color)?
-    @Environment(\.backgroundProminence) private var prominence
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
@@ -377,12 +391,7 @@ struct IssueRow: View {
                 Text(issue.fields.summary).lineLimit(2)
                 HStack(spacing: 8) {
                     Text(issue.key).font(.caption.monospaced()).foregroundStyle(.secondary)
-                    if let site {
-                        let tint: Color = prominence == .increased ? .white : site.color
-                        Text(site.name).font(.caption2.weight(.semibold)).foregroundStyle(tint)
-                            .padding(.horizontal, 5).padding(.vertical, 1)
-                            .background(tint.opacity(prominence == .increased ? 0.28 : 0.16), in: .capsule)
-                    }
+                    if let site { SiteBadge(name: site.name, color: site.color) }
                     StatusPill(status: issue.fields.status)
                     Spacer(minLength: 0)
                     if let p = issue.fields.priority { PriorityIcon(priority: p) }
