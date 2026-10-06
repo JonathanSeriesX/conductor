@@ -100,6 +100,7 @@ struct RootView: View {
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                             .background(Backdrop())
                             .toolbar(id: "issue") { NewIssueToolbarItem() }
+                            .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
                     }
                 }
                 .sheet(isPresented: Bindable(session).createIssueRequested) {

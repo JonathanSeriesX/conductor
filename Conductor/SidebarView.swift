@@ -156,7 +156,8 @@ struct SidebarView: View {
         List(selection: $selection) {
             if session.states.count > 1 {
                 Section("All Accounts") {
-                    ForEach(Smart.allCases, id: \.self) { s in
+                    // Recently Viewed stays per account: Jira's history can't be merged across sites.
+                    ForEach(Smart.allCases.filter { $0 != .recent }, id: \.self) { s in
                         Label(s.title, systemImage: s.symbol).tag(Source.all(s))
                     }
                 }
