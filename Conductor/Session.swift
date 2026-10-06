@@ -44,8 +44,6 @@ final class AccountState: Identifiable {
     var starredProjects: [Project] { projects.filter { starred.contains($0.key) } }
     /// `updated` of each issue whose full details were prefetched to disk, so unchanged ones are skipped.
     var prefetched: [String: Date] = [:]
-    /// Numbers for the empty detail column; nil until read from disk or fetched.
-    var stats: Stats?
 
     init(account: Account) {
         self.account = account

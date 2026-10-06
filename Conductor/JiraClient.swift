@@ -165,13 +165,6 @@ struct JiraClient: Sendable {
         return try await get("search/jql", query: q)
     }
 
-    /// Jira's cheap count for a query, accurate enough for a dashboard number.
-    func approximateCount(jql: String) async throws -> Int {
-        struct Body: Encodable { let jql: String }
-        struct Count: Decodable { let count: Int }
-        return try await (send("search/approximate-count", method: "POST", body: Body(jql: jql)) as Count).count
-    }
-
     func issue(_ key: String) async throws -> Issue {
         try await get("issue/\(key)", query: ["fields": detailFields])
     }
