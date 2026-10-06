@@ -31,6 +31,7 @@ struct RootView: View {
     #endif
 
     var body: some View {
+        Group {
         if session.isRestoring {
             ZStack { Backdrop(); ProgressView() }
         } else if session.isSignedIn {
@@ -52,11 +53,13 @@ struct RootView: View {
                 }
             }
             .id(session.active?.id) // different site, different projects: start the navigation over
-            .onChange(of: session.active?.id) { old, _ in
-                if old != nil { source = .assignedToMe; selectedKey = nil }
-            }
         } else {
             LoginView()
+        }
+        }
+        // Lives outside the re-identified split view so it survives the switch.
+        .onChange(of: session.active?.id) { old, _ in
+            if old != nil { source = .assignedToMe; selectedKey = nil }
         }
     }
 }

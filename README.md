@@ -25,7 +25,7 @@ Set these environment variables in the scheme or shell to skip the login form an
 
 | Variable | Effect |
 |---|---|
-| `CONDUCTOR_SITE`, `CONDUCTOR_EMAIL`, `CONDUCTOR_TOKEN` | Sign in without touching the Keychain |
+| `CONDUCTOR_SITE`, `CONDUCTOR_EMAIL`, `CONDUCTOR_TOKEN` | Sign in without touching the Keychain; add `_2`, `_3` suffixes for more accounts |
 | `CONDUCTOR_OPEN=KEY-123` | Open that issue at launch |
 | `CONDUCTOR_SCROLL=comments` | Scroll the opened issue to its comments |
 

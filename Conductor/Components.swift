@@ -95,7 +95,7 @@ struct PriorityIcon: View {
     var body: some View {
         RemoteImage(url: priority.iconUrl, placeholder: "minus")
             .frame(width: size, height: size)
-            .padding(prominence == .increased ? 2 : 0)
+            .padding(2) // constant so the glyph does not shift when the disc appears
             .background(prominence == .increased ? .white.opacity(0.9) : .clear, in: .circle)
             .help(priority.name)
     }

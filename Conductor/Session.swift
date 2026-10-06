@@ -16,10 +16,15 @@ final class Session {
     func restore() async {
         defer { isRestoring = false }
         #if DEBUG
-        // Dev convenience: launch with CONDUCTOR_SITE/EMAIL/TOKEN set to skip the login form.
+        // Dev convenience: CONDUCTOR_SITE/EMAIL/TOKEN (and _2, _3…) skip the login form; nothing is persisted.
         let env = ProcessInfo.processInfo.environment
-        if let site = env["CONDUCTOR_SITE"].flatMap(Account.normalizeSite), let email = env["CONDUCTOR_EMAIL"], let token = env["CONDUCTOR_TOKEN"] {
-            try? await signIn(Account(site: site, email: email, token: token), persist: false)
+        let envAccounts: [Account] = ["", "_2", "_3"].compactMap { n in
+            guard let site = env["CONDUCTOR_SITE\(n)"].flatMap(Account.normalizeSite), let email = env["CONDUCTOR_EMAIL\(n)"], let token = env["CONDUCTOR_TOKEN\(n)"] else { return nil }
+            return Account(site: site, email: email, token: token)
+        }
+        if let first = envAccounts.first {
+            accounts = envAccounts
+            try? await signIn(first, persist: false)
             return
         }
         #endif
@@ -50,6 +55,9 @@ final class Session {
         projects = []
         filters = []
         await refreshCatalog()
+        #if DEBUG
+        print("Conductor: signed in to \(account.site.host() ?? "?") as \(user.displayName); \(projects.count) projects, \(filters.count) filters")
+        #endif
     }
 
     func refreshCatalog() async {
