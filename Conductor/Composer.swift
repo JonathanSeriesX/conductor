@@ -274,6 +274,7 @@ struct PeoplePicker: View {
             }
             .buttonStyle(.plain)
             .listStyle(.plain)
+            .scrollContentBackground(.hidden)   // the list's own white would hide the popover material
         }
         .padding(10)
         .frame(width: 280, height: 320)

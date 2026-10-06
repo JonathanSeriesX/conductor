@@ -133,7 +133,7 @@ final class IssueListStore {
             nextToken = page.isLast == true ? nil : page.nextPageToken
             if replacing, cacheable { Self.prefetchDetails(rows) }
         } catch {
-            guard gen == generation else { return }
+            guard gen == generation, !error.isOffline else { return }
             self.error = error.localizedDescription
         }
     }
