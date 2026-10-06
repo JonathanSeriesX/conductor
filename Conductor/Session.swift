@@ -17,6 +17,12 @@ final class AccountState: Identifiable {
     var starred: Set<String> = []
     var issueTypeNames: [String] = []
     var jqlFields: [JQLAutocomplete.Field] = []
+    /// Set when the last network check failed; the cached catalog stays usable.
+    var error: String?
+    /// Rows the lists have seen, so an issue page can open with what the row already knows.
+    @ObservationIgnored var peek: [String: Issue] = [:]
+    @ObservationIgnored private var linkTypesCache: [LinkType]?
+    @ObservationIgnored private var sprintsByProject: [String: [Sprint]] = [:]
     private var customTitle: String
     /// Name of a `Palette` colour; chosen by the user or dealt from the palette by sidebar position.
     var colorName: String
@@ -49,13 +55,30 @@ final class AccountState: Identifiable {
         UserDefaults.standard.set(name, forKey: "accountColor.\(id)")
     }
 
-    /// Validates the token, then loads the catalog (cached copy first).
-    func load() async throws {
-        me = try await client.myself()
-        client.sprintField = try? await client.sprintFieldId()
+    /// Everything the last session knew, read from disk. True when enough is there to show the account at once.
+    func loadCached() -> Bool {
+        me = DiskCache.load(account: account, name: "me")
+        client.sprintField = DiskCache.load(account: account, name: "sprintField")
         projects = DiskCache.load(account: account, name: "projects") ?? []
         filters = DiskCache.load(account: account, name: "filters") ?? []
-        await refreshCatalog()
+        issueTypeNames = DiskCache.load(account: account, name: "issueTypes") ?? []
+        jqlFields = DiskCache.load(account: account, name: "jqlFields") ?? []
+        starred = Set(UserDefaults.standard.stringArray(forKey: starredKey) ?? [])
+            .union(projects.filter { $0.favourite == true }.map(\.key))
+        return me != nil
+    }
+
+    /// Validates the token and refreshes the catalog, all requests in flight together.
+    func load() async throws {
+        async let user = client.myself()
+        async let sprint = client.sprintFieldId()
+        async let catalog: () = refreshCatalog()
+        me = try await user
+        DiskCache.saveAsync(me, account: account, name: "me")
+        if let id = try? await sprint { client.sprintField = id; DiskCache.saveAsync(id, account: account, name: "sprintField") }
+        await catalog
+        error = nil
+        await prefetchLists()
     }
 
     func refreshCatalog() async {
@@ -63,12 +86,47 @@ final class AccountState: Identifiable {
         async let f = client.favouriteFilters()
         async let t = client.issueTypes()
         async let a = client.jqlAutocomplete()
-        if let fresh = try? await p { projects = fresh; DiskCache.save(fresh, account: account, name: "projects") }
-        if let fresh = try? await f { filters = fresh; DiskCache.save(fresh, account: account, name: "filters") }
+        if let fresh = try? await p { projects = fresh; DiskCache.saveAsync(fresh, account: account, name: "projects") }
+        if let fresh = try? await f { filters = fresh; DiskCache.saveAsync(fresh, account: account, name: "filters") }
         starred = Set(UserDefaults.standard.stringArray(forKey: starredKey) ?? [])
             .union(projects.filter { $0.favourite == true }.map(\.key))
-        issueTypeNames = Array(Set(((try? await t) ?? []).map(\.name))).sorted()
-        jqlFields = (try? await a)?.visibleFieldNames ?? []
+        if let fresh = try? await t {
+            issueTypeNames = Array(Set(fresh.map(\.name))).sorted()
+            DiskCache.saveAsync(issueTypeNames, account: account, name: "issueTypes")
+        }
+        if let fresh = try? await a {
+            jqlFields = fresh.visibleFieldNames
+            DiskCache.saveAsync(jqlFields, account: account, name: "jqlFields")
+        }
+    }
+
+    /// Warms every smart list so each sidebar shortcut opens from disk, and the unified lists with it.
+    func prefetchLists() async {
+        let tasks = Smart.allCases.map { smart in
+            let jql = Source.smart(smart, id).jql(search: "")
+            return Task { @MainActor in _ = try? await IssueListStore.fetch(jql: jql, state: self, cache: true) }
+        }
+        for t in tasks { await t.value }
+    }
+
+    func linkTypes() async -> [LinkType] {
+        if let linkTypesCache { return linkTypesCache }
+        let fresh = (try? await client.linkTypes()) ?? []
+        if !fresh.isEmpty { linkTypesCache = fresh }
+        return fresh
+    }
+
+    /// Active and future sprints of a project's scrum boards, fetched once per session.
+    func sprints(project: String) async -> [Sprint] {
+        if let cached = sprintsByProject[project] { return cached }
+        guard let boards = try? await client.boards(project: project) else { return [] }
+        let tasks = boards.filter { $0.type == "scrum" }.map { b in Task { @MainActor in (try? await self.client.sprints(board: b.id)) ?? [] } }
+        var all: [Sprint] = []
+        for t in tasks { all += await t.value }
+        var seen = Set<Int>()
+        let unique = all.filter { seen.insert($0.id).inserted }
+        sprintsByProject[project] = unique
+        return unique
     }
 
     private var starredKey: String { "starred.\(host)|\(account.email)" }
@@ -131,27 +189,40 @@ final class Session {
         await connectAll(persist: true)
     }
 
-    /// Signs every stored account in, in parallel, keeping sidebar order.
+    /// Shows every account from its cache at once, then verifies each token and refreshes in the background.
     private func connectAll(persist: Bool) async {
-        let pending = stored.map { account -> (Account, AccountState, Task<(any Error)?, Never>) in
+        var pending: [(Account, AccountState, Task<(any Error)?, Never>)] = []
+        for account in stored {
             let st = AccountState(account: account)
+            if st.loadCached() { attach(st) }
             let task = Task<(any Error)?, Never> { @MainActor in
                 do { try await st.load(); return nil } catch { return error }
             }
-            return (account, st, task)
+            pending.append((account, st, task))
         }
+        isRestoring = false // whatever is cached is on screen now; the rest arrives as it verifies
         for (account, st, task) in pending {
             let failure = await task.value
             if failure == nil {
-                if st.colorName.isEmpty { st.setColor(Palette.next(avoiding: states.map(\.colorName))) }
-                states.append(st)
+                attach(st)
             } else if let e = failure as? JiraError, e.status == 401 {
-                stored.removeAll { $0.id == account.id } // the token is dead; forget it
+                remove(account) // the token is dead; forget it
+            } else if states.contains(where: { $0.id == st.id }) {
+                st.error = failure?.localizedDescription
             } else {
                 unreachable[account.id] = failure?.localizedDescription ?? "Unknown error"
             }
         }
         if persist { Keychain.save(stored) }
+    }
+
+    /// Adds a state to the live list, keeping the stored order and dealing a colour the first time.
+    private func attach(_ st: AccountState) {
+        guard !states.contains(where: { $0.id == st.id }) else { return }
+        if st.colorName.isEmpty { st.setColor(Palette.next(avoiding: states.map(\.colorName))) }
+        states.append(st)
+        let order = stored.map(\.id)
+        states.sort { (order.firstIndex(of: $0.id) ?? .max) < (order.firstIndex(of: $1.id) ?? .max) }
     }
 
     /// Adds (or re-adds) an account after validating it.
@@ -183,7 +254,7 @@ final class Session {
     }
 
     func refreshAll() async {
-        let tasks = states.map { st in Task { @MainActor in await st.refreshCatalog() } }
+        let tasks = states.map { st in Task { @MainActor in await st.refreshCatalog(); await st.prefetchLists() } }
         for t in tasks { await t.value }
     }
 

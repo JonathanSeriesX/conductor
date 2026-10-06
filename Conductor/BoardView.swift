@@ -34,14 +34,11 @@ final class BoardStore {
         isLoading = true
         defer { isLoading = false }
         do {
-            config = try await client.boardConfiguration(board.id)
-            if board.type == "scrum" {
-                sprints = try await client.sprints(board: board.id)
-                if !sprints.contains(where: { $0.id == sprint?.id }) { sprint = sprints.first { $0.state == "active" } ?? sprints.first }
-            } else {
-                sprints = []
-                sprint = nil
-            }
+            async let cfg = client.boardConfiguration(board.id)
+            async let sp = board.type == "scrum" ? client.sprints(board: board.id) : []
+            config = try await cfg
+            sprints = (try? await sp) ?? []
+            if !sprints.contains(where: { $0.id == sprint?.id }) { sprint = sprints.first { $0.state == "active" } ?? sprints.first }
             await loadIssues(client)
         } catch { self.error = error.localizedDescription }
     }
@@ -107,7 +104,11 @@ struct BoardView: View {
         .navigationSubtitle(subtitle)
         .toolbar(id: "board") {
             ToolbarItem(id: "boardPicker") {
-                Picker("Board", selection: $store.board) {
+                // Setters, not onChange: only a user's pick reloads, not the store's own assignments.
+                Picker("Board", selection: Binding(get: { store.board }, set: { b in
+                    store.board = b
+                    if let c = state?.client { Task { await store.loadBoard(c) } }
+                })) {
                     ForEach(store.boards) { b in Text(b.name).tag(Optional(b)) }
                 }
                 .frame(maxWidth: 220)
@@ -115,7 +116,10 @@ struct BoardView: View {
             }
             ToolbarItem(id: "sprintPicker") {
                 if !store.sprints.isEmpty {
-                    Picker("Sprint", selection: $store.sprint) {
+                    Picker("Sprint", selection: Binding(get: { store.sprint }, set: { sp in
+                        store.sprint = sp
+                        if let c = state?.client { Task { await store.loadIssues(c) } }
+                    })) {
                         ForEach(store.sprints) { s in Text(s.name + (s.state == "active" ? " · active" : "")).tag(Optional(s)) }
                     }
                     .frame(maxWidth: 260)
@@ -131,8 +135,6 @@ struct BoardView: View {
         .task(id: "\(projectKey)|\(state?.id.uuidString ?? "")") {
             if let c = state?.client { await store.load(c, project: projectKey) }
         }
-        .onChange(of: store.board) { if let c = state?.client { Task { await store.loadBoard(c) } } }
-        .onChange(of: store.sprint) { if let c = state?.client { Task { await store.loadIssues(c) } } }
         .errorAlert($store.error)
         .frame(minWidth: 700, minHeight: 400)
     }

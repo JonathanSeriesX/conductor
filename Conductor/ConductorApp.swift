@@ -112,6 +112,7 @@ struct RootView: View {
             }
         }
         .onChange(of: session.states.count) { restoreOnce() }
+        .onChange(of: session.isRestoring) { restoreOnce() }
         .onChange(of: source) { _, new in if let new { storedSource = new.id } }
         .onChange(of: selected) { _, new in
             storedIssue = new.map { "\($0.accountID.uuidString)|\($0.key)" } ?? ""

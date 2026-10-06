@@ -43,7 +43,10 @@ struct RemoteImage: View {
     let url: URL?
     var placeholder: String = "photo"
     @Environment(Session.self) private var session
-    @State private var image: NSImage?
+    @State private var loaded: NSImage?
+
+    // Memory hits resolve in `body`, so a cached icon draws in the first frame instead of after a task hop.
+    private var image: NSImage? { loaded ?? url.flatMap { ImageCache.shared.object(forKey: $0 as NSURL) } }
 
     var body: some View {
         Group {
@@ -54,11 +57,17 @@ struct RemoteImage: View {
             }
         }
         .task(id: url) {
-            guard let url else { image = nil; return }
-            if let cached = ImageCache.shared.object(forKey: url as NSURL) { image = cached; return }
-            guard let client = session.client(for: url), let data = try? await client.data(for: url), let img = NSImage(data: data) else { return }
+            guard let url, image == nil else { return }
+            if let data = await DiskCache.imageData(for: url), let img = await DiskCache.decodeImage(data, maxPixels: 256) {
+                ImageCache.shared.setObject(img, forKey: url as NSURL)
+                loaded = img
+                return
+            }
+            guard let client = session.client(for: url), let data = try? await client.data(for: url),
+                  let img = await DiskCache.decodeImage(data, maxPixels: 256) else { return }
+            DiskCache.saveImage(data, for: url)
             ImageCache.shared.setObject(img, forKey: url as NSURL)
-            image = img
+            loaded = img
         }
     }
 }
