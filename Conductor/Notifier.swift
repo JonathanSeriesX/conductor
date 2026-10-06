@@ -94,6 +94,34 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         NSApp.dockTile.badgeLabel = nil
     }
 
+    // MARK: Reminders
+
+    private static func reminderID(_ url: URL) -> String { "remind|" + url.absoluteString }
+
+    /// One reminder per issue: setting another replaces it. Clicking the banner opens the issue.
+    static func remind(_ url: URL, key: String, summary: String, at date: Date) async throws {
+        let center = UNUserNotificationCenter.current()
+        guard try await center.requestAuthorization(options: [.alert, .sound]) else {
+            throw CocoaError(.userCancelled, userInfo: [NSLocalizedDescriptionKey: "Notifications are off for Conductor. Turn them on in System Settings › Notifications."])
+        }
+        let content = UNMutableNotificationContent()
+        content.title = "Reminder: \(key)"
+        content.body = summary
+        content.sound = .default
+        content.userInfo = ["url": url.absoluteString]
+        let when = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute], from: date)
+        try await center.add(UNNotificationRequest(identifier: reminderID(url), content: content, trigger: UNCalendarNotificationTrigger(dateMatching: when, repeats: false)))
+    }
+
+    static func reminder(for url: URL) async -> Date? {
+        let pending = await UNUserNotificationCenter.current().pendingNotificationRequests()
+        return (pending.first { $0.identifier == reminderID(url) }?.trigger as? UNCalendarNotificationTrigger)?.nextTriggerDate()
+    }
+
+    static func cancelReminder(for url: URL) {
+        UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: [reminderID(url)])
+    }
+
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
         [.banner, .sound]
     }

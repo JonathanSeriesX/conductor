@@ -42,18 +42,25 @@ final class IssueListStore {
         let gen = generation
         nextToken = nil
         single = nil
+        // Unified sources run one query per account; Starred's differs per account, everything else is the same.
+        let queries: [(AccountState, String)] = session.states.compactMap { st in
+            guard case .starred = source else { return (st, source.jql(search: search, filters: filters)) }
+            let keys = session.starredTargets.filter { $0.target.accountID == st.id }.map(\.target.key)
+            return keys.isEmpty ? nil : (st, source.jql(search: search, filters: filters, starredKeys: keys))
+        }
         let jql = source.jql(search: search, filters: filters)
         // Typed searches are not cached: they change with every keystroke and would litter the disk.
         let cacheable = search.isEmpty
-        let isNewQuery = loadedKey != source.id + jql
-        loadedKey = source.id + jql
+        let queryKey = source.id + queries.map(\.1).joined()
+        let isNewQuery = loadedKey != queryKey
+        loadedKey = queryKey
         switch source {
-        case .all:
+        case .all, .starred:
             // Only a new query starts from the cache; a reload keeps the rows in place until fresh ones arrive.
             if isNewQuery {
                 var seeded: [ListRow] = []
                 if cacheable {
-                    for st in session.states {
+                    for (st, jql) in queries {
                         let cached: [Issue] = await DiskCache.loadAsync(account: st.account, name: "list-" + DiskCache.hash(jql)) ?? []
                         seeded += cached.map { ListRow(issue: $0, state: st) }
                     }
@@ -62,7 +69,8 @@ final class IssueListStore {
                 rows = seeded.sorted(by: Self.byUpdated)
             }
             isLoading = true
-            let tasks = session.states.map { st in
+            // ponytail: a starred issue that was deleted or moved fails its account's whole query; prune stars on error if that bites.
+            let tasks = queries.map { st, jql in
                 Task<[ListRow], Never> { @MainActor in
                     guard let page = try? await Self.fetch(jql: jql, state: st, cache: cacheable) else { return [] }
                     return page.issues.map { ListRow(issue: $0, state: st) }
@@ -128,12 +136,12 @@ struct IssueListView: View {
 
     private var isRawJQL: Bool { Source.looksLikeJQL(search) }
     private var state: AccountState? { source.accountID.flatMap(session.state) ?? session.states.first }
-    private var loadKey: String { "\(source.id)|\(search)|\(filters)|\(session.reloadTick)" }
+    private var loadKey: String { "\(source.id)|\(search)|\(filters)|\(session.reloadTick)|\(source == .starred ? session.stars.count : 0)" }
 
     var body: some View {
         List(selection: $selection) {
             ForEach(store.rows) { row in
-                IssueRow(issue: row.issue, site: source.isUnified ? (row.state.title, row.state.color) : nil)
+                IssueRow(issue: row.issue, site: source.isUnified && session.states.count > 1 ? (row.state.title, row.state.color) : nil)
                     .tag(row.target)
                     .onAppear { if row.id == store.rows.last?.id { Task { await store.loadMore() } } }
                     // Drag a row into Slack, a browser or a note as its Jira link.
@@ -237,6 +245,8 @@ struct IssueListView: View {
         Button("Copy as Markdown", systemImage: "text.quote") { copyToPasteboard(row.state.client.markdownLink(key, summary: row.issue.fields.summary)) }
         ShareLink(item: url)
         Divider()
+        let starred = session.isStarred(row.target)
+        Button(starred ? "Unstar" : "Star", systemImage: starred ? "star.slash" : "star") { session.toggleStar(row.target, summary: row.issue.fields.summary) }
         Button(watching ? "Stop Watching This Issue" : "Watch This Issue", systemImage: watching ? "eye.slash" : "eye") {
             act { try await row.state.client.watch(key, !watching, me: me) }
         }

@@ -42,6 +42,9 @@ final class AccountState: Identifiable {
         return label.prefix(1).uppercased() + label.dropFirst()
     }
     var starredProjects: [Project] { projects.filter { starred.contains($0.key) } }
+    /// Open issues assigned to me, from the last prefetch; `assignedMore` when there are more than a page.
+    var assignedCount: Int?
+    var assignedMore = false
 
     init(account: Account) {
         self.account = account
@@ -110,7 +113,10 @@ final class AccountState: Identifiable {
     func prefetchLists() async {
         let tasks = Smart.allCases.map { smart in
             let jql = Source.smart(smart, id).jql(search: "")
-            return Task { @MainActor in _ = try? await IssueListStore.fetch(jql: jql, state: self, cache: true) }
+            return Task { @MainActor in
+                guard let page = try? await IssueListStore.fetch(jql: jql, state: self, cache: true) else { return }
+                if smart == .assigned { assignedCount = page.issues.count; assignedMore = page.isLast == false }
+            }
         }
         for t in tasks { await t.value }
     }
@@ -157,6 +163,8 @@ final class Session {
     private(set) var isRestoring = true
     /// Recently viewed, across accounts, newest first. Jira's own history can't be merged across sites.
     private(set) var history: [IssueTarget] = []
+    /// Issues starred in Conductor, newest first. Local only: Jira has no issue stars.
+    private(set) var stars: [Star] = (try? JSONDecoder().decode([Star].self, from: UserDefaults.standard.data(forKey: "stars") ?? Data())) ?? []
 
     /// One-shot requests from menu commands, URLs and other windows; the root view consumes them.
     var createIssueRequested = false
@@ -277,12 +285,30 @@ final class Session {
         let parts = id.split(separator: ":", maxSplits: 2).map(String.init)
         guard parts.count >= 2 else { return nil }
         if parts[0] == "all" { return Smart(rawValue: parts[1]).map(Source.all) }
+        if parts == ["local", "starred"] { return .starred }
         guard let uuid = UUID(uuidString: parts[0]), let st = state(uuid) else { return nil }
         switch parts[1] {
         case "project": return parts.count == 3 ? st.projects.first { $0.key == parts[2] }.map { .project($0, uuid) } : nil
         case "filter": return parts.count == 3 ? st.filters.first { $0.id == parts[2] }.map { .filter($0, uuid) } : nil
         default: return Smart(rawValue: parts[1]).map { .smart($0, uuid) }
         }
+    }
+
+    func isStarred(_ t: IssueTarget) -> Bool {
+        guard let host = state(t.accountID)?.host else { return false }
+        return stars.contains { $0.host == host && $0.key == t.key }
+    }
+
+    func toggleStar(_ t: IssueTarget, summary: String) {
+        guard let host = state(t.accountID)?.host else { return }
+        if isStarred(t) { stars.removeAll { $0.host == host && $0.key == t.key } }
+        else { stars.insert(Star(host: host, key: t.key, summary: summary), at: 0) }
+        UserDefaults.standard.set(try? JSONEncoder().encode(stars), forKey: "stars")
+    }
+
+    /// Starred issues of signed-in accounts, as targets.
+    var starredTargets: [(target: IssueTarget, summary: String)] {
+        stars.compactMap { s in state(host: s.host).map { (IssueTarget(accountID: $0.id, key: s.key), s.summary) } }
     }
 
     func recordView(_ target: IssueTarget) {
@@ -338,6 +364,13 @@ final class Session {
         if let v = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "selectedIssue" })?.value { return v.uppercased() }
         return nil
     }
+}
+
+/// Keyed by host rather than account id: ids of accounts from the environment change every launch.
+struct Star: Codable, Hashable, Sendable {
+    let host: String
+    let key: String
+    var summary: String
 }
 
 extension EnvironmentValues {

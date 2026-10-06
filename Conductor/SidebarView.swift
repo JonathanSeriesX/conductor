@@ -42,6 +42,8 @@ enum Smart: String, CaseIterable, Codable {
 
 enum Source: Hashable {
     case all(Smart)
+    /// Issues starred in Conductor, across accounts.
+    case starred
     case smart(Smart, UUID)
     case project(Project, UUID)
     case filter(Filter, UUID)
@@ -49,6 +51,7 @@ enum Source: Hashable {
     var title: String {
         switch self {
         case .all(let s): s.title
+        case .starred: "Starred"
         case .smart(let s, _): s.title
         case .project(let p, _): p.name
         case .filter(let f, _): f.name
@@ -58,7 +61,7 @@ enum Source: Hashable {
     /// Account the list belongs to; nil for unified lists.
     var accountID: UUID? {
         switch self {
-        case .all: nil
+        case .all, .starred: nil
         case .smart(_, let id), .project(_, let id), .filter(_, let id): id
         }
     }
@@ -69,15 +72,17 @@ enum Source: Hashable {
     var id: String {
         switch self {
         case .all(let s): "all:\(s.rawValue)"
+        case .starred: "local:starred"
         case .smart(let s, let id): "\(id):\(s.rawValue)"
         case .project(let p, let id): "\(id):project:\(p.key)"
         case .filter(let f, let id): "\(id):filter:\(f.id)"
         }
     }
 
-    private var whereClause: String {
+    private func whereClause(starredKeys: [String]) -> String {
         switch self {
         case .all(let s), .smart(let s, _): s.whereClause
+        case .starred: "issuekey IN (\(starredKeys.map { "\"\($0)\"" }.joined(separator: ", ")))"
         case .project(let p, _):
             // Keys like IN or AND are JQL reserved words, hence the quotes.
             UserDefaults.standard.bool(forKey: "hideDoneInProjects") ? "project = \"\(p.key)\" AND statusCategory != Done" : "project = \"\(p.key)\""
@@ -97,11 +102,12 @@ enum Source: Hashable {
     }
 
     /// JQL for this source on one account, with the search box contents and filter chips applied.
-    func jql(search: String, filters: ListFilters = ListFilters()) -> String {
+    /// `starredKeys` are that account's starred issues, for `.starred`.
+    func jql(search: String, filters: ListFilters = ListFilters(), starredKeys: [String] = []) -> String {
         let q = search.trimmingCharacters(in: .whitespacesAndNewlines)
         if Self.looksLikeJQL(q) { return q }
         if q.range(of: #"^[A-Za-z][A-Za-z0-9_]+-\d+$"#, options: .regularExpression) != nil { return "key = \"\(q.uppercased())\"" }
-        var clauses = [whereClause] + filters.clauses
+        var clauses = [whereClause(starredKeys: starredKeys)] + filters.clauses
         if !q.isEmpty {
             let escaped = q.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
             clauses.append("text ~ \"\(escaped)\"")
@@ -154,11 +160,16 @@ struct SidebarView: View {
 
     var body: some View {
         List(selection: $selection) {
-            if session.states.count > 1 {
-                Section("All Accounts") {
-                    // Recently Viewed stays per account: Jira's history can't be merged across sites.
-                    ForEach(Smart.allCases.filter { $0 != .recent }, id: \.self) { s in
-                        Label(s.title, systemImage: s.symbol).tag(Source.all(s))
+            if session.states.count > 1 || !session.stars.isEmpty {
+                Section(session.states.count > 1 ? "All Accounts" : "Conductor") {
+                    if !session.stars.isEmpty {
+                        Label { Text("Starred") } icon: { Image(systemName: "star.fill").foregroundStyle(.yellow) }.tag(Source.starred)
+                    }
+                    if session.states.count > 1 {
+                        // Recently Viewed stays per account: Jira's history can't be merged across sites.
+                        ForEach(Smart.allCases.filter { $0 != .recent }, id: \.self) { s in
+                            Label(s.title, systemImage: s.symbol).tag(Source.all(s))
+                        }
                     }
                 }
             }
