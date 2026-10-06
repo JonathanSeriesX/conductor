@@ -8,6 +8,7 @@ struct IssueActions {
         case assign, assignToMe, watch, star, remind, transition(String)
         case editSummary, editDescription, comment, attach, link, logWork, subtask, refresh
     }
+    let key: String
     let watching: Bool
     let starred: Bool
     let assignedToMe: Bool
@@ -28,11 +29,32 @@ extension FocusedValues {
     @Entry var listActions: ListActions?
 }
 
-struct IssueCommands: Commands {
+/// Menu bar commands that act on whatever the key window shows.
+struct AppCommands: Commands {
+    let session: Session
     @FocusedValue(\.issueActions) private var issue
     @FocusedValue(\.listActions) private var list
+    @Environment(\.openWindow) private var openWindow
 
     var body: some Commands {
+        CommandGroup(replacing: .printItem) {}
+        CommandGroup(before: .toolbar) {
+            Button("Command Palette…") { palette(">") }
+                .keyboardShortcut("p", modifiers: [.command, .shift])
+            Divider()
+        }
+        CommandMenu("Go") {
+            Button("Go to Issue, List or Project…") { palette("") }.keyboardShortcut("p")
+            Divider()
+            Button("Assigned to Me") { session.navigationRequest = session.source(for: .assigned) }.keyboardShortcut("1")
+            Button("Reported by Me") { session.navigationRequest = session.source(for: .reported) }.keyboardShortcut("2")
+            Button("Recently Viewed") { session.navigationRequest = session.source(for: .recent) }.keyboardShortcut("3")
+            Button("Watching") { session.navigationRequest = session.source(for: .watching) }.keyboardShortcut("4")
+            Button("Starred") { session.navigationRequest = .starred }.disabled(session.stars.isEmpty)
+            Divider()
+            Button("Reload") { session.reloadTick += 1 }.keyboardShortcut("r")
+            Button("Refresh Projects") { Task { await session.refreshAll() } }
+        }
         CommandGroup(after: .newItem) {
             Button("Save Search as Filter…") { list?.saveFilter?() }
                 .keyboardShortcut("s")
@@ -72,6 +94,15 @@ struct IssueCommands: Commands {
             Divider()
             item("Refresh Issue", .refresh, "r", [.command, .shift])
         }
+    }
+
+    /// The palette becomes the key window, so it takes this window's actions along.
+    private func palette(_ mode: String) {
+        guard session.isSignedIn else { return }
+        session.paletteMode = mode
+        session.paletteIssue = issue
+        session.paletteList = list
+        openWindow(id: "palette")
     }
 
     private func item(_ title: String, _ action: IssueActions.Action, _ key: KeyEquivalent? = nil, _ modifiers: EventModifiers = .command) -> some View {
@@ -129,15 +160,9 @@ struct MenuBarMenu: View {
         Button("Quit Conductor") { NSApp.terminate(nil) }
     }
 
-    /// Brings the main window forward, reopening it if it was closed, then hands it the request.
     private func show(_ request: () -> Void) {
         request()
-        NSApp.activate()
-        if let w = NSApp.windows.first(where: { $0.identifier?.rawValue.hasPrefix("main") == true && $0.isVisible }) {
-            w.makeKeyAndOrderFront(nil)
-        } else {
-            openWindow(id: "main")
-        }
+        bringMainWindowForward(openWindow)
     }
 }
 

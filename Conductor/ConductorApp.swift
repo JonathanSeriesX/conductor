@@ -33,15 +33,6 @@ struct ConductorApp: App {
                     .keyboardShortcut("n")
                     .disabled(!session.isSignedIn)
             }
-            CommandMenu("Go") {
-                Button("Assigned to Me") { session.navigationRequest = session.source(for: .assigned) }.keyboardShortcut("1")
-                Button("Reported by Me") { session.navigationRequest = session.source(for: .reported) }.keyboardShortcut("2")
-                Button("Recently Viewed") { session.navigationRequest = session.source(for: .recent) }.keyboardShortcut("3")
-                Button("Watching") { session.navigationRequest = session.source(for: .watching) }.keyboardShortcut("4")
-                Divider()
-                Button("Reload") { session.reloadTick += 1 }.keyboardShortcut("r")
-                Button("Refresh Projects") { Task { await session.refreshAll() } }
-            }
             // Takes ⌘F away from the text-editing Find panel: in this app, Find means the issue search.
             CommandGroup(replacing: .textEditing) {
                 Button("Find Issues") { session.focusSearchRequested = true }.keyboardShortcut("f")
@@ -51,7 +42,7 @@ struct ConductorApp: App {
             }
             SidebarCommands()
             ToolbarCommands()
-            IssueCommands()
+            AppCommands(session: session)
         }
 
         WindowGroup("Issue", id: "issue", for: IssueTarget.self) { $target in
@@ -69,6 +60,20 @@ struct ConductorApp: App {
         Settings {
             SettingsView().environment(session)
         }
+
+        Window("Command Palette", id: "palette") {
+            CommandPalette().environment(session)
+        }
+        .windowStyle(.plain)
+        .windowLevel(.floating)
+        .windowResizability(.contentSize)
+        .restorationBehavior(.disabled)
+        .defaultWindowPlacement { _, context in
+            // Near the top of the screen, where VS Code puts it.
+            let screen = context.defaultDisplay.visibleRect
+            return WindowPlacement(CGPoint(x: screen.midX - 310, y: screen.minY + screen.height * 0.12))
+        }
+        .commandsRemoved()
 
         MenuBarExtra("Conductor", systemImage: "ticket", isInserted: $showInMenuBar) {
             MenuBarMenu().environment(session)
