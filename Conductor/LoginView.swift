@@ -15,9 +15,9 @@ struct LoginView: View {
 
     var body: some View {
         if isSheet {
-            card.padding(24)
+            card
         } else {
-            ZStack { Backdrop(); card }
+            ZStack { Backdrop(); card.glassEffect(.regular, in: .rect(cornerRadius: 28)) }
         }
     }
 
@@ -31,7 +31,7 @@ struct LoginView: View {
 
                 VStack(spacing: 10) {
                     TextField("Site", text: $site, prompt: Text("yourteam.atlassian.net"))
-                    TextField("Email", text: $email, prompt: Text("you@company.com"))
+                    TextField("Email", text: $email, prompt: Text(verbatim: "you@company.com"))
                     SecureField("API token", text: $token, prompt: Text("API token"))
                 }
                 .textFieldStyle(.roundedBorder)
@@ -61,7 +61,6 @@ struct LoginView: View {
             }
             .padding(32)
             .frame(width: 400)
-            .glassEffect(.regular, in: .rect(cornerRadius: 28))
     }
 
     private func submit() {
