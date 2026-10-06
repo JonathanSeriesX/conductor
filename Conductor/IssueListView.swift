@@ -95,19 +95,17 @@ struct IssueListView: View {
             }
             session.recordSearch(search)
         }
-        .toolbar {
-            ToolbarItemGroup {
-            Group {
+        .toolbar(id: "list") {
+            ToolbarItem(id: "board") {
                 if case .project(let p) = source {
                     Button { openWindow(id: "board", value: p.key) } label: { Label("Board", systemImage: "rectangle.split.3x1") }
                         .help("Open the project board")
                 }
-                if !search.isEmpty {
-                    Button { filterName = ""; savingFilter = true } label: { Label("Save as Filter", systemImage: "bookmark") }
-                        .help("Save this search as a favourite filter")
-                }
-                }
-                .labelStyle(.titleAndIcon)
+            }
+            ToolbarItem(id: "saveFilter") {
+                Button { filterName = ""; savingFilter = true } label: { Label("Save as Filter", systemImage: "bookmark") }
+                    .help("Save this search as a favourite filter")
+                    .disabled(search.isEmpty)
             }
         }
         .alert("Save as Filter", isPresented: $savingFilter) {
@@ -133,49 +131,37 @@ struct IssueListView: View {
     // MARK: Chips
 
     private var chips: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
         HStack(spacing: 6) {
-            chip(filters.status.rawValue, active: filters.status != .any) {
-                ForEach(ListFilters.Status.allCases, id: \.self) { s in Button(s.rawValue) { filters.status = s } }
+            Picker("Status", selection: $filters.status) {
+                ForEach(ListFilters.Status.allCases, id: \.self) { Text($0.rawValue).tag($0) }
             }
-            chip(filters.assignee.rawValue, active: filters.assignee != .any) {
-                ForEach(ListFilters.Assignee.allCases, id: \.self) { a in Button(a.rawValue) { filters.assignee = a } }
+            Picker("Assignee", selection: $filters.assignee) {
+                ForEach(ListFilters.Assignee.allCases, id: \.self) { Text($0.rawValue).tag($0) }
             }
-            chip(filters.type ?? "Any type", active: filters.type != nil) {
-                Button("Any type") { filters.type = nil }
+            Picker("Type", selection: $filters.type) {
+                Text("Any type").tag(String?.none)
                 Divider()
-                ForEach(session.issueTypeNames, id: \.self) { t in Button(t) { filters.type = t } }
+                ForEach(session.issueTypeNames, id: \.self) { Text($0).tag(Optional($0)) }
             }
-            chip(filters.updated.rawValue, active: filters.updated != .any) {
-                ForEach(ListFilters.Updated.allCases, id: \.self) { u in Button(u.rawValue) { filters.updated = u } }
+            Picker("Updated", selection: $filters.updated) {
+                ForEach(ListFilters.Updated.allCases, id: \.self) { Text($0.rawValue).tag($0) }
             }
             if filters.isActive {
                 Button { filters = ListFilters() } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }
                     .buttonStyle(.plain).help("Clear filters")
             }
-            Spacer(minLength: 0)
         }
-        .padding(.horizontal, 10).padding(.vertical, 8)
+        .fixedSize()
+        .labelsHidden()
+        .controlSize(.small)
+        .padding(.horizontal, 10).padding(.vertical, 7)
+        }
         .background(.bar)
         .overlay(alignment: .bottom) { Divider() }
         .disabled(isRawJQL)
         .opacity(isRawJQL ? 0.4 : 1)
         .help(isRawJQL ? "Filters don't apply to raw JQL" : "")
-    }
-
-    private func chip<M: View>(_ title: String, active: Bool, @ViewBuilder _ items: () -> M) -> some View {
-        Menu {
-            items()
-        } label: {
-            HStack(spacing: 3) {
-                Text(title).lineLimit(1)
-                Image(systemName: "chevron.down").font(.system(size: 8, weight: .bold))
-            }
-            .font(.caption.weight(.medium))
-            .padding(.horizontal, 8).padding(.vertical, 4)
-            .foregroundStyle(active ? Color.white : .primary)
-            .background(active ? Color.accentColor : Color.primary.opacity(0.07), in: .capsule)
-        }
-        .menuStyle(.button).buttonStyle(.plain).fixedSize()
     }
 
     // MARK: Search assist

@@ -99,7 +99,7 @@ struct IssueDetailView: View {
         .background(Backdrop())
         .navigationTitle(key)
         .navigationSubtitle(store.issue?.fields.project?.name ?? "")
-        .toolbar { toolbar }
+        .toolbar(id: "issue") { toolbar }
         .task(id: key) { if let c = session.client { await store.load(c, key: key) } }
         .errorAlert($store.error)
         .quickLookPreview($store.previewURL)
@@ -519,19 +519,16 @@ struct IssueDetailView: View {
 
     // MARK: Toolbar
 
-    @ToolbarContentBuilder private var toolbar: some ToolbarContent {
-        ToolbarItemGroup {
-            Group {
+    @ToolbarContentBuilder private var toolbar: some CustomizableToolbarContent {
+        ToolbarItem(id: "refresh") {
             Button { if let c = session.client { Task { await store.load(c, key: key) } } } label: { Label("Refresh", systemImage: "arrow.clockwise") }
                 .keyboardShortcut("r", modifiers: [.command, .shift])
-            }
-            .labelStyle(.titleAndIcon)
         }
-        ToolbarSpacer()
-        ToolbarItemGroup {
-            Group {
+        ToolbarItem(id: "attach") {
             Button { attachFiles() } label: { Label("Attach Files", systemImage: "paperclip") }
                 .help("Attach files (or drop them anywhere, or paste an image)")
+        }
+        ToolbarItem(id: "more") {
             Menu {
                 Button("Create Subtask…", systemImage: "plus.square.on.square") { showCreateSubtask = true }
                 Button("Link Issue…", systemImage: "link") { showLink = true }
@@ -549,24 +546,20 @@ struct IssueDetailView: View {
                     run { try await $0.addWorklog(key, seconds: seconds, comment: comment.isEmpty ? nil : .document(markdown: comment), started: started) }
                 }
             }
-            }
-            .labelStyle(.titleAndIcon)
         }
-        ToolbarSpacer()
-        ToolbarItemGroup {
-            Group {
+        ToolbarItem(id: "copy") {
             Button {
                 let url = session.client?.browseURL(key)
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(url?.absoluteString ?? key, forType: .string)
             } label: { Label("Copy Link", systemImage: "link") }
             .keyboardShortcut("c", modifiers: [.command, .shift])
+        }
+        ToolbarItem(id: "browser") {
             Button {
                 if let url = session.client?.browseURL(key) { NSWorkspace.shared.open(url) }
             } label: { Label("Open in Browser", systemImage: "safari") }
             .keyboardShortcut("o", modifiers: [.command, .shift])
-            }
-            .labelStyle(.titleAndIcon)
         }
     }
 

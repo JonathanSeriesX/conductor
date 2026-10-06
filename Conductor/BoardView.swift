@@ -102,31 +102,25 @@ struct BoardView: View {
         }
         .navigationTitle(store.board?.name ?? projectKey)
         .navigationSubtitle(subtitle)
-        .toolbar {
-            ToolbarItemGroup {
-            Group {
-                if store.boards.count > 1 {
-                    Picker("Board", selection: $store.board) {
-                        ForEach(store.boards) { b in Text(b.name).tag(Optional(b)) }
-                    }
-                    .frame(maxWidth: 220)
+        .toolbar(id: "board") {
+            ToolbarItem(id: "boardPicker") {
+                Picker("Board", selection: $store.board) {
+                    ForEach(store.boards) { b in Text(b.name).tag(Optional(b)) }
                 }
+                .frame(maxWidth: 220)
+                .disabled(store.boards.count < 2)
+            }
+            ToolbarItem(id: "sprintPicker") {
                 if !store.sprints.isEmpty {
                     Picker("Sprint", selection: $store.sprint) {
                         ForEach(store.sprints) { s in Text(s.name + (s.state == "active" ? " · active" : "")).tag(Optional(s)) }
                     }
                     .frame(maxWidth: 260)
                 }
-                }
-                .labelStyle(.titleAndIcon)
             }
-            ToolbarSpacer()
-            ToolbarItemGroup {
-            Group {
+            ToolbarItem(id: "refresh") {
                 Button { if let c = session.client { Task { await store.loadIssues(c) } } } label: { Label("Refresh", systemImage: "arrow.clockwise") }
                     .keyboardShortcut("r")
-                }
-                .labelStyle(.titleAndIcon)
             }
         }
         // Re-runs when the account changes or once sign-in completes after a restored launch.
