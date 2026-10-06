@@ -20,7 +20,7 @@ enum Source: Hashable {
         case .assignedToMe: "assignee = currentUser() AND statusCategory != Done"
         case .reportedByMe: "reporter = currentUser()"
         case .recent: "issuekey IN issueHistory()"
-        case .project(let p): "project = \(p.key)"
+        case .project(let p): "project = \"\(p.key)\"" // keys like IN or AND are JQL reserved words
         case .filter(let f): "filter = \(f.id)"
         }
     }
@@ -38,7 +38,7 @@ enum Source: Hashable {
         let q = search.trimmingCharacters(in: .whitespacesAndNewlines)
         if q.isEmpty { return "\(whereClause) ORDER BY \(orderClause)" }
         if q.range(of: #"(?i)(=|~|\bin\b|\bis\b|order by)"#, options: .regularExpression) != nil { return q }
-        if q.range(of: #"^[A-Za-z][A-Za-z0-9_]+-\d+$"#, options: .regularExpression) != nil { return "key = \(q.uppercased())" }
+        if q.range(of: #"^[A-Za-z][A-Za-z0-9_]+-\d+$"#, options: .regularExpression) != nil { return "key = \"\(q.uppercased())\"" }
         let escaped = q.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
         return "\(whereClause) AND text ~ \"\(escaped)\" ORDER BY \(orderClause)"
     }
