@@ -136,6 +136,8 @@ struct IssueListView: View {
                 IssueRow(issue: row.issue, site: source.isUnified ? (row.state.title, row.state.color) : nil)
                     .tag(row.target)
                     .onAppear { if row.id == store.rows.last?.id { Task { await store.loadMore() } } }
+                    // Drag a row into Slack, a browser or a note as its Jira link.
+                    .itemProvider { NSItemProvider(object: row.state.client.browseURL(row.issue.key) as NSURL) }
             }
             if store.isLoading {
                 HStack { Spacer(); ProgressView().controlSize(.small); Spacer() }
@@ -145,6 +147,9 @@ struct IssueListView: View {
         .listStyle(.inset)
         .contextMenu(forSelectionType: IssueTarget.self) { targets in
             if let t = targets.first, let row = store.rows.first(where: { $0.target == t }) { rowMenu(row) }
+        } primaryAction: { targets in
+            // Double-click (or ↩) opens the issue in a window of its own, like a message in Mail.
+            for t in targets { openWindow(id: "issue", value: t) }
         }
         .safeAreaInset(edge: .top, spacing: 0) { chips }
         .overlay {
@@ -152,6 +157,10 @@ struct IssueListView: View {
                 ContentUnavailableView(search.isEmpty && !filters.isActive ? "No issues" : "No matches", systemImage: "tray")
             }
         }
+        .focusedSceneValue(\.listActions, ListActions(
+            saveFilter: search.isEmpty || source.isUnified ? nil : { filterName = ""; savingFilter = true },
+            openBoard: boardTarget.map { b in { openWindow(id: "board", value: b) } }
+        ))
         .navigationTitle(source.title)
         .navigationSubtitle(subtitle)
         .searchable(text: $search, placement: .toolbar, prompt: "Search, JQL, or paste a Jira link")
@@ -171,14 +180,14 @@ struct IssueListView: View {
         }
         .toolbar(id: "list") {
             ToolbarItem(id: "board") {
-                if case .project(let p, let id) = source {
-                    Button { openWindow(id: "board", value: BoardTarget(accountID: id, projectKey: p.key)) } label: { Label("Board", systemImage: "rectangle.split.3x1") }
-                        .help("Open the project board")
+                if let b = boardTarget {
+                    Button { openWindow(id: "board", value: b) } label: { Label("Board", systemImage: "rectangle.split.3x1") }
+                        .help("Open the project board (⌘⇧B)")
                 }
             }
             ToolbarItem(id: "saveFilter") {
                 Button { filterName = ""; savingFilter = true } label: { Label("Save as Filter", systemImage: "bookmark") }
-                    .help(source.isUnified ? "Pick an account's list to save a filter" : "Save this search as a favourite filter")
+                    .help(source.isUnified ? "Pick an account's list to save a filter" : "Save this search as a favourite filter (⌘S)")
                     .disabled(search.isEmpty || source.isUnified)
             }
         }
@@ -202,6 +211,11 @@ struct IssueListView: View {
         .errorAlert($store.error)
     }
 
+    private var boardTarget: BoardTarget? {
+        if case .project(let p, let id) = source { return BoardTarget(accountID: id, projectKey: p.key) }
+        return nil
+    }
+
     private var subtitle: String {
         guard !store.rows.isEmpty else { return "" }
         return "\(store.rows.count)\(store.nextToken == nil ? "" : "+") issues"
@@ -215,11 +229,12 @@ struct IssueListView: View {
         let url = row.state.client.browseURL(key)
         let watching = row.issue.fields.watches?.isWatching == true
         let me = row.state.me?.accountId
+        Button("Open in New Window", systemImage: "macwindow.badge.plus") { openWindow(id: "issue", value: row.target) }
         Button("Open in Browser", systemImage: "safari") { NSWorkspace.shared.open(url) }
         Divider()
-        Button("Copy Link", systemImage: "link") { copy(url.absoluteString) }
-        Button("Copy Key", systemImage: "number") { copy(key) }
-        Button("Copy as Markdown", systemImage: "text.quote") { copy("[\(key): \(row.issue.fields.summary)](\(url.absoluteString))") }
+        Button("Copy Link", systemImage: "link") { copyToPasteboard(url.absoluteString) }
+        Button("Copy Key", systemImage: "number") { copyToPasteboard(key) }
+        Button("Copy as Markdown", systemImage: "text.quote") { copyToPasteboard(row.state.client.markdownLink(key, summary: row.issue.fields.summary)) }
         ShareLink(item: url)
         Divider()
         Button(watching ? "Stop Watching This Issue" : "Watch This Issue", systemImage: watching ? "eye.slash" : "eye") {
@@ -230,11 +245,6 @@ struct IssueListView: View {
                 act { try await row.state.client.assign(key, to: me) }
             }
         }
-    }
-
-    private func copy(_ string: String) {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(string, forType: .string)
     }
 
     /// Runs a write, then reloads the list and the open issue so both show the result.

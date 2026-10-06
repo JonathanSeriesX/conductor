@@ -48,7 +48,15 @@ struct ConductorApp: App {
             CommandGroup(after: .appSettings) {
                 Button("Check for Updates…") { UpdateChecker.shared.check(interactive: true) }
             }
+            SidebarCommands()
+            ToolbarCommands()
+            IssueCommands()
         }
+
+        WindowGroup("Issue", id: "issue", for: IssueTarget.self) { $target in
+            if let target { IssueWindow(target: target).environment(session) }
+        }
+        .defaultSize(width: 980, height: 820)
 
         WindowGroup("Board", id: "board", for: BoardTarget.self) { $target in
             if let target {
