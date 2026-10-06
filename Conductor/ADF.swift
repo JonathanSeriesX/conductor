@@ -298,11 +298,14 @@ struct ADFBlock: View {
 extension EnvironmentValues {
     /// Attachments of the issue being rendered, so inline media can resolve to real images by filename.
     @Entry var adfAttachments: [Attachment] = []
+    /// Set by the issue view: shows an attachment in Quick Look.
+    @Entry var previewAttachment: (Attachment) -> Void = { _ in }
 }
 
 struct InlineImage: View {
     let attachment: Attachment
     @Environment(Session.self) private var session
+    @Environment(\.previewAttachment) private var preview
     @State private var image: NSImage?
 
     var body: some View {
@@ -322,7 +325,8 @@ struct InlineImage: View {
             ImageCache.shared.setObject(img, forKey: attachment.content as NSURL)
             image = img
         }
-        .onTapGesture { if let client = session.client { Task { await AttachmentOpener.open(attachment, client: client) } } }
-        .help(attachment.filename)
+        .onTapGesture { preview(attachment) }
+        .onHover { inside in inside ? NSCursor.pointingHand.push() : NSCursor.pop() }
+        .help("\(attachment.filename) — click to Quick Look")
     }
 }
