@@ -15,6 +15,14 @@ final class Session {
     private(set) var isRestoring = true
     /// Set by the ⌘N menu command; the root view presents the sheet.
     var createIssueRequested = false
+    /// One-shot requests from menu commands, URLs and other windows; the root view consumes them.
+    var navigationRequest: Source?
+    var pendingOpen: String?
+    var focusSearchRequested = false
+    var reloadTick = 0
+    /// Site vocabulary for the search assist.
+    private(set) var issueTypeNames: [String] = []
+    private(set) var jqlFields: [JQLAutocomplete.Field] = []
 
     var isSignedIn: Bool { client != nil }
 
@@ -73,6 +81,72 @@ final class Session {
         filters = (try? await f) ?? []
         starred = Set(UserDefaults.standard.stringArray(forKey: starredKey) ?? [])
             .union(projects.filter { $0.favourite == true }.map(\.key))
+        async let types = client.issueTypes()
+        async let assist = client.jqlAutocomplete()
+        issueTypeNames = Array(Set(((try? await types) ?? []).map(\.name))).sorted()
+        jqlFields = ((try? await assist)?.visibleFieldNames ?? []).filter { $0.auto == nil || $0.auto == "true" || $0.auto == "false" }
+    }
+
+    /// Resolves a `Source.id` back into a source once the catalog is loaded.
+    func source(for id: String) -> Source? {
+        switch id {
+        case "assigned": return .assignedToMe
+        case "reported": return .reportedByMe
+        case "recent": return .recent
+        case "watching": return .watching
+        default:
+            if id.hasPrefix("project:"), let p = projects.first(where: { $0.key == id.dropFirst(8) }) { return .project(p) }
+            if id.hasPrefix("filter:"), let f = filters.first(where: { $0.id == id.dropFirst(7) }) { return .filter(f) }
+            return nil
+        }
+    }
+
+    // MARK: Recent searches
+
+    private var recentKey: String { "recentSearches.\(active?.site.host() ?? "")|\(active?.email ?? "")" }
+    var recentSearches: [String] { UserDefaults.standard.stringArray(forKey: recentKey) ?? [] }
+
+    func recordSearch(_ text: String) {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard t.count > 1 else { return }
+        var list = recentSearches.filter { $0 != t }
+        list.insert(t, at: 0)
+        UserDefaults.standard.set(Array(list.prefix(10)), forKey: recentKey)
+    }
+
+    func clearRecentSearches() { UserDefaults.standard.removeObject(forKey: recentKey) }
+
+    // MARK: Deep links
+
+    /// Handles `conductor://issue/KEY`, `conductor://open?url=…` and plain Jira browse URLs.
+    func open(url: URL) {
+        var target = url
+        if url.scheme == "conductor" {
+            if url.host() == "issue" {
+                pendingOpen = url.lastPathComponent.uppercased()
+                return
+            }
+            guard let raw = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "url" })?.value,
+                  let inner = URL(string: raw) else { return }
+            target = inner
+        }
+        guard let key = Self.issueKey(in: target) else { return }
+        if let host = target.host(), host != active?.site.host(), let account = accounts.first(where: { $0.site.host() == host }) {
+            Task {
+                try? await signIn(account, persist: false)
+                pendingOpen = key
+            }
+        } else {
+            pendingOpen = key
+        }
+    }
+
+    /// "…/browse/ES-123" or "…?selectedIssue=ES-123" → "ES-123".
+    nonisolated static func issueKey(in url: URL) -> String? {
+        let parts = url.pathComponents
+        if let i = parts.firstIndex(of: "browse"), i + 1 < parts.count { return parts[i + 1].uppercased() }
+        if let v = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "selectedIssue" })?.value { return v.uppercased() }
+        return nil
     }
 
     var starredProjects: [Project] { projects.filter { starred.contains($0.key) } }

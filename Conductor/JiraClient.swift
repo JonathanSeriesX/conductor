@@ -138,8 +138,8 @@ struct JiraClient: Sendable {
 
     func favouriteFilters() async throws -> [Filter] { try await get("filter/favourite") }
 
-    func search(jql: String, nextPageToken: String? = nil) async throws -> SearchPage {
-        var q = ["jql": jql, "maxResults": "50", "fields": Self.listFields]
+    func search(jql: String, nextPageToken: String? = nil, fields: String = JiraClient.listFields) async throws -> SearchPage {
+        var q = ["jql": jql, "maxResults": "50", "fields": fields]
         if let nextPageToken { q["nextPageToken"] = nextPageToken }
         return try await get("search/jql", query: q)
     }

@@ -27,13 +27,21 @@ targets:
       path: Conductor/Info.plist
       properties:
         CFBundleDisplayName: Conductor
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         LSMinimumSystemVersion: "26.0"
         LSApplicationCategoryType: public.app-category.productivity
+        CFBundleURLTypes:
+          - CFBundleURLName: org.evgenii.conductor
+            CFBundleURLSchemes: [conductor]
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: org.evgenii.conductor
         ENABLE_HARDENED_RUNTIME: true
         GENERATE_INFOPLIST_FILE: false
+        MARKETING_VERSION: "1.1.0"
+        CURRENT_PROJECT_VERSION: "2"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
   ConductorTests:
     type: bundle.unit-test
     platform: macOS

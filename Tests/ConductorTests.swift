@@ -124,3 +124,88 @@ final class LiveWriteTests: XCTestCase {
         }
     }
 }
+
+final class MarkdownTests: XCTestCase {
+    func testBlocksAndMarksRoundTrip() {
+        let md = """
+        # Title
+
+        Some **bold** and *italic* with `code` and a [link](https://x.y/z).
+
+        - one
+        - two
+          1. nested
+
+        > quoted
+
+        ```swift
+        let a = 1
+        ```
+        """
+        let doc = ADFNode.document(markdown: md)
+        XCTAssertEqual(doc.content?.map(\.type), ["heading", "paragraph", "bulletList", "blockquote", "codeBlock"])
+        let p = doc.content![1]
+        XCTAssertEqual(p.content?.map { $0.marks?.first?.type ?? "plain" }, ["plain", "strong", "plain", "em", "plain", "code", "plain", "link", "plain"])
+        XCTAssertEqual(doc.content![2].content?[1].content?[1].type, "orderedList")
+        XCTAssertEqual(doc.content![4].attr("language"), "swift")
+        var mentions: [String: String] = [:]
+        let back = doc.markdown(mentions: &mentions)
+        XCTAssertEqual(ADFNode.document(markdown: back), doc, "second pass must be stable")
+    }
+
+    func testMentionsBecomeNodesAndBack() {
+        let doc = ADFNode.document(markdown: "ping @Ivan K and @Nikita", mentions: ["Ivan K": "a1", "Nikita": "b2"])
+        let nodes = doc.content![0].content!
+        XCTAssertEqual(nodes.map(\.type), ["text", "mention", "text", "mention"])
+        XCTAssertEqual(nodes[1].attr("id"), "a1")
+        var found: [String: String] = [:]
+        XCTAssertEqual(doc.markdown(mentions: &found), "ping @Ivan K and @Nikita")
+        XCTAssertEqual(found, ["Ivan K": "a1", "Nikita": "b2"])
+    }
+
+    func testBareURLsAndUnderscoresInIdentifiers() {
+        let doc = ADFNode.document(markdown: "see https://a.b/c?d=1 and snake_case_name")
+        let nodes = doc.content![0].content!
+        XCTAssertEqual(nodes[1].marks?.first?.attrs?["href"]?.string, "https://a.b/c?d=1")
+        XCTAssertEqual(nodes.last?.text, " and snake_case_name")
+    }
+
+    func testLossyDetection() {
+        XCTAssertTrue(ADFNode(type: "doc", content: [ADFNode(type: "table")]).hasLossyNodes)
+        XCTAssertFalse(ADFNode.document(markdown: "plain").hasLossyNodes)
+    }
+}
+
+final class FilterAndDurationTests: XCTestCase {
+    func testChipsExtendTheQuery() {
+        var f = ListFilters()
+        f.status = .inProgress
+        f.assignee = .me
+        f.type = "Bug"
+        f.updated = .week
+        XCTAssertEqual(Source.recent.jql(search: "", filters: f),
+                       "issuekey IN issueHistory() AND statusCategory = \"In Progress\" AND assignee = currentUser() AND issuetype = \"Bug\" AND updated >= startOfWeek() ORDER BY lastViewed DESC")
+        XCTAssertEqual(Source.recent.jql(search: "status = Done", filters: f), "status = Done", "raw JQL ignores chips")
+    }
+
+    func testDurationParsing() {
+        XCTAssertEqual(LogWorkView.parseDuration("1h 30m"), 5400)
+        XCTAssertEqual(LogWorkView.parseDuration("2d"), 16 * 3600)
+        XCTAssertEqual(LogWorkView.parseDuration("1w"), 40 * 3600)
+        XCTAssertEqual(LogWorkView.parseDuration("45"), 45 * 60)
+        XCTAssertNil(LogWorkView.parseDuration("soon"))
+        XCTAssertNil(LogWorkView.parseDuration("1h x"))
+    }
+
+    func testVersionCompare() {
+        XCTAssertTrue(UpdateChecker.isNewer("1.2.10", than: "1.2.9"))
+        XCTAssertTrue(UpdateChecker.isNewer("1.1", than: "1.0.5"))
+        XCTAssertFalse(UpdateChecker.isNewer("1.0", than: "1.0.0"))
+    }
+
+    func testIssueKeyFromLinks() {
+        XCTAssertEqual(Session.issueKey(in: URL(string: "https://x.atlassian.net/browse/es-12")!), "ES-12")
+        XCTAssertEqual(Session.issueKey(in: URL(string: "https://x.atlassian.net/jira/software/projects/ES/boards/62?selectedIssue=ES-9")!), "ES-9")
+        XCTAssertNil(Session.issueKey(in: URL(string: "https://x.atlassian.net/")!))
+    }
+}

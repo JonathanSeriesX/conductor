@@ -40,10 +40,17 @@ struct IssueListView: View {
     let source: Source
     @Binding var selection: String?
     @Environment(Session.self) private var session
+    @Environment(\.openWindow) private var openWindow
     @State private var store = IssueListStore()
     @State private var search = ""
+    @State private var filters = ListFilters()
+    @State private var suggestions: [(display: String, completion: String)] = []
+    @State private var savingFilter = false
+    @State private var filterName = ""
+    @FocusState private var searchFocused: Bool
 
-    private var jql: String { source.jql(search: search) }
+    private var jql: String { source.jql(search: search, filters: filters) }
+    private var isRawJQL: Bool { Source.looksLikeJQL(search) }
 
     var body: some View {
         List(selection: $selection) {
@@ -62,21 +69,151 @@ struct IssueListView: View {
             }
         }
         .listStyle(.inset)
+        .safeAreaInset(edge: .top, spacing: 0) { chips }
         .overlay {
             if !store.isLoading, store.issues.isEmpty {
-                ContentUnavailableView(search.isEmpty ? "No issues" : "No matches", systemImage: "tray")
+                ContentUnavailableView(search.isEmpty && !filters.isActive ? "No issues" : "No matches", systemImage: "tray")
             }
         }
         .navigationTitle(source.title)
         .navigationSubtitle(store.issues.isEmpty ? "" : "\(store.issues.count)\(store.nextToken == nil ? "" : "+") issues")
-        .searchable(text: $search, placement: .toolbar, prompt: "Search or JQL")
-        .task(id: jql) {
+        .searchable(text: $search, placement: .toolbar, prompt: "Search, JQL, or paste a Jira link")
+        .searchFocused($searchFocused)
+        .searchSuggestions {
+            ForEach(suggestions, id: \.completion) { s in
+                Text(s.display).searchCompletion(s.completion)
+            }
+        }
+        .onSubmit(of: .search) {
+            if let url = URL(string: search), url.scheme?.hasPrefix("http") == true, Session.issueKey(in: url) != nil {
+                session.open(url: url)
+                search = ""
+                return
+            }
+            session.recordSearch(search)
+        }
+        .toolbar {
+            ToolbarItemGroup {
+                if case .project(let p) = source {
+                    Button { openWindow(id: "board", value: p.key) } label: { Label("Board", systemImage: "rectangle.split.3x1") }
+                        .help("Open the project board")
+                }
+                if !search.isEmpty {
+                    Button { filterName = ""; savingFilter = true } label: { Label("Save as Filter", systemImage: "bookmark") }
+                        .help("Save this search as a favourite filter")
+                }
+            }
+        }
+        .alert("Save as Filter", isPresented: $savingFilter) {
+            TextField("Filter name", text: $filterName)
+            Button("Save") { saveFilter() }.disabled(filterName.trimmingCharacters(in: .whitespaces).isEmpty)
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("The filter is starred and shows up in the sidebar on every device.")
+        }
+        .task(id: "\(jql)#\(session.reloadTick)") {
             // Debounce typing; JQL is evaluated server-side.
             if !search.isEmpty { try? await Task.sleep(for: .milliseconds(350)) }
             guard !Task.isCancelled, let c = session.client else { return }
             await store.load(c, jql: jql)
         }
+        .task(id: search) { await updateSuggestions() }
+        .onChange(of: session.focusSearchRequested) { _, on in
+            if on { searchFocused = true; session.focusSearchRequested = false }
+        }
         .errorAlert($store.error)
+    }
+
+    // MARK: Chips
+
+    private var chips: some View {
+        HStack(spacing: 6) {
+            chip(filters.status.rawValue, active: filters.status != .any) {
+                ForEach(ListFilters.Status.allCases, id: \.self) { s in Button(s.rawValue) { filters.status = s } }
+            }
+            chip(filters.assignee.rawValue, active: filters.assignee != .any) {
+                ForEach(ListFilters.Assignee.allCases, id: \.self) { a in Button(a.rawValue) { filters.assignee = a } }
+            }
+            chip(filters.type ?? "Any type", active: filters.type != nil) {
+                Button("Any type") { filters.type = nil }
+                Divider()
+                ForEach(session.issueTypeNames, id: \.self) { t in Button(t) { filters.type = t } }
+            }
+            chip(filters.updated.rawValue, active: filters.updated != .any) {
+                ForEach(ListFilters.Updated.allCases, id: \.self) { u in Button(u.rawValue) { filters.updated = u } }
+            }
+            if filters.isActive {
+                Button { filters = ListFilters() } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }
+                    .buttonStyle(.plain).help("Clear filters")
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 10).padding(.vertical, 8)
+        .background(.bar)
+        .overlay(alignment: .bottom) { Divider() }
+        .disabled(isRawJQL)
+        .opacity(isRawJQL ? 0.4 : 1)
+        .help(isRawJQL ? "Filters don't apply to raw JQL" : "")
+    }
+
+    private func chip<M: View>(_ title: String, active: Bool, @ViewBuilder _ items: () -> M) -> some View {
+        Menu {
+            items()
+        } label: {
+            HStack(spacing: 3) {
+                Text(title).lineLimit(1)
+                Image(systemName: "chevron.down").font(.system(size: 8, weight: .bold))
+            }
+            .font(.caption.weight(.medium))
+            .padding(.horizontal, 8).padding(.vertical, 4)
+            .foregroundStyle(active ? Color.white : .primary)
+            .background(active ? Color.accentColor : Color.primary.opacity(0.07), in: .capsule)
+        }
+        .menuStyle(.button).buttonStyle(.plain).fixedSize()
+    }
+
+    // MARK: Search assist
+
+    private func updateSuggestions() async {
+        let q = search
+        if q.isEmpty {
+            suggestions = session.recentSearches.map { ($0, $0) }
+            return
+        }
+        guard isRawJQL || session.jqlFields.contains(where: { q.lowercased().hasPrefix($0.value.lowercased()) }) else { suggestions = []; return }
+        // "status = In" → values for status; "sta" → field names.
+        if let m = q.firstMatch(of: /(.*?)([A-Za-z_][\w\[\]. ]*?)\s*(=|!=|~|!~|>=|<=|>|<|\bin\b|\bnot in\b|\bis not\b|\bis\b)\s*("?)([^"]*)$/.ignoresCase()) {
+            let field = String(m.2).trimmingCharacters(in: .whitespaces)
+            let partial = String(m.5)
+            try? await Task.sleep(for: .milliseconds(250))
+            guard !Task.isCancelled, let c = session.client else { return }
+            let values = (try? await c.jqlSuggestions(field: field, value: partial)) ?? []
+            let prefix = String(m.1) + field + " " + String(m.3) + " "
+            suggestions = values.prefix(8).map { ($0.displayName.replacingOccurrences(of: "<b>", with: "").replacingOccurrences(of: "</b>", with: ""), prefix + $0.value + " ") }
+            return
+        }
+        guard let last = q.split(separator: " ", omittingEmptySubsequences: false).last else { suggestions = []; return }
+        let head = q.dropLast(last.count)
+        let word = last.lowercased()
+        guard !word.isEmpty else { suggestions = []; return }
+        suggestions = session.jqlFields
+            .filter { $0.value.lowercased().hasPrefix(word) }
+            .prefix(8)
+            .map { ($0.displayName, head + $0.value + " ") }
+    }
+
+    private func saveFilter() {
+        guard let c = session.client else { return }
+        let name = filterName.trimmingCharacters(in: .whitespaces)
+        let jql = self.jql
+        Task {
+            do {
+                let f = try await c.createFilter(name: name, jql: jql)
+                search = ""
+                await session.refreshCatalog()
+                session.navigationRequest = .filter(f)
+            } catch { store.error = error.localizedDescription }
+        }
     }
 }
 

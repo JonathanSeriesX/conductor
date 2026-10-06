@@ -837,7 +837,7 @@ struct LogWorkView: View {
     }
 
     /// "1w 2d 3h 30m" → seconds (Jira's 8h day, 5d week). Bare numbers mean minutes.
-    static func parseDuration(_ text: String) -> Int? {
+    nonisolated static func parseDuration(_ text: String) -> Int? {
         let t = text.trimmingCharacters(in: .whitespaces).lowercased()
         guard !t.isEmpty else { return nil }
         if let n = Double(t) { return n > 0 ? Int(n * 60) : nil }

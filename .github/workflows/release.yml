@@ -1,0 +1,50 @@
+name: Release
+on:
+  push:
+    tags: ["v*"]
+
+# Builds a Release .app and attaches it zipped to a GitHub release.
+# Ad-hoc signed unless the Developer ID secrets below are set, in which case it is
+# signed with Developer ID, notarized and stapled.
+#   MAC_CERT_P12 (base64), MAC_CERT_PASSWORD, APPLE_ID, APPLE_TEAM_ID, APPLE_APP_PASSWORD
+jobs:
+  release:
+    runs-on: macos-26
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_26.0.app || ls /Applications | grep Xcode
+      - name: Build
+        run: |
+          xcodebuild -project Conductor.xcodeproj -scheme Conductor -configuration Release \
+            -derivedDataPath build CODE_SIGN_IDENTITY=- CODE_SIGNING_ALLOWED=YES \
+            MARKETING_VERSION=${GITHUB_REF_NAME#v} build
+      - name: Sign and notarize
+        if: ${{ env.MAC_CERT_P12 != '' }}
+        env:
+          MAC_CERT_P12: ${{ secrets.MAC_CERT_P12 }}
+          MAC_CERT_PASSWORD: ${{ secrets.MAC_CERT_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          echo "$MAC_CERT_P12" | base64 --decode > cert.p12
+          security create-keychain -p ci build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p ci build.keychain
+          security import cert.p12 -k build.keychain -P "$MAC_CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k ci build.keychain
+          APP=build/Build/Products/Release/Conductor.app
+          codesign --force --deep --options runtime --timestamp --sign "Developer ID Application" "$APP"
+          ditto -c -k --keepParent "$APP" Conductor.zip
+          xcrun notarytool submit Conductor.zip --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" --wait
+          xcrun stapler staple "$APP"
+      - name: Package
+        run: ditto -c -k --keepParent build/Build/Products/Release/Conductor.app Conductor-${GITHUB_REF_NAME#v}.zip
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: Conductor-*.zip
+          generate_release_notes: true
