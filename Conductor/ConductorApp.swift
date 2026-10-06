@@ -9,6 +9,7 @@ struct BoardTarget: Hashable, Codable {
 @main
 struct ConductorApp: App {
     @State private var session = Session()
+    @AppStorage("showInMenuBar") private var showInMenuBar = true
 
     var body: some Scene {
         WindowGroup(id: "main") {
@@ -67,6 +68,10 @@ struct ConductorApp: App {
 
         Settings {
             SettingsView().environment(session)
+        }
+
+        MenuBarExtra("Conductor", systemImage: "ticket", isInserted: $showInMenuBar) {
+            MenuBarMenu().environment(session)
         }
     }
 }
@@ -129,6 +134,7 @@ struct RootView: View {
         // macOS 27 pins a Siri button beside the caret of every text view; hiding just the button has no effect there,
         // so Writing Tools goes off for the whole window (it reaches sheets through the environment).
         .writingToolsBehavior(.disabled)
+        .onAppear { restoreOnce() }
         .onChange(of: session.states.count) { restoreOnce() }
         .onChange(of: session.isRestoring) { restoreOnce() }
         .onChange(of: source) { _, new in if let new { storedSource = new.id } }
@@ -174,6 +180,9 @@ struct RootView: View {
                 selected = IssueTarget(accountID: id, key: parts[1])
             }
         }
+        // Requests made before this window existed, e.g. from the menu bar extra after the window was closed.
+        if let req = session.navigationRequest { source = req; session.navigationRequest = nil }
+        if let t = session.pendingOpen { selected = t; session.pendingOpen = nil }
         // An account that signed out takes its list and issue with it.
         if let s = source, let id = s.accountID, session.state(id) == nil { source = session.source(for: .assigned) }
         if let sel = selected, session.state(sel.accountID) == nil { selected = nil }

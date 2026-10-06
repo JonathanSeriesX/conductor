@@ -102,6 +102,7 @@ struct IssueDetailView: View {
     @State private var showLogWork = false
     @State private var showCreateSubtask = false
     @State private var showDueDate = false
+    @State private var showRemind = false
     @State private var isDropTargeted = false
     @FocusState private var summaryFocused: Bool
     @FocusState private var commentFocused: Bool
@@ -625,8 +626,14 @@ struct IssueDetailView: View {
                 Button("Create Subtask…", systemImage: "plus.square.on.square") { showCreateSubtask = true }
                 Button("Link Issue…", systemImage: "link") { showLink = true }
                 Button("Log Work…", systemImage: "clock") { showLogWork = true }
+                Button("Remind Me…", systemImage: "bell") { showRemind = true }
             } label: { Label("More", systemImage: "ellipsis.circle") }
-            .help("Subtask, link, log work")
+            .help("Subtask, link, log work, reminder")
+            .popover(isPresented: $showRemind, arrowEdge: .bottom) {
+                if let url = jira?.client.browseURL(key) {
+                    ReminderView(url: url, key: key, summary: store.issue?.fields.summary ?? "") { showRemind = false }
+                }
+            }
             .popover(isPresented: $showLink, arrowEdge: .bottom) {
                 LinkIssueView(key: key, types: store.linkTypes) { type, outward, inward in
                     showLink = false
@@ -641,6 +648,11 @@ struct IssueDetailView: View {
             }
         }
         // Shortcuts live on the Issue menu items, so the menu bar lists them.
+        ToolbarItem(id: "star") {
+            let starred = session.isStarred(target)
+            Button { perform(.star) } label: { Label(starred ? "Unstar" : "Star", systemImage: starred ? "star.fill" : "star") }
+                .help(starred ? "Unstar (⌘D)" : "Star: keep it in the sidebar and the menu bar (⌘D)")
+        }
         ToolbarItem(id: "copy") {
             Button { perform(.copyLink) } label: { Label("Copy Link", systemImage: "link") }
                 .help("Copy link (⌘⇧C)")
@@ -658,6 +670,7 @@ struct IssueDetailView: View {
         guard let issue = store.issue else { return nil }
         return IssueActions(
             watching: issue.fields.watches?.isWatching == true,
+            starred: session.isStarred(target),
             assignedToMe: issue.fields.assignee?.accountId != nil && issue.fields.assignee?.accountId == jira?.me?.accountId,
             transitions: store.transitions,
             canEditSummary: store.canEdit("summary"),
@@ -681,6 +694,8 @@ struct IssueDetailView: View {
             let on = store.issue?.fields.watches?.isWatching != true, me = jira.me?.accountId
             run { try await $0.watch(key, on, me: me) }
         case .transition(let id): run { try await $0.transition(key, to: id) }
+        case .star: session.toggleStar(target, summary: summary)
+        case .remind: showRemind = true
         case .editSummary: summaryDraft = summary
         case .editDescription: if let issue = store.issue { beginDescriptionEdit(issue) }
         case .comment: commentRequest += 1
@@ -860,6 +875,55 @@ enum AttachmentOpener {
 
     static func open(_ attachment: Attachment, client: JiraClient) async {
         if let file = await download(attachment, client: client) { NSWorkspace.shared.open(file) }
+    }
+}
+
+struct ReminderView: View {
+    let url: URL
+    let key: String
+    let summary: String
+    var done: () -> Void
+    @State private var date = Calendar.current.date(byAdding: .hour, value: 1, to: .now)!
+    @State private var existing: Date?
+    @State private var error: String?
+
+    private var presets: [(String, Date)] {
+        let cal = Calendar.current
+        let tomorrow9 = cal.date(bySettingHour: 9, minute: 0, second: 0, of: cal.date(byAdding: .day, value: 1, to: .now)!)!
+        let monday9 = cal.nextDate(after: .now, matching: DateComponents(hour: 9, minute: 0, weekday: 2), matchingPolicy: .nextTime)!
+        return [("In 1 Hour", .now.addingTimeInterval(3600)), ("Tomorrow at 9:00", tomorrow9), ("Next Monday at 9:00", monday9)]
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Remind Me").font(.headline)
+            if let existing {
+                HStack {
+                    Label(existing.formatted(date: .abbreviated, time: .shortened), systemImage: "bell.fill").font(.callout)
+                    Spacer()
+                    Button("Remove") { Notifier.cancelReminder(for: url); done() }
+                }
+            }
+            ForEach(presets, id: \.0) { title, at in
+                Button(title) { set(at) }.buttonStyle(.plain).foregroundStyle(Color.accentColor)
+            }
+            Divider()
+            HStack {
+                DatePicker("At", selection: $date, in: Date.now..., displayedComponents: [.date, .hourAndMinute]).labelsHidden()
+                Button("Set") { set(date) }.buttonStyle(.glassProminent).keyboardShortcut(.defaultAction)
+            }
+            if let error { Text(error).font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true) }
+        }
+        .padding(12)
+        .frame(width: 280)
+        .task { existing = await Notifier.reminder(for: url) }
+    }
+
+    private func set(_ at: Date) {
+        Task {
+            do { try await Notifier.remind(url, key: key, summary: summary, at: at); done() }
+            catch { self.error = error.localizedDescription }
+        }
     }
 }
 
