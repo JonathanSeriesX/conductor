@@ -1,11 +1,21 @@
 import Foundation
 import Security
+import CryptoKit
 
 struct Account: Codable, Sendable, Equatable, Identifiable {
-    var id = UUID()
+    var id: UUID
     var site: URL      // https://team.atlassian.net
     var email: String
     var token: String
+
+    /// The id is derived from host + email so a re-added account (or a dev launch) matches windows restored from a previous run.
+    init(site: URL, email: String, token: String) {
+        self.site = site; self.email = email; self.token = token
+        let digest = SHA256.hash(data: Data("\(site.host() ?? "")|\(email.lowercased())".utf8))
+        var bytes = Array(digest.prefix(16))
+        bytes[6] = (bytes[6] & 0x0F) | 0x50; bytes[8] = (bytes[8] & 0x3F) | 0x80   // UUID v5 shape
+        id = NSUUID(uuidBytes: bytes) as UUID
+    }
 
     var label: String { "\(site.host() ?? "") (\(email))" }
 

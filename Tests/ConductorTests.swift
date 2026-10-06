@@ -68,6 +68,12 @@ final class ADFTests: XCTestCase {
 }
 
 final class DecodingTests: XCTestCase {
+    func testAccountIDIsStableAcrossLaunches() {
+        let site = URL(string: "https://x.atlassian.net")!
+        XCTAssertEqual(Account(site: site, email: "E@x.com", token: "a").id, Account(site: site, email: "e@x.com", token: "b").id)
+        XCTAssertNotEqual(Account(site: site, email: "e@x.com", token: "a").id, Account(site: site, email: "f@x.com", token: "a").id)
+    }
+
     struct Dates: Decodable { let a: Date; let b: Date }
 
     func testBothJiraDateFormatsDecode() throws {
