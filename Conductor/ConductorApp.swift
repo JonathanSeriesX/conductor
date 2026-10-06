@@ -103,7 +103,7 @@ struct RootView: View {
                                 return nil
                             })
                     } else {
-                        StatsView()
+                        Image(systemName: "ticket").font(.system(size: 56)).foregroundStyle(.quaternary)
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                             .background(Backdrop())
                             .toolbar(id: "issue") { NewIssueToolbarItem() }
