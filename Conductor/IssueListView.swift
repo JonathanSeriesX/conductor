@@ -111,7 +111,7 @@ struct IssueListView: View {
     var body: some View {
         List(selection: $selection) {
             ForEach(store.rows) { row in
-                IssueRow(issue: row.issue, site: source.isUnified ? row.state.title : nil)
+                IssueRow(issue: row.issue, site: source.isUnified ? (row.state.title, row.state.color) : nil)
                     .tag(row.target)
                     .onAppear { if row.id == store.rows.last?.id { Task { await store.loadMore() } } }
             }
@@ -262,7 +262,8 @@ struct IssueListView: View {
 
 struct IssueRow: View {
     let issue: Issue
-    var site: String?
+    var site: (name: String, color: Color)?
+    @Environment(\.backgroundProminence) private var prominence
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
@@ -275,9 +276,10 @@ struct IssueRow: View {
                 HStack(spacing: 8) {
                     Text(issue.key).font(.caption.monospaced()).foregroundStyle(.secondary)
                     if let site {
-                        Text(site).font(.caption2.weight(.medium)).foregroundStyle(.secondary)
+                        let tint: Color = prominence == .increased ? .white : site.color
+                        Text(site.name).font(.caption2.weight(.semibold)).foregroundStyle(tint)
                             .padding(.horizontal, 5).padding(.vertical, 1)
-                            .background(.quaternary.opacity(0.6), in: .capsule)
+                            .background(tint.opacity(prominence == .increased ? 0.28 : 0.16), in: .capsule)
                     }
                     StatusPill(status: issue.fields.status)
                     Spacer(minLength: 0)

@@ -18,6 +18,10 @@ final class AccountState: Identifiable {
     var issueTypeNames: [String] = []
     var jqlFields: [JQLAutocomplete.Field] = []
     private var customTitle: String
+    /// Name of a `Palette` colour; chosen by the user or dealt from the palette by sidebar position.
+    var colorName: String
+
+    var color: Color { Palette.color(named: colorName) }
 
     nonisolated var id: UUID { account.id }
     var host: String { account.site.host() ?? "" }
@@ -37,6 +41,12 @@ final class AccountState: Identifiable {
         self.account = account
         client = JiraClient(account: account)
         customTitle = UserDefaults.standard.string(forKey: "accountTitle.\(account.id)") ?? ""
+        colorName = UserDefaults.standard.string(forKey: "accountColor.\(account.id)") ?? ""
+    }
+
+    func setColor(_ name: String) {
+        colorName = name
+        UserDefaults.standard.set(name, forKey: "accountColor.\(id)")
     }
 
     /// Validates the token, then loads the catalog (cached copy first).
@@ -133,6 +143,7 @@ final class Session {
         for (account, st, task) in pending {
             let failure = await task.value
             if failure == nil {
+                if st.colorName.isEmpty { st.setColor(Palette.next(avoiding: states.map(\.colorName))) }
                 states.append(st)
             } else if let e = failure as? JiraError, e.status == 401 {
                 stored.removeAll { $0.id == account.id } // the token is dead; forget it
@@ -148,6 +159,7 @@ final class Session {
     func add(_ account: Account, persist: Bool = true) async throws -> AccountState {
         let st = AccountState(account: account)
         try await st.load()
+        if st.colorName.isEmpty { st.setColor(Palette.next(avoiding: states.map(\.colorName))) }
         states.removeAll { $0.account.site == account.site && $0.account.email == account.email }
         stored.removeAll { $0.site == account.site && $0.email == account.email }
         states.append(st)
@@ -254,4 +266,28 @@ final class Session {
 extension EnvironmentValues {
     /// The account a view is working in. Set by the list, issue, create and board views for their children.
     @Entry var jira: AccountState? = nil
+}
+
+/// The boring system colours, which is the point: they read well on glass in both appearances.
+enum Palette {
+    static let names = ["blue", "green", "orange", "purple", "pink", "teal", "indigo", "brown", "red", "mint"]
+
+    static func color(named name: String) -> Color {
+        switch name {
+        case "green": .green
+        case "orange": .orange
+        case "purple": .purple
+        case "pink": .pink
+        case "teal": .teal
+        case "indigo": .indigo
+        case "brown": .brown
+        case "red": .red
+        case "mint": .mint
+        default: .blue
+        }
+    }
+
+    static func next(avoiding used: [String]) -> String {
+        names.first { !used.contains($0) } ?? names[used.count % names.count]
+    }
 }
