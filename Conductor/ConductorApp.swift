@@ -89,13 +89,20 @@ struct RootView: View {
                 } content: {
                     if let source {
                         IssueListView(source: source, selection: $selected)
-                            .navigationSplitViewColumnWidth(min: 300, ideal: 380)
+                            // Wide enough for every filter chip; at the default window size the issue page gets about half.
+                            .navigationSplitViewColumnWidth(min: 360, ideal: 420)
                     }
                 } detail: {
                     if let selected, let st = session.state(selected.accountID) {
                         IssueDetailView(target: selected, open: { self.selected = $0 })
                             .environment(\.jira, st)
                             .id(selected)
+                            // Esc closes the issue, unless a text field wants it (search, comment draft).
+                            .background(WindowEventMonitor(mask: .keyDown) { e in
+                                guard e.keyCode == 53, !(e.window?.firstResponder is NSText) else { return e }
+                                self.selected = nil
+                                return nil
+                            })
                     } else {
                         ContentUnavailableView("Select an issue", systemImage: "ticket")
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -111,6 +118,9 @@ struct RootView: View {
                 LoginView()
             }
         }
+        // macOS 27 pins a Siri button beside the caret of every text view; hiding just the button has no effect there,
+        // so Writing Tools goes off for the whole window (it reaches sheets through the environment).
+        .writingToolsBehavior(.disabled)
         .onChange(of: session.states.count) { restoreOnce() }
         .onChange(of: session.isRestoring) { restoreOnce() }
         .onChange(of: source) { _, new in if let new { storedSource = new.id } }

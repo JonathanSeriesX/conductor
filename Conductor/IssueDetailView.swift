@@ -108,7 +108,7 @@ struct IssueDetailView: View {
         .navigationSubtitle(store.issue?.fields.project?.name ?? "")
         .toolbar(id: "issue") { toolbar }
         .toolbarBackgroundVisibility(.hidden, for: .windowToolbar) // let the backdrop run under the glass buttons
-        .task(id: key) { if let jira { await store.load(jira, key: key) } }
+        .task(id: "\(key)|\(session.reloadTick)") { if let jira { await store.load(jira, key: key) } }
         .errorAlert($store.error)
         .quickLookPreview($store.previewURL)
         .dropDestination(for: URL.self) { urls, _ in upload(urls: urls); return true } isTargeted: { isDropTargeted = $0 }

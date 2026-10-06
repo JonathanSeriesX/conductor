@@ -143,6 +143,9 @@ struct IssueListView: View {
             }
         }
         .listStyle(.inset)
+        .contextMenu(forSelectionType: IssueTarget.self) { targets in
+            if let t = targets.first, let row = store.rows.first(where: { $0.target == t }) { rowMenu(row) }
+        }
         .safeAreaInset(edge: .top, spacing: 0) { chips }
         .overlay {
             if !store.isLoading, store.rows.isEmpty {
@@ -202,6 +205,43 @@ struct IssueListView: View {
     private var subtitle: String {
         guard !store.rows.isEmpty else { return "" }
         return "\(store.rows.count)\(store.nextToken == nil ? "" : "+") issues"
+    }
+
+    // MARK: Row actions
+
+    @ViewBuilder
+    private func rowMenu(_ row: ListRow) -> some View {
+        let key = row.issue.key
+        let url = row.state.client.browseURL(key)
+        let watching = row.issue.fields.watches?.isWatching == true
+        let me = row.state.me?.accountId
+        Button("Open in Browser", systemImage: "safari") { NSWorkspace.shared.open(url) }
+        Divider()
+        Button("Copy Link", systemImage: "link") { copy(url.absoluteString) }
+        Button("Copy Key", systemImage: "number") { copy(key) }
+        Button("Copy as Markdown", systemImage: "text.quote") { copy("[\(key): \(row.issue.fields.summary)](\(url.absoluteString))") }
+        ShareLink(item: url)
+        Divider()
+        Button(watching ? "Stop Watching This Issue" : "Watch This Issue", systemImage: watching ? "eye.slash" : "eye") {
+            act { try await row.state.client.watch(key, !watching, me: me) }
+        }
+        if let me, row.issue.fields.assignee?.accountId != me {
+            Button("Assign to Me", systemImage: "person.crop.circle.badge.checkmark") {
+                act { try await row.state.client.assign(key, to: me) }
+            }
+        }
+    }
+
+    private func copy(_ string: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(string, forType: .string)
+    }
+
+    /// Runs a write, then reloads the list and the open issue so both show the result.
+    private func act(_ op: @escaping () async throws -> Void) {
+        Task {
+            do { try await op(); session.reloadTick += 1 } catch { store.error = error.localizedDescription }
+        }
     }
 
     // MARK: Chips

@@ -199,7 +199,8 @@ struct SidebarView: View {
         .listStyle(.sidebar)
         .navigationTitle("Conductor")
         .navigationSplitViewColumnWidth(min: 200, ideal: 240)
-        .safeAreaInset(edge: .bottom) {
+        // A safe-area bar gets the system scroll-edge blur, so no opaque `.bar` backing is needed under the button.
+        .safeAreaBar(edge: .bottom) {
             HStack {
                 Button { showAddAccount = true } label: { Label("Add Account", systemImage: "plus") }
                     .buttonStyle(.plain)
@@ -208,7 +209,6 @@ struct SidebarView: View {
                 Spacer()
             }
             .padding(.horizontal, 14).padding(.vertical, 8)
-            .background(.bar)
         }
         .sheet(isPresented: $showAddAccount) { LoginView(isSheet: true) }
         .alert("Rename Account", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {

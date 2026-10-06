@@ -160,3 +160,34 @@ extension EnvironmentValues {
     /// Lets a preview swatch show a style other than the one in Settings.
     @Entry var backdropOverride: String? = nil
 }
+
+/// Sees events of `mask` aimed at the window this view sits in, before any view handles them; return nil to swallow one.
+/// Invisible to clicks. SwiftUI has no modifier for a key press outside a focused view.
+struct WindowEventMonitor: NSViewRepresentable {
+    let mask: NSEvent.EventTypeMask
+    let handler: (NSEvent) -> NSEvent?
+
+    func makeNSView(context: Context) -> MonitorView { MonitorView(mask: mask) }
+    func updateNSView(_ view: MonitorView, context: Context) { view.handler = handler }
+
+    final class MonitorView: NSView {
+        let mask: NSEvent.EventTypeMask
+        var handler: (NSEvent) -> NSEvent? = { $0 }
+        private var monitor: Any?
+
+        init(mask: NSEvent.EventTypeMask) { self.mask = mask; super.init(frame: .zero) }
+        required init?(coder: NSCoder) { fatalError() }
+
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+        override func viewDidMoveToWindow() {
+            if let monitor { NSEvent.removeMonitor(monitor) }
+            monitor = nil
+            guard window != nil else { return }
+            monitor = NSEvent.addLocalMonitorForEvents(matching: mask) { [weak self] e in
+                guard let self, e.window === self.window else { return e }
+                return self.handler(e)
+            }
+        }
+    }
+}
