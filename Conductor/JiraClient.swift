@@ -233,7 +233,8 @@ struct JiraClient: Sendable {
 
     // MARK: Attachments
 
-    func uploadAttachment(_ key: String, data: Data, filename: String) async throws {
+    @discardableResult
+    func uploadAttachment(_ key: String, data: Data, filename: String) async throws -> [Attachment] {
         let boundary = "conductor-\(UUID().uuidString)"
         var req = URLRequest(url: api.appending(path: "issue/\(key)/attachments"))
         req.httpMethod = "POST"
@@ -249,6 +250,7 @@ struct JiraClient: Sendable {
         let (resp, http) = try await URLSession.shared.data(for: req)
         let status = (http as? HTTPURLResponse)?.statusCode ?? 0
         guard (200..<300).contains(status) else { throw JiraError(status: status, data: resp) }
+        return try decoder.decode([Attachment].self, from: resp)
     }
 
     func deleteAttachment(id: String) async throws {

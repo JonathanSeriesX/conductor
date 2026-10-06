@@ -245,7 +245,7 @@ struct IssueDetailView: View {
                 }
             }
             if let draft = Binding($descriptionDraft) {
-                Composer(text: draft, mentions: $descriptionMentions, placeholder: "Description", minHeight: 140, maxHeight: 420)
+                Composer(text: draft, mentions: $descriptionMentions, placeholder: "Description", minHeight: 140, maxHeight: 420, uploadImage: uploadPasted)
                 if issue.fields.description?.hasLossyNodes == true {
                     Label("This description has tables, images or panels that the editor can't keep. Saving replaces it with what you see here.", systemImage: "exclamationmark.triangle")
                         .font(.caption).foregroundStyle(.orange)
@@ -583,7 +583,7 @@ struct IssueDetailView: View {
                             }
                         }
                         if editingComment?.id == c.id {
-                            Composer(text: $editDraft, mentions: $editMentions, placeholder: "Edit comment", showHint: false)
+                            Composer(text: $editDraft, mentions: $editMentions, placeholder: "Edit comment", uploadImage: uploadPasted)
                             HStack {
                                 Spacer()
                                 Button("Cancel") { editingComment = nil }.buttonStyle(.glass).keyboardShortcut(.cancelAction)
@@ -598,7 +598,7 @@ struct IssueDetailView: View {
             }
             Divider()
             HStack(alignment: .top, spacing: 10) {
-                Composer(text: $commentDraft, mentions: $commentMentions, placeholder: "Add a comment…  ⌘↩ to send", minHeight: 44, focus: $commentFocused)
+                Composer(text: $commentDraft, mentions: $commentMentions, placeholder: "Add a comment…  ⌘↩ to send", minHeight: 44, uploadImage: uploadPasted, focus: $commentFocused)
                 Button("Comment") { postComment() }
                     .buttonStyle(.glassProminent)
                     .keyboardShortcut(.return, modifiers: .command)
@@ -803,10 +803,17 @@ struct IssueDetailView: View {
             upload(urls: urls)
             return
         }
-        guard let image = (pb.readObjects(forClasses: [NSImage.self]) as? [NSImage])?.first,
-              let tiff = image.tiffRepresentation, let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) else { return }
-        let name = "Pasted image \(Date().formatted(.iso8601.year().month().day().dateSeparator(.dash))) \(Date().formatted(date: .omitted, time: .shortened).replacingOccurrences(of: ":", with: ".")).png"
-        run { try await $0.uploadAttachment(key, data: png, filename: name) }
+        guard let image = PastedImage.read() else { return }
+        run { try await $0.uploadAttachment(key, data: image.data, filename: image.name) }
+    }
+
+    /// For composers: the pasted image becomes an attachment, and the draft links to it.
+    private func uploadPasted(_ data: Data, _ name: String) async throws -> URL {
+        guard let jira else { throw CancellationError() }
+        let uploaded = try await jira.client.uploadAttachment(key, data: data, filename: name)
+        await store.load(jira, key: key, full: false)
+        guard let url = uploaded.first?.content else { throw CancellationError() }
+        return url
     }
 }
 

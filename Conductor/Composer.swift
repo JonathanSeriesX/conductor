@@ -1,36 +1,39 @@
 import SwiftUI
 
-/// Markdown text editor with @mention autocomplete. `mentions` collects display name → accountId
-/// so the converter can turn "@Name" into real mention nodes.
+/// Markdown text editor with a formatting bar, @mention autocomplete and a preview of what Jira will
+/// show. `mentions` collects display name → accountId so the converter can turn "@Name" into real
+/// mention nodes. With `uploadImage`, pasting an image uploads it and inserts a link to it.
 struct Composer: View {
     @Binding var text: String
     @Binding var mentions: [String: String]
     var placeholder = "Write something…"
     var minHeight: CGFloat = 60
     var maxHeight: CGFloat = 260
-    var showHint = true
+    /// Uploads pasted image data as an attachment and returns its URL.
+    var uploadImage: ((Data, String) async throws -> URL)?
     /// Lets the owner move focus into the editor, e.g. from the Add Comment menu item.
     var focus: FocusState<Bool>.Binding?
     @FocusState private var ownFocus: Bool
     @Environment(\.jira) private var jira
     @State private var candidates: [JiraUser] = []
     @State private var query = ""
+    @State private var selection: TextSelection?
+    @State private var preview = false
+    @State private var uploading = false
+    @State private var error: String?
+    private var isFocused: Bool { focus?.wrappedValue ?? ownFocus }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            TextEditor(text: $text)
-                .focused(focus ?? $ownFocus)
-                .font(.body)
-                .scrollContentBackground(.hidden)
-                .frame(minHeight: minHeight, maxHeight: maxHeight)
-                .padding(6)
-                .background(.quaternary.opacity(0.4), in: .rect(cornerRadius: 10))
-                .overlay(alignment: .topLeading) {
-                    if text.isEmpty {
-                        Text(placeholder).foregroundStyle(.tertiary)
-                            .padding(.horizontal, 11).padding(.vertical, 6).allowsHitTesting(false)
-                    }
-                }
+            formatBar
+            if preview {
+                ADFView(node: .document(markdown: text, mentions: mentions))
+                    .frame(maxWidth: .infinity, minHeight: minHeight, alignment: .topLeading)
+                    .padding(10)
+                .background(.quaternary.opacity(0.2), in: .rect(cornerRadius: 10))
+            } else {
+                editor
+            }
             if !candidates.isEmpty {
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(candidates) { u in
@@ -50,10 +53,7 @@ struct Composer: View {
                 .glassEffect(.regular, in: .rect(cornerRadius: 10))
                 .transition(.opacity)
             }
-            if showHint {
-                Text(verbatim: "**bold**   *italic*   `code`   - list   > quote   @mention")
-                    .font(.caption2).foregroundStyle(.quaternary)
-            }
+            if let error { Text(error).font(.caption).foregroundStyle(.red) }
         }
         .onChange(of: text) { _, new in
             // A trailing "@name" drives the suggestion list; anything else dismisses it.
@@ -69,12 +69,124 @@ struct Composer: View {
         }
     }
 
+    // MARK: Formatting
+
+    private var formatBar: some View {
+        HStack(spacing: 2) {
+            // Shortcuts only while this editor has focus: an issue page can hold several composers.
+            tool("bold", "Bold (⌘B)", key: "b") { wrap("**", "**") }
+            tool("italic", "Italic (⌘I)", key: "i") { wrap("*", "*") }
+            tool("chevron.left.forwardslash.chevron.right", "Code") { wrap("`", "`") }
+            tool("link", "Link (⌘K)", key: "k") { wrap("[", "](https://)") }
+            tool("list.bullet", "Bulleted list") { prefixLine("- ") }
+            tool("text.quote", "Quote") { prefixLine("> ") }
+            tool("at", "Mention someone") { wrap("@", "") }
+            if uploading { ProgressView().controlSize(.mini).padding(.leading, 6) }
+            Spacer()
+            Toggle(isOn: $preview) { Label("Preview", systemImage: preview ? "eye.fill" : "eye") }
+                .toggleStyle(.button).buttonStyle(.plain).labelStyle(.iconOnly)
+                .foregroundStyle(preview ? Color.accentColor : .secondary)
+                .help("Preview as Jira will show it")
+        }
+        .font(.callout)
+    }
+
+    private func tool(_ symbol: String, _ help: String, key: KeyEquivalent? = nil, _ action: @escaping () -> Void) -> some View {
+        Button(action: action) { Image(systemName: symbol).frame(width: 24, height: 20).contentShape(.rect) }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .help(help)
+            .keyboardShortcut(isFocused ? key.map { KeyboardShortcut($0) } : nil)
+            .disabled(preview)
+    }
+
+    /// The selected range, or the caret, or the end of the text when the editor never had focus.
+    private var range: Range<String.Index> {
+        if case .selection(let r) = selection?.indices, r.upperBound <= text.endIndex { return r }
+        return text.endIndex..<text.endIndex
+    }
+
+    /// Wraps the selection in `left`/`right`, or inserts both with the caret between them.
+    private func wrap(_ left: String, _ right: String) {
+        let r = range
+        let start = text.distance(from: text.startIndex, to: r.lowerBound)
+        let inner = String(text[r])
+        text.replaceSubrange(r, with: left + inner + right)
+        let from = text.index(text.startIndex, offsetBy: start + left.count)
+        selection = TextSelection(range: from..<text.index(from, offsetBy: inner.count))
+        focusEditor()
+    }
+
+    /// Puts `marker` at the start of the line holding the caret.
+    private func prefixLine(_ marker: String) {
+        let r = range
+        let caret = text.distance(from: text.startIndex, to: r.lowerBound)
+        let lineStart = text[..<r.lowerBound].lastIndex(of: "\n").map { text.index(after: $0) } ?? text.startIndex
+        text.insert(contentsOf: marker, at: lineStart)
+        let at = text.index(text.startIndex, offsetBy: caret + marker.count)
+        selection = TextSelection(insertionPoint: at)
+        focusEditor()
+    }
+
+    private func focusEditor() {
+        if let focus { focus.wrappedValue = true } else { ownFocus = true }
+    }
+
+    private var editor: some View {
+        TextEditor(text: $text, selection: $selection)
+                .focused(focus ?? $ownFocus)
+                .font(.body)
+                .scrollContentBackground(.hidden)
+                .frame(minHeight: minHeight, maxHeight: maxHeight)
+                .padding(6)
+                .background(.quaternary.opacity(0.4), in: .rect(cornerRadius: 10))
+                .overlay(alignment: .topLeading) {
+                    if text.isEmpty {
+                        Text(placeholder).foregroundStyle(.tertiary)
+                            .padding(.horizontal, 11).padding(.vertical, 6).allowsHitTesting(false)
+                    }
+                }
+                // ⌘V with an image and no text on the pasteboard: upload it and link it here.
+                .background(WindowEventMonitor(mask: .keyDown) { e in
+                    guard isFocused, let uploadImage, e.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
+                          e.charactersIgnoringModifiers == "v", let image = PastedImage.read() else { return e }
+                    pasteImage(image, uploadImage)
+                    return nil
+                })
+    }
+
+    private func pasteImage(_ image: (data: Data, name: String), _ upload: @escaping (Data, String) async throws -> URL) {
+        uploading = true
+        error = nil
+        Task {
+            defer { uploading = false }
+            do {
+                let url = try await upload(image.data, image.name)
+                wrap("[\(image.name)](\(url.absoluteString))", "")
+            } catch { self.error = "Couldn't upload the image: \(error.localizedDescription)" }
+        }
+    }
+
     private func accept(_ user: JiraUser) {
         guard let r = text.range(of: "@" + query, options: .backwards) else { return }
         text.replaceSubrange(r, with: "@\(user.displayName) ")
         mentions[user.displayName] = user.accountId
         candidates = []
         query = ""
+    }
+}
+
+/// An image on the general pasteboard with no text alongside, as PNG with a dated name.
+enum PastedImage {
+    @MainActor static func read() -> (data: Data, name: String)? {
+        let pb = NSPasteboard.general
+        guard pb.string(forType: .string) == nil,
+              let image = (pb.readObjects(forClasses: [NSImage.self]) as? [NSImage])?.first,
+              let tiff = image.tiffRepresentation,
+              let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) else { return nil }
+        let stamp = Date().formatted(.iso8601.year().month().day().dateSeparator(.dash)) + " "
+            + Date().formatted(date: .omitted, time: .shortened).replacingOccurrences(of: ":", with: ".")
+        return (png, "Pasted image \(stamp).png")
     }
 }
 
