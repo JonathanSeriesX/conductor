@@ -9,6 +9,40 @@ struct ListRow: Identifiable {
     var target: IssueTarget { IssueTarget(accountID: state.id, key: issue.key) }
 }
 
+/// A row as the list draws it. A parent folds the subtasks that sit in the same list under itself;
+/// a subtask whose parent is elsewhere stays at the top level with a crumb naming the parent.
+struct DisplayRow: Identifiable {
+    let row: ListRow
+    var children: [ListRow] = []
+    var depth = 0
+    var id: String { row.id }
+
+    static func nest(_ rows: [ListRow], expanded: Bool) -> [DisplayRow] {
+        let present = Set(rows.map(\.id))
+        var children: [String: [ListRow]] = [:]
+        var top: [ListRow] = []
+        for r in rows {
+            if r.issue.fields.issuetype.isSubtask, let p = r.issue.fields.parent?.key, present.contains("\(r.state.id)|\(p)") {
+                children["\(r.state.id)|\(p)", default: []].append(r)
+            } else {
+                top.append(r)
+            }
+        }
+        // A parent whose children were touched more recently moves up with them.
+        func latest(_ r: ListRow) -> Date {
+            max(r.issue.fields.updated ?? .distantPast, children[r.id]?.compactMap(\.issue.fields.updated).max() ?? .distantPast)
+        }
+        top.sort { a, b in let (la, lb) = (latest(a), latest(b)); return la != lb ? la > lb : a.id < b.id }
+        var out: [DisplayRow] = []
+        for r in top {
+            let kids = children[r.id] ?? []
+            out.append(DisplayRow(row: r, children: kids))
+            if expanded { out += kids.map { DisplayRow(row: $0, depth: 1) } }
+        }
+        return out
+    }
+}
+
 @MainActor @Observable
 final class IssueListStore {
     var rows: [ListRow] = []
@@ -152,6 +186,9 @@ struct IssueListView: View {
     @State private var filterName = ""
     @State private var chipMenus = ChipMenuController()
     @FocusState private var searchFocused: Bool
+    /// One switch for every list: parents show their folded subtasks or only a progress count.
+    @AppStorage("subtasksExpanded") private var subtasksExpanded = false
+    private var displayRows: [DisplayRow] { DisplayRow.nest(store.rows, expanded: subtasksExpanded) }
 
     private var isRawJQL: Bool { Source.looksLikeJQL(search) }
     private var state: AccountState? { source.accountID.flatMap(session.state) ?? session.states.first }
@@ -159,10 +196,13 @@ struct IssueListView: View {
 
     var body: some View {
         List(selection: $selection) {
-            ForEach(store.rows) { row in
-                IssueRow(issue: row.issue, site: source.isUnified && session.states.count > 1 ? (row.state.title, row.state.color) : nil)
+            ForEach(displayRows) { d in
+                let row = d.row
+                IssueRow(issue: row.issue, site: source.isUnified && session.states.count > 1 ? (row.state.title, row.state.color) : nil,
+                         depth: d.depth, folded: d.children.count, expanded: subtasksExpanded,
+                         toggle: d.children.isEmpty ? nil : { subtasksExpanded.toggle() })
                     .tag(row.target)
-                    .onAppear { if row.id == store.rows.last?.id { Task { await store.loadMore() } } }
+                    .onAppear { if d.id == displayRows.last?.id { Task { await store.loadMore() } } }
                     // Drag a row into Slack, a browser or a note as its Jira link.
                     .itemProvider { NSItemProvider(object: row.state.client.browseURL(row.issue.key) as NSURL) }
             }
@@ -359,6 +399,12 @@ struct SiteBadge: View {
 struct IssueRow: View {
     let issue: Issue
     var site: (name: String, color: Color)?
+    /// 1 for a subtask drawn under its parent.
+    var depth = 0
+    /// Subtasks folded under this row; a chevron shows when there are any.
+    var folded = 0
+    var expanded = false
+    var toggle: (() -> Void)?
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
@@ -367,11 +413,31 @@ struct IssueRow: View {
                 .padding(.top, 2)
                 .help(issue.fields.issuetype.name)
             VStack(alignment: .leading, spacing: 5) {
-                Text(issue.fields.summary).lineLimit(2)
+                if depth == 0, issue.fields.issuetype.isSubtask, let parent = issue.fields.parent {
+                    // The parent is not in this list, so say which one it is.
+                    Label { Text(verbatim: "\(parent.key)  \(parent.fields.summary)") } icon: { Image(systemName: "arrow.turn.down.right") }
+                        .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                }
+                HStack(alignment: .top, spacing: 6) {
+                    Text(issue.fields.summary).lineLimit(2)
+                    if let toggle {
+                        Spacer(minLength: 0)
+                        Button(action: toggle) {
+                            Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                                .font(.caption.weight(.semibold)).foregroundStyle(.secondary).frame(width: 16, height: 16)
+                        }
+                        .buttonStyle(.plain)
+                        .help(expanded ? "Hide subtasks" : "Show \(folded) subtasks from this list")
+                    }
+                }
                 HStack(spacing: 8) {
                     Text(issue.key).font(.caption.monospaced()).foregroundStyle(.secondary)
                     if let site { SiteBadge(name: site.name, color: site.color) }
                     StatusPill(status: issue.fields.status)
+                    if let p = issue.subtaskProgress {
+                        Label("\(p.done) of \(p.total) done", systemImage: "checklist")
+                            .font(.caption).foregroundStyle(p.done == p.total ? .green : .secondary).lineLimit(1)
+                    }
                     Spacer(minLength: 0)
                     if let p = issue.fields.priority { PriorityIcon(priority: p) }
                     Avatar(user: issue.fields.assignee, size: 18)
@@ -379,6 +445,7 @@ struct IssueRow: View {
             }
         }
         .padding(.vertical, 4)
+        .padding(.leading, CGFloat(depth) * 24)
     }
 }
 

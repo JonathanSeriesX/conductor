@@ -39,9 +39,13 @@ final class BoardStore {
 
     var columns: [BoardConfiguration.Column] { config?.columnConfig.columns ?? [] }
 
-    func issues(in column: BoardConfiguration.Column, from list: [Issue]? = nil) -> [Issue] {
+    /// With `fold`, subtasks whose parent is on the board disappear into the parent card's progress count.
+    func issues(in column: BoardConfiguration.Column, from list: [Issue]? = nil, fold: Bool = false) -> [Issue] {
         let ids = Set(column.statuses.map(\.id))
-        return (list ?? issues).filter { ids.contains($0.fields.status.id) }
+        let parents = fold ? Set(issues.map(\.key)) : []
+        return (list ?? issues).filter { i in
+            ids.contains(i.fields.status.id) && !(fold && i.fields.issuetype.isSubtask && i.fields.parent.map { parents.contains($0.key) } == true)
+        }
     }
 
     func load(_ state: AccountState, project: String) async {
@@ -157,7 +161,7 @@ struct BoardView: View {
             if swimlanes == .none {
                 HStack(alignment: .top, spacing: 12) {
                     ForEach(store.columns) { column in
-                        BoardColumn(column: column, issues: store.issues(in: column), onDrop: drop(column), onWrite: reload)
+                        BoardColumn(column: column, issues: store.issues(in: column, fold: true), onDrop: drop(column), onWrite: reload)
                     }
                 }
                 .padding(16)
@@ -242,7 +246,7 @@ struct BoardView: View {
         VStack(alignment: .leading, spacing: 18) {
             HStack(spacing: 12) {
                 ForEach(store.columns) { column in
-                    BoardColumnHeader(column: column, count: store.issues(in: column).count).frame(width: 280)
+                    BoardColumnHeader(column: column, count: store.issues(in: column, fold: swimlanes != .parent).count).frame(width: 280)
                 }
             }
             ForEach(swimlanes.lanes(store.issues)) { lane in
@@ -250,7 +254,7 @@ struct BoardView: View {
                     Text("\(lane.title)  ·  \(lane.issues.count)").font(.headline).lineLimit(1)
                     HStack(alignment: .top, spacing: 12) {
                         ForEach(store.columns) { column in
-                            BoardColumn(column: column, issues: store.issues(in: column, from: lane.issues), showsHeader: false, onDrop: drop(column), onWrite: reload)
+                            BoardColumn(column: column, issues: store.issues(in: column, from: lane.issues, fold: swimlanes != .parent), showsHeader: false, onDrop: drop(column), onWrite: reload)
                         }
                     }
                 }
@@ -393,6 +397,10 @@ struct BoardCard: View {
             HStack(spacing: 6) {
                 RemoteImage(url: issue.fields.issuetype.iconUrl, placeholder: "circle").frame(width: 14, height: 14)
                 Text(issue.key).font(.caption.monospaced()).foregroundStyle(.secondary)
+                if let p = issue.subtaskProgress {
+                    Label("\(p.done)/\(p.total)", systemImage: "checklist").font(.caption2)
+                        .foregroundStyle(p.done == p.total ? .green : .secondary).help("\(p.done) of \(p.total) subtasks done")
+                }
                 if let d = staleDays {
                     Label("\(d)d", systemImage: "clock").font(.caption2).foregroundStyle(.orange)
                         .help("Not updated for \(d) days")
