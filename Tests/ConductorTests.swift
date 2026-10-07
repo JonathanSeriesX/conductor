@@ -203,6 +203,20 @@ final class MarkdownTests: XCTestCase {
         XCTAssertEqual(nodes.last?.text, " and snake_case_name")
     }
 
+    /// Anything a person can type into the description editor must convert without trapping.
+    func testAwkwardMarkdownNeverTraps() throws {
+        let cases = ["", "\n\n", "**", "*", "`", "~~", "[", "[x](", "[](", "- ", "-", "1.", "1. ", "#", "# ", "####### seven", "```", "```\n", "> ", ">",
+                     "**bold *nested* bold**", "a_b_c", "_", "__", "*a**b*", "- a\n    - b\n  - c\n- d", "1) x\n- y\n2. z", "  - indented first",
+                     "```swift\nlet a = 1", "text\r\nmore\r\n", "@", "@ ", "ping @", "https://", "http://x", "<https://x>", "\u{200B}", "😀 **😀**", "a\u{0301}"]
+        for md in cases {
+            let doc = ADFNode.document(markdown: md, mentions: ["Ivan K": "a1", "": "empty"])
+            _ = try JSONValue(doc)
+            var m: [String: String] = [:]
+            let back = doc.markdown(mentions: &m)
+            _ = ADFNode.document(markdown: back, mentions: m)
+        }
+    }
+
     func testLossyDetection() {
         XCTAssertTrue(ADFNode(type: "doc", content: [ADFNode(type: "table")]).hasLossyNodes)
         XCTAssertFalse(ADFNode.document(markdown: "plain").hasLossyNodes)
@@ -219,6 +233,17 @@ final class FilterAndDurationTests: XCTestCase {
         XCTAssertEqual(Source.all(.recent).jql(search: "", filters: f),
                        "issuekey IN issueHistory() AND statusCategory = \"In Progress\" AND assignee = currentUser() AND issuetype = \"Bug\" AND updated >= startOfWeek() ORDER BY lastViewed DESC")
         XCTAssertEqual(Source.all(.recent).jql(search: "status = Done", filters: f), "status = Done", "raw JQL ignores chips")
+        f = ListFilters()
+        f.status = .open
+        XCTAssertEqual(Source.all(.assigned).jql(search: "", filters: f), "assignee = currentUser() AND statusCategory != Done ORDER BY updated DESC")
+        f.status = .any
+        XCTAssertEqual(Source.all(.assigned).jql(search: "", filters: f), "assignee = currentUser() ORDER BY updated DESC", "Done is a filter, not baked into the list")
+    }
+
+    func testBoardURL() {
+        let c = JiraClient(account: Account(site: URL(string: "https://x.atlassian.net")!, email: "e", token: "t"))
+        XCTAssertEqual(c.boardURL(project: "ES").absoluteString, "https://x.atlassian.net/secure/RapidBoard.jspa?projectKey=ES")
+        XCTAssertEqual(c.boardURL(project: "ES", board: 7).absoluteString, "https://x.atlassian.net/secure/RapidBoard.jspa?projectKey=ES&rapidView=7")
     }
 
     func testDurationParsing() {

@@ -2,7 +2,7 @@ import SwiftUI
 
 struct SettingsView: View {
     @AppStorage("defaultSource") private var defaultSource = "assigned"
-    @AppStorage("hideDoneInProjects") private var hideDone = false
+    @AppStorage("hideDone") private var hideDone = true
     @AppStorage("notificationsEnabled") private var notifications = true
     @AppStorage("pollMinutes") private var pollMinutes = 3
     @AppStorage("checkForUpdates") private var checkForUpdates = true
@@ -36,8 +36,8 @@ struct SettingsView: View {
                 Picker("Open at launch", selection: $defaultSource) {
                     ForEach(Smart.allCases, id: \.rawValue) { Text($0.title).tag($0.rawValue) }
                 }
-                Toggle("Hide Done issues in project lists", isOn: $hideDone)
-                    .onChange(of: hideDone) { session.reloadTick += 1 }
+                Toggle("Hide Done issues by default", isOn: $hideDone)
+                Text("New lists start on the Open status chip; switch any list to Any status or Done from the chip.").font(.caption).foregroundStyle(.secondary)
             }
             Section("Notifications") {
                 Toggle("Notify about assignments, comments and status changes", isOn: $notifications)

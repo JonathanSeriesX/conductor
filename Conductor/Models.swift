@@ -102,6 +102,8 @@ struct IssueRef: Codable, Hashable, Sendable, Identifiable {
 }
 
 extension Issue {
+    var isDone: Bool { fields.status.statusCategory.key == "done" }
+
     /// How many subtasks are Done, out of all of them; nil when the issue has none.
     var subtaskProgress: (done: Int, total: Int)? {
         guard let subs = fields.subtasks, !subs.isEmpty else { return nil }

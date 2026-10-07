@@ -24,10 +24,10 @@ enum Smart: String, CaseIterable, Codable {
 
     var whereClause: String {
         switch self {
-        case .assigned: "assignee = currentUser() AND statusCategory != Done"
+        case .assigned: "assignee = currentUser()"
         case .reported: "reporter = currentUser()"
         case .recent: "issuekey IN issueHistory()"
-        case .watching: "watcher = currentUser() AND statusCategory != Done"
+        case .watching: "watcher = currentUser()"
         }
     }
 
@@ -83,9 +83,7 @@ enum Source: Hashable {
         switch self {
         case .all(let s), .smart(let s, _): s.whereClause
         case .starred: "issuekey IN (\(starredKeys.map { "\"\($0)\"" }.joined(separator: ", ")))"
-        case .project(let p, _):
-            // Keys like IN or AND are JQL reserved words, hence the quotes.
-            UserDefaults.standard.bool(forKey: "hideDoneInProjects") ? "project = \"\(p.key)\" AND statusCategory != Done" : "project = \"\(p.key)\""
+        case .project(let p, _): "project = \"\(p.key)\"" // keys like IN or AND are JQL reserved words, hence the quotes
         case .filter(let f, _): "filter = \(f.id)"
         }
     }
@@ -118,11 +116,12 @@ enum Source: Hashable {
 
 /// Quick filters shown as chips above the issue list.
 struct ListFilters: Equatable {
-    enum Status: String, CaseIterable { case any = "Any status", todo = "To Do", inProgress = "In Progress", done = "Done" }
+    enum Status: String, CaseIterable { case any = "Any status", open = "Open", todo = "To Do", inProgress = "In Progress", done = "Done" }
     enum Assignee: String, CaseIterable { case any = "Anyone", me = "Me", unassigned = "Unassigned" }
     enum Updated: String, CaseIterable { case any = "Any time", today = "Today", week = "This week", month = "This month" }
 
-    var status: Status = .any
+    /// Every list starts on Open unless the Hide Done setting is off; the chip changes it per list.
+    var status: Status = (UserDefaults.standard.object(forKey: "hideDone") as? Bool ?? true) ? .open : .any
     var assignee: Assignee = .any
     var type: String?
     var updated: Updated = .any
@@ -131,7 +130,11 @@ struct ListFilters: Equatable {
 
     var clauses: [String] {
         var c: [String] = []
-        if status != .any { c.append("statusCategory = \"\(status.rawValue)\"") }
+        switch status {
+        case .any: break
+        case .open: c.append("statusCategory != Done")
+        default: c.append("statusCategory = \"\(status.rawValue)\"")
+        }
         switch assignee {
         case .any: break
         case .me: c.append("assignee = currentUser()")
@@ -290,6 +293,7 @@ struct SidebarView: View {
         .contextMenu {
             Button(starred ? "Unstar" : "Star", systemImage: starred ? "star.slash" : "star") { st.toggleStar(p) }
             Button("Open Board", systemImage: "rectangle.split.3x1") { openWindow(id: "board", value: BoardTarget(accountID: st.id, projectKey: p.key)) }
+            Button("Open Board on Web", systemImage: "safari") { NSWorkspace.shared.open(st.client.boardURL(project: p.key)) }
             Button("New Issue in \(p.name)…", systemImage: "plus") { selection = .project(p, st.id); session.createIssueRequested = true }
         }
     }

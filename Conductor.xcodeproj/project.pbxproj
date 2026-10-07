@@ -65,6 +65,7 @@
 		C95F84CF49AB04DC4D7CAF67 /* ADF.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ADF.swift; sourceTree = "<group>"; };
 		DB81CE90DD0D0F8664E2BB2E /* LoginView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginView.swift; sourceTree = "<group>"; };
 		E4DEA254C7CFF930F6E6C347 /* IssueDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IssueDetailView.swift; sourceTree = "<group>"; };
+		EBA9E7A9793DF7345CB60C0E /* Debug.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Debug.entitlements; sourceTree = "<group>"; };
 		F4B50C638EC6F7F633F0C590 /* Commands.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Commands.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -92,6 +93,7 @@
 				31CFF25D2D75668F493102AB /* Conductor.entitlements */,
 				50FFC2675F34627ECB4EF79F /* ConductorApp.swift */,
 				7F99CD4B3FFF216DCD114CA3 /* CreateIssueView.swift */,
+				EBA9E7A9793DF7345CB60C0E /* Debug.entitlements */,
 				2FD033008CD2225DC1DA57D6 /* Info.plist */,
 				E4DEA254C7CFF930F6E6C347 /* IssueDetailView.swift */,
 				A5053C19BB732A6216DFB314 /* IssueListView.swift */,
@@ -339,7 +341,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				CODE_SIGN_ENTITLEMENTS = Conductor/Conductor.entitlements;
+				CODE_SIGN_ENTITLEMENTS = Conductor/Debug.entitlements;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 2;
 				ENABLE_HARDENED_RUNTIME = YES;

@@ -222,12 +222,17 @@ struct IssueDetailView: View {
                     .onAppear { summaryFocused = true }
                 Text("↩ to save · esc to cancel").font(.caption2).foregroundStyle(.tertiary)
             } else {
-                Text(issue.fields.summary)
-                    .font(.system(.largeTitle, design: .rounded, weight: .semibold))
-                    .textSelection(.enabled)
-                    .contentShape(.rect)
-                    .onTapGesture(count: 2) { if store.canEdit("summary") { summaryDraft = issue.fields.summary } }
-                    .help(store.canEdit("summary") ? "Double-click to edit" : "")
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(issue.fields.summary)
+                        .font(.system(.largeTitle, design: .rounded, weight: .semibold))
+                        .textSelection(.enabled)
+                        .contentShape(.rect)
+                        .onTapGesture(count: 2) { if store.canEdit("summary") { summaryDraft = issue.fields.summary } }
+                    if store.canEdit("summary") {
+                        Button { summaryDraft = issue.fields.summary } label: { Image(systemName: "pencil") }
+                            .buttonStyle(.plain).foregroundStyle(.secondary).help("Rename (⌘E)")
+                    }
+                }
             }
         }
     }
