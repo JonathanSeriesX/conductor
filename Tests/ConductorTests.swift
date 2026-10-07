@@ -293,8 +293,8 @@ final class FilterAndDurationTests: XCTestCase {
 
     func testBoardURL() {
         let c = JiraClient(account: Account(site: URL(string: "https://x.atlassian.net")!, email: "e", token: "t"))
-        XCTAssertEqual(c.boardURL(project: "ES").absoluteString, "https://x.atlassian.net/secure/RapidBoard.jspa?projectKey=ES")
-        XCTAssertEqual(c.boardURL(project: "ES", board: 7).absoluteString, "https://x.atlassian.net/secure/RapidBoard.jspa?projectKey=ES&rapidView=7")
+        XCTAssertEqual(c.boardURL(project: "ES").absoluteString, "https://x.atlassian.net/projects/ES")
+        XCTAssertEqual(c.boardURL(project: "ES", board: 7).absoluteString, "https://x.atlassian.net/secure/RapidBoard.jspa?rapidView=7")
     }
 
     func testDurationParsing() {

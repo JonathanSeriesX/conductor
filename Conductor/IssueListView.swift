@@ -80,7 +80,7 @@ final class IssueListStore {
 
     /// Fetches full details for the top rows in one request per account and saves each as `issue-KEY`,
     /// so opening one shows description and comments from disk. Rows unchanged since the last prefetch are skipped.
-    static func prefetchDetails(_ rows: [ListRow], limit: Int = 15) {
+    static func prefetchDetails(_ rows: [ListRow], limit: Int = 50) {
         let stale = rows.prefix(limit).filter { $0.state.prefetched[$0.issue.key] != $0.issue.fields.updated }
         for group in Dictionary(grouping: stale, by: \.state.id).values {
             guard let st = group.first?.state else { continue }
@@ -223,7 +223,11 @@ struct IssueListView: View {
                     .tag(row.target)
                     .onAppear { if d.id == displayRows.last?.id { Task { await store.loadMore() } } }
                     // Drag a row into Slack, a browser or a note as its Jira link.
-                    .itemProvider { NSItemProvider(object: row.state.client.browseURL(row.issue.key) as NSURL) }
+                    .itemProvider {
+                        let p = NSItemProvider(object: row.state.client.browseURL(row.issue.key) as NSURL)
+                        p.suggestedName = "\(row.issue.key) \(row.issue.fields.summary)"   // the .webloc's name in the Finder
+                        return p
+                    }
             }
             if store.isLoading {
                 HStack { Spacer(); ProgressView().controlSize(.small); Spacer() }
@@ -264,7 +268,7 @@ struct IssueListView: View {
             }
         }
         .focusedSceneValue(\.listActions, ListActions(
-            saveFilter: filters.isActive ? { filterName = ""; savingFilter = true } : nil,
+            saveFilter: canSaveFilter ? { filterName = ""; savingFilter = true } : nil,
             openBoard: boardTarget.map { b in { openWindow(id: "board", value: b) } }
         ))
         .navigationTitle(session.title(for: filters))
@@ -295,7 +299,7 @@ struct IssueListView: View {
             ToolbarItem(id: "saveFilter") {
                 Button { filterName = ""; savingFilter = true } label: { Label("Save Filter", systemImage: "bookmark") }
                     .help("Keep these filters and search in the sidebar (⌘S)")
-                    .disabled(!filters.isActive)
+                    .disabled(!canSaveFilter)
             }
         }
         .alert("Save Filter", isPresented: $savingFilter) {
@@ -336,6 +340,14 @@ struct IssueListView: View {
               expanded.contains(d.id) != open else { return .ignored }
         withAnimation(.snappy(duration: 0.25)) { expanded.formSymmetricDifference([d.id]) }
         return .handled
+    }
+
+    /// There is something to save once the list differs from every sidebar entry, built-in, saved or project.
+    private var canSaveFilter: Bool {
+        guard filters.isActive else { return false }
+        if !filters.text.isEmpty { return true }
+        var projectRow = ListFilters(); projectRow.account = filters.account; projectRow.project = filters.project
+        return session.preset(matching: filters) == nil && filters != projectRow
     }
 
     private var boardTarget: BoardTarget? {
@@ -526,6 +538,10 @@ struct IssueRow: View {
         }
         .padding(.vertical, 4)
         .padding(.leading, CGFloat(depth) * 24)
+        // The separator runs from the summary to the row's end on every row; a row with a chevron button would
+        // otherwise get its own, shorter guess.
+        .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] + 26 + CGFloat(depth) * 24 }
+        .alignmentGuide(.listRowSeparatorTrailing) { $0[.trailing] }
     }
 }
 

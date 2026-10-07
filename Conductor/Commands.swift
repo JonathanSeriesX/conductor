@@ -144,6 +144,7 @@ struct IssueWindow: View {
             }
         }
         .writingToolsBehavior(.disabled)
+        .background(WindowCascader())
         .frame(minWidth: 640, minHeight: 480)
         .onChange(of: target, initial: true) { session.recordView(target) }
     }
@@ -152,4 +153,24 @@ struct IssueWindow: View {
 func copyToPasteboard(_ string: String) {
     NSPasteboard.general.clearContents()
     NSPasteboard.general.setString(string, forType: .string)
+}
+
+/// Offsets a new issue window from the one opened before it, as document windows do. SwiftUI puts every
+/// window of a group at the same spot. A window the system restored keeps its own frame.
+private struct WindowCascader: NSViewRepresentable {
+    func makeNSView(context: Context) -> Cascader { Cascader() }
+    func updateNSView(_ view: Cascader, context: Context) {}
+
+    final class Cascader: NSView {
+        private var done = false
+        override func viewDidMoveToWindow() {
+            guard !done, let window, let id = window.identifier?.rawValue, id.hasPrefix("issue") else { return }
+            done = true
+            let others = NSApp.windows.filter { $0 !== window && $0.isVisible && $0.identifier?.rawValue.hasPrefix("issue") == true }
+            guard let last = others.max(by: { $0.orderedIndex > $1.orderedIndex }) else { return }
+            if abs(last.frame.origin.x - window.frame.origin.x) < 2, abs(last.frame.maxY - window.frame.maxY) < 2 {
+                window.setFrameTopLeftPoint(window.cascadeTopLeft(from: NSPoint(x: last.frame.minX, y: last.frame.maxY)))
+            }
+        }
+    }
 }

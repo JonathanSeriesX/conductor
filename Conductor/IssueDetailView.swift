@@ -55,6 +55,7 @@ final class IssueDetailStore {
         if issue == nil {
             // Last opened copy from disk, else what the list row already knows: either way, no blank page.
             issue = await DiskCache.loadAsync(account: state.account, name: "issue-\(key)") ?? state.peek[key]
+            if full, let kids: [Issue] = await DiskCache.loadAsync(account: state.account, name: "children-\(key)") { children = kids }
         }
         do {
             async let i = client.issue(key)
@@ -68,7 +69,10 @@ final class IssueDetailStore {
             transitions = (try? await t) ?? []
             editMeta = try? await m
             if full {
-                if let page = try? await kids { children = page.issues.filter { !$0.fields.issuetype.isSubtask } }
+                if let page = try? await kids {
+                    children = page.issues.filter { !$0.fields.issuetype.isSubtask }
+                    DiskCache.saveAsync(children, account: state.account, name: "children-\(key)")
+                }
                 if let list = await types { linkTypes = list }
             }
         } catch {
@@ -236,18 +240,7 @@ struct IssueDetailView: View {
 
     private func header(_ issue: Issue) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            // The key and type icon are the window title; only the parent, when there is one, needs a line here.
-            if let parent = issue.fields.parent {
-                Button { open(parent.key) } label: {
-                    HStack(spacing: 4) {
-                        RemoteImage(url: parent.fields.issuetype?.iconUrl).frame(width: 14, height: 14)
-                        Text(parent.key).font(.callout.monospaced())
-                        Text(parent.fields.summary).font(.callout).lineLimit(1)
-                    }
-                }
-                .buttonStyle(.link)
-                .help("Open the parent issue")
-            }
+            // The key and type icon are the window title; the parent is a row in the sidebar.
             if summaryDraft != nil {
                 TextField("Summary", text: Binding($summaryDraft, or: ""), axis: .vertical)
                     .font(.system(.largeTitle, design: .rounded, weight: .semibold))
@@ -385,6 +378,7 @@ struct IssueDetailView: View {
                                     Text(p.key).font(.callout.monospaced())
                                     Text(p.fields.summary).lineLimit(1)
                                 }
+                                .contextMenu { Button("Open \(p.key)", systemImage: "arrow.up.forward.app") { open(p.key) } }
                             } else {
                                 Text("None").foregroundStyle(.secondary)
                             }
@@ -709,7 +703,6 @@ struct IssueDetailView: View {
             .padding(.leading, 4)
         }
         .sharedBackgroundVisibility(.hidden)
-        NewIssueToolbarItem()
         ToolbarSpacer(.flexible)
         ToolbarItem(id: "refresh") {
             Button { perform(.refresh) } label: { Label("Refresh", systemImage: "arrow.clockwise") }
@@ -759,7 +752,6 @@ struct IssueDetailView: View {
                 .help("Open in browser (⌘⇧O)")
                 .disabled(store.issue == nil)
         }
-        ToolbarSpacer(.flexible)
     }
 
     // MARK: Actions
@@ -822,6 +814,7 @@ struct IssueDetailView: View {
 
     private func saveSummary() {
         guard let draft = summaryDraft?.trimmingCharacters(in: .whitespacesAndNewlines), !draft.isEmpty else { return }
+        guard draft.count <= 255 else { store.error = "A summary can be 255 characters at most; this one is \(draft.count)."; return }
         summaryDraft = nil
         guard draft != store.issue?.fields.summary else { return }
         Task { if !(await run { try await $0.editIssue(key, fields: ["summary": .string(draft)]) }.value) { summaryDraft = draft } }
