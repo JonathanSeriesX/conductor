@@ -41,7 +41,7 @@ Right-click an account's section title to rename it, pick its colour or sign out
 | ⌘F | Find issues |
 | ⌘1 ⌘2 ⌘3 ⌘4 ⌘5 | Assigned to Me, Reported by Me, Recently Viewed, Watching, Starred |
 | ⌘S | Save the current chips and search as a sidebar filter |
-| Click a row | Open the issue in its own window |
+| Double-click a row | Open the issue in its own window |
 | ⌘R | Reload the list |
 | ⌘⇧R | Refresh the issue |
 | ⌘⇧C | Copy the issue link |
