@@ -342,7 +342,7 @@ struct BoardColumn: View {
         .frame(width: 280)
         .frame(maxHeight: showsHeader ? .infinity : nil, alignment: .top)
         .frame(minHeight: showsHeader ? nil : 60, alignment: .top)
-        .frosted(cornerRadius: 16)
+        .frosted(cornerRadius: 16, opacity: 0.45)   // lighter than the cards on it
         .overlay {
             RoundedRectangle(cornerRadius: 16).strokeBorder(Color.accentColor, lineWidth: targeted ? 2 : 0)
         }
