@@ -151,8 +151,8 @@ struct IssueDetailView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Backdrop())
-        .navigationTitle(key)
-        .navigationSubtitle(store.issue?.fields.project?.name ?? "")
+        .navigationTitle(key)   // the Window menu and restoration; the toolbar draws its own
+        .toolbar(removing: .title)
         .toolbar(id: "issue") { toolbar }
         .focusedSceneValue(\.issueActions, actions)
         .task(id: "\(key)|\(session.reloadTick)") { if let jira { await store.load(jira, key: key) } }
@@ -698,12 +698,17 @@ struct IssueDetailView: View {
                     .keyboardShortcut("[", modifiers: .command)
             }
         }
-        ToolbarItem(id: "type", placement: .navigation) {
-            // The type icon sits beside the key in the title, as it does on a list row.
-            RemoteImage(url: store.issue?.fields.issuetype.iconUrl, placeholder: "circle").frame(width: 16, height: 16)
-                .help(store.issue?.fields.issuetype.name ?? "")
-                .accessibilityLabel(store.issue?.fields.issuetype.name ?? "Issue type")
+        ToolbarItem(id: "title", placement: .navigation) {
+            // The list row's first line as the title: type icon, then the key in the same grey monospaced face.
+            HStack(spacing: 8) {
+                RemoteImage(url: store.issue?.fields.issuetype.iconUrl, placeholder: "circle").frame(width: 16, height: 16)
+                    .accessibilityLabel(store.issue?.fields.issuetype.name ?? "Issue type")
+                Text(key).font(.body.monospaced()).foregroundStyle(.secondary)
+            }
+            .help(store.issue?.fields.issuetype.name ?? "")
+            .padding(.leading, 4)
         }
+        .sharedBackgroundVisibility(.hidden)
         NewIssueToolbarItem()
         ToolbarSpacer(.flexible)
         ToolbarItem(id: "refresh") {
