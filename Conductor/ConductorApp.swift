@@ -63,6 +63,9 @@ struct ConductorApp: App {
 }
 
 struct RootView: View {
+    #if DEBUG
+    @MainActor static var debugHooksRan = false
+    #endif
     @Environment(Session.self) private var session
     @Environment(\.openWindow) private var openWindow
     @Environment(\.openSettings) private var openSettings
@@ -142,7 +145,9 @@ struct RootView: View {
         .task {
             // CONDUCTOR_OPEN=KEY opens that issue in the first account; CONDUCTOR_SHOW=create|board:KEY opens a sheet or window.
             let env = ProcessInfo.processInfo.environment
-            guard env["CONDUCTOR_OPEN"] != nil || env["CONDUCTOR_SHOW"] != nil else { return }
+            // Once per process: a new main window after closing one must not replay the launch request.
+            guard env["CONDUCTOR_OPEN"] != nil || env["CONDUCTOR_SHOW"] != nil, !Self.debugHooksRan else { return }
+            Self.debugHooksRan = true
             while !session.isSignedIn { try? await Task.sleep(for: .milliseconds(200)) }
             try? await Task.sleep(for: .seconds(1))
             if let key = env["CONDUCTOR_OPEN"], let st = session.states.first { selected = IssueTarget(accountID: st.id, key: key) }

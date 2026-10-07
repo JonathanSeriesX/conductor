@@ -149,10 +149,11 @@ struct GlassCard<Content: View>: View {
 }
 
 extension View {
-    /// The sidebar-style frosted surface with a hairline: calmer than lensing glass for content that is read.
-    func frosted(cornerRadius r: CGFloat) -> some View {
-        background(.regularMaterial, in: .rect(cornerRadius: r))
-            .overlay(RoundedRectangle(cornerRadius: r).strokeBorder(.quaternary, lineWidth: 1))
+    /// White on white (black on black in dark mode): the window background at partial opacity with a hairline,
+    /// like a Tahoe sidebar. Materials carry a grey tint, and lensing glass is too busy for text.
+    func frosted(cornerRadius r: CGFloat, opacity: Double = 0.7) -> some View {
+        background(.background.opacity(opacity), in: .rect(cornerRadius: r))
+            .overlay(RoundedRectangle(cornerRadius: r).strokeBorder(.quaternary.opacity(0.6), lineWidth: 1))
     }
 }
 
