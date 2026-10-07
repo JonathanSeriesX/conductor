@@ -11,6 +11,12 @@ settings:
     CODE_SIGN_IDENTITY: "-"
     CODE_SIGN_STYLE: Manual
     DEVELOPMENT_TEAM: ""
+  configs:
+    # A stable identity keeps the Keychain from asking again after every rebuild; ad-hoc changes with each build.
+    Debug:
+      CODE_SIGN_IDENTITY: Apple Development
+      CODE_SIGN_STYLE: Automatic
+      DEVELOPMENT_TEAM: 7X7PA8RA37
 targets:
   Conductor:
     type: application
