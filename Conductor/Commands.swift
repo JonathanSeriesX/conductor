@@ -39,17 +39,17 @@ struct AppCommands: Commands {
     var body: some Commands {
         CommandGroup(replacing: .printItem) {}
         CommandMenu("Go") {
-            Button("Assigned to Me") { session.navigationRequest = session.source(for: .assigned) }.keyboardShortcut("1")
-            Button("Reported by Me") { session.navigationRequest = session.source(for: .reported) }.keyboardShortcut("2")
-            Button("Recently Viewed") { session.navigationRequest = session.source(for: .recent) }.keyboardShortcut("3")
-            Button("Watching") { session.navigationRequest = session.source(for: .watching) }.keyboardShortcut("4")
-            Button("Starred") { session.navigationRequest = .starred }.disabled(session.stars.isEmpty)
+            Button("Assigned to Me") { session.navigationRequest = session.filters(for: .assigned) }.keyboardShortcut("1")
+            Button("Reported by Me") { session.navigationRequest = session.filters(for: .reported) }.keyboardShortcut("2")
+            Button("Recently Viewed") { session.navigationRequest = session.filters(for: .recent) }.keyboardShortcut("3")
+            Button("Watching") { session.navigationRequest = session.filters(for: .watching) }.keyboardShortcut("4")
+            Button("Starred") { session.navigationRequest = session.filters(for: .starred) }.keyboardShortcut("5")
             Divider()
             Button("Reload") { session.reloadTick += 1 }.keyboardShortcut("r")
             Button("Refresh Projects") { Task { await session.refreshAll() } }
         }
         CommandGroup(after: .newItem) {
-            Button("Save Search as Filter…") { list?.saveFilter?() }
+            Button("Save Filter…") { list?.saveFilter?() }
                 .keyboardShortcut("s")
                 .disabled(list?.saveFilter == nil)
         }

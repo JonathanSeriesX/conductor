@@ -18,13 +18,13 @@ xcodebuild -scheme Conductor -derivedDataPath build -allowProvisioningUpdates bu
 
 | File | Role |
 |---|---|
-| `Session.swift` | Accounts (`AccountState` per signed-in site), navigation requests, deep links |
+| `Session.swift` | Accounts (`AccountState` per signed-in site), sidebar presets (built-in, saved, hidden), navigation requests, deep links |
 | `JiraClient.swift` | REST v3 and Agile API calls, auth, error parsing, Keychain |
 | `Models.swift` | Codable Jira types; the sprint custom field is resolved per site at runtime |
 | `Cache.swift` | Disk cache per account, image cache, Spotlight indexing |
 | `ADF.swift`, `ADFMarkdown.swift` | Atlassian Document Format → SwiftUI, and Markdown ⇄ ADF |
-| `SidebarView.swift` | `Source`, `Smart`, `ListFilters`, the sidebar |
-| `IssueListView.swift` | List store (single and unified), filter chips, search assist |
+| `SidebarView.swift` | `ListFilters` (the one query behind the list, with its JQL and sort), `Smart` presets, the sidebar |
+| `IssueListView.swift` | List store (single account with paging, or every account merged), filter and sort chips, search assist |
 | `IssueDetailView.swift` | Issue page: editing, attachments, links, work log, comments |
 | `CreateIssueView.swift` | New Issue / Subtask sheet from create metadata |
 | `Composer.swift` | Markdown editor with mention autocomplete, `PeoplePicker`, `Wrap`, `Chip` |

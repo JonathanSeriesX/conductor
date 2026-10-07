@@ -352,11 +352,6 @@ struct JiraClient: Sendable {
 
     // MARK: Filters & JQL assist
 
-    func createFilter(name: String, jql: String) async throws -> Filter {
-        struct Body: Encodable { let name: String; let jql: String; let favourite: Bool }
-        return try await send("filter", method: "POST", body: Body(name: name, jql: jql, favourite: true))
-    }
-
     func jqlAutocomplete() async throws -> JQLAutocomplete { try await get("jql/autocompletedata") }
 
     func jqlSuggestions(field: String, value: String) async throws -> [JQLSuggestions.Result] {
