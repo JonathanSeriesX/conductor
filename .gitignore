@@ -5,3 +5,4 @@ xcuserdata/
 .DS_Store
 build-tests/
 .dev.env
+.env
