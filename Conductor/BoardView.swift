@@ -227,6 +227,10 @@ struct BoardView: View {
                 } label: { Text(swimlanes.rawValue) }
                 .help("Group cards into swimlanes")
             }
+            ToolbarItem(id: "openInBrowser") {
+                Button { if let c = state?.client { NSWorkspace.shared.open(c.boardURL(project: projectKey, board: store.board?.id)) } } label: { Label("Open in Browser", systemImage: "safari") }
+                    .help("Open this board on the web")
+            }
             ToolbarItem(id: "refresh") {
                 Button { if let c = state?.client { Task { await store.loadIssues(c) } } } label: { Label("Refresh", systemImage: "arrow.clockwise") }
                     .keyboardShortcut("r")
@@ -386,7 +390,7 @@ struct BoardCard: View {
 
     /// Whole days since the last update, once a card has sat still for a week.
     private var staleDays: Int? {
-        guard let u = issue.fields.updated, issue.fields.status.statusCategory.key != "done" else { return nil }
+        guard let u = issue.fields.updated, !issue.isDone else { return nil }
         let days = Calendar.current.dateComponents([.day], from: u, to: .now).day ?? 0
         return days >= 7 ? days : nil
     }
@@ -394,6 +398,7 @@ struct BoardCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(issue.fields.summary).font(.callout).lineLimit(3).fixedSize(horizontal: false, vertical: true)
+                .strikethrough(issue.isDone).foregroundStyle(issue.isDone ? .secondary : .primary)
             HStack(spacing: 6) {
                 RemoteImage(url: issue.fields.issuetype.iconUrl, placeholder: "circle").frame(width: 14, height: 14)
                 Text(issue.key).font(.caption.monospaced()).foregroundStyle(.secondary)

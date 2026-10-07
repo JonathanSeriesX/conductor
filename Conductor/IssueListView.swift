@@ -419,7 +419,7 @@ struct IssueRow: View {
                         .font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
                 HStack(alignment: .top, spacing: 6) {
-                    Text(issue.fields.summary).lineLimit(2)
+                    Text(issue.fields.summary).lineLimit(2).strikethrough(issue.isDone).foregroundStyle(issue.isDone ? .secondary : .primary)
                     if let toggle {
                         Spacer(minLength: 0)
                         Button(action: toggle) {

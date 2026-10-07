@@ -365,6 +365,12 @@ struct JiraClient: Sendable {
     }
 
     func browseURL(_ key: String) -> URL { account.site.appending(path: "browse/\(key)") }
+    /// Jira's board page: the project's first board, or `board` when given. RapidBoard.jspa redirects to the
+    /// team- or company-managed URL for us.
+    func boardURL(project: String, board: Int? = nil) -> URL {
+        account.site.appending(path: "secure/RapidBoard.jspa")
+            .appending(queryItems: [URLQueryItem(name: "projectKey", value: project)] + (board.map { [URLQueryItem(name: "rapidView", value: String($0))] } ?? []))
+    }
     /// `[ES-123: summary](https://site/browse/ES-123)`, for pasting into Slack, Linear or Notion.
     func markdownLink(_ key: String, summary: String) -> String { "[\(key): \(summary)](\(browseURL(key).absoluteString))" }
 }
@@ -372,10 +378,19 @@ struct JiraClient: Sendable {
 // MARK: - Keychain
 
 enum Keychain {
+    /// The data protection keychain grants access by entitlement (team + bundle id), so a rebuilt binary never
+    /// raises the "wants to use your confidential information" dialog that the legacy keychain's per-binary ACL
+    /// does. It needs a signing team; ad-hoc builds (CI releases) stay on the legacy keychain.
+    private static let dataProtected: Bool = {
+        guard let task = SecTaskCreateFromSelf(nil) else { return false }
+        return SecTaskCopyValueForEntitlement(task, "com.apple.application-identifier" as CFString, nil) != nil
+    }()
+
     private static var query: [String: Any] {
         [kSecClass as String: kSecClassGenericPassword,
          kSecAttrService as String: "org.evgenii.conductor",
-          kSecAttrAccount as String: "accounts"]
+         kSecAttrAccount as String: "accounts",
+         kSecUseDataProtectionKeychain as String: dataProtected]
     }
 
     static func load() -> [Account] {
