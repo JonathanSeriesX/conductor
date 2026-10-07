@@ -17,7 +17,8 @@ struct DisplayRow: Identifiable {
     var depth = 0
     var id: String { row.id }
 
-    static func nest(_ rows: [ListRow], expanded: Bool, sort: ListFilters.Sort) -> [DisplayRow] {
+    /// `expanded` holds the ids of parents whose subtasks are shown.
+    static func nest(_ rows: [ListRow], expanded: Set<String>, sort: ListFilters.Sort) -> [DisplayRow] {
         let present = Set(rows.map(\.id))
         var children: [String: [ListRow]] = [:]
         var top: [ListRow] = []
@@ -43,7 +44,7 @@ struct DisplayRow: Identifiable {
         for r in top {
             let kids = children[r.id] ?? []
             out.append(DisplayRow(row: r, children: kids))
-            if expanded { out += kids.map { DisplayRow(row: $0, depth: 1) } }
+            if expanded.contains(r.id) { out += kids.map { DisplayRow(row: $0, depth: 1) } }
         }
         return out
     }
@@ -55,6 +56,8 @@ final class IssueListStore {
     var nextToken: String?
     var isLoading = false
     var error: String?
+    /// The filters restrict nothing, which Jira refuses; the list explains instead of asking.
+    var unbounded = false
     private var generation = 0
     private var single: (AccountState, String, Bool)?
     private var loadedKey = ""
@@ -97,6 +100,8 @@ final class IssueListStore {
         nextToken = nil
         single = nil
         sort = f.sort
+        unbounded = !f.isBounded
+        if unbounded { rows = []; return }
         let states = f.account.map { id in session.states.filter { $0.id == id } } ?? session.states
         // One query per account. The Starred scope lists each account's own stars and skips accounts without any.
         let queries: [(AccountState, String)] = states.compactMap { st in
@@ -190,9 +195,9 @@ struct IssueListView: View {
     @State private var filterName = ""
     @State private var chipMenus = ChipMenuController()
     @FocusState private var searchFocused: Bool
-    /// One switch for every list: parents show their folded subtasks or only a progress count.
-    @AppStorage("subtasksExpanded") private var subtasksExpanded = false
-    private var displayRows: [DisplayRow] { DisplayRow.nest(store.rows, expanded: subtasksExpanded, sort: filters.sort) }
+    /// Parents whose subtasks are unfolded. Per parent, so opening one never shifts the rows above it.
+    @State private var expanded: Set<String> = []
+    private var displayRows: [DisplayRow] { DisplayRow.nest(store.rows, expanded: expanded, sort: filters.sort) }
 
     private var isUnified: Bool { filters.account == nil }
     /// The account the chips describe; the first one stands in for unified lists (search assist, issue types).
@@ -211,8 +216,8 @@ struct IssueListView: View {
             ForEach(displayRows) { d in
                 let row = d.row
                 IssueRow(issue: row.issue, site: isUnified && session.states.count > 1 ? (row.state.title, row.state.color) : nil,
-                         depth: d.depth, folded: d.children.count, expanded: subtasksExpanded,
-                         toggle: d.children.isEmpty ? nil : { subtasksExpanded.toggle() })
+                         depth: d.depth, folded: d.children.count, expanded: expanded.contains(d.id),
+                         toggle: d.children.isEmpty ? nil : { withAnimation(.snappy(duration: 0.25)) { expanded.formSymmetricDifference([d.id]) } })
                     .contentShape(.rect)
                     // A click opens the issue in its own window; the arrow keys only move the selection.
                     .onTapGesture { openWindow(id: "issue", value: row.target) }
@@ -234,7 +239,10 @@ struct IssueListView: View {
         }
         .safeAreaInset(edge: .top, spacing: 0) { chips }
         .overlay {
-            if !store.isLoading, store.rows.isEmpty {
+            if store.unbounded {
+                ContentUnavailableView("Pick a filter", systemImage: "line.3.horizontal.decrease.circle",
+                                       description: Text("Jira won't list a whole site at once. Choose a project, a status, a person or a scope, or type a search."))
+            } else if !store.isLoading, store.rows.isEmpty {
                 ContentUnavailableView(filters.isActive ? "No matches" : "No issues", systemImage: "tray")
             }
         }

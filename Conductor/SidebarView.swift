@@ -67,11 +67,22 @@ struct ListFilters: Hashable, Codable {
         q.range(of: #"(?i)(=|~|\bin\b|\bis\b|order by)"#, options: .regularExpression) != nil
     }
 
+    private var query: String { text.trimmingCharacters(in: .whitespacesAndNewlines) }
+    private var isKey: Bool { query.range(of: #"^[A-Za-z][A-Za-z0-9_]+-\d+$"#, options: .regularExpression) != nil }
+
+    /// Jira refuses a search with no restriction at all ("unbounded"), so the list says so instead of asking.
+    var isBounded: Bool { isRawJQL || isKey || !restrictions(starredKeys: []).isEmpty }
+
     /// JQL for one account. `starredKeys` are that account's starred issues, for the Starred scope.
     func jql(starredKeys: [String] = []) -> String {
-        let q = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if Self.looksLikeJQL(q) { return q }
-        if q.range(of: #"^[A-Za-z][A-Za-z0-9_]+-\d+$"#, options: .regularExpression) != nil { return "key = \"\(q.uppercased())\"" }
+        if isRawJQL { return query }
+        if isKey { return "key = \"\(query.uppercased())\"" }
+        let c = restrictions(starredKeys: starredKeys)
+        return (c.isEmpty ? "" : c.joined(separator: " AND ") + " ") + "ORDER BY " + sort.clause
+    }
+
+    private func restrictions(starredKeys: [String]) -> [String] {
+        let q = query
         var c: [String] = []
         if let f = jiraFilter { c.append("filter = \(f.id)") }
         // Keys like IN or AND are JQL reserved words, hence the quotes.
@@ -104,7 +115,7 @@ struct ListFilters: Hashable, Codable {
             let escaped = q.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
             c.append("text ~ \"\(escaped)\"")
         }
-        return (c.isEmpty ? "" : c.joined(separator: " AND ") + " ") + "ORDER BY " + sort.clause
+        return c
     }
 }
 

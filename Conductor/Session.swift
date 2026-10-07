@@ -66,8 +66,7 @@ final class AccountState: Identifiable {
         filters = DiskCache.load(account: account, name: "filters") ?? []
         issueTypeNames = DiskCache.load(account: account, name: "issueTypes") ?? []
         jqlFields = DiskCache.load(account: account, name: "jqlFields") ?? []
-        starred = Set(UserDefaults.standard.stringArray(forKey: starredKey) ?? [])
-            .union(projects.filter { $0.favourite == true }.map(\.key))
+        starred = localStars.union(jiraStars)
         return me != nil
     }
 
@@ -96,8 +95,7 @@ final class AccountState: Identifiable {
         async let a = client.jqlAutocomplete()
         if let fresh = try? await p { projects = fresh; DiskCache.saveAsync(fresh, account: account, name: "projects") }
         if let fresh = try? await f { filters = fresh; DiskCache.saveAsync(fresh, account: account, name: "filters") }
-        starred = Set(UserDefaults.standard.stringArray(forKey: starredKey) ?? [])
-            .union(projects.filter { $0.favourite == true }.map(\.key))
+        starred = localStars.union(jiraStars)
         if let fresh = try? await t {
             issueTypeNames = Array(Set(fresh.map(\.name))).sorted()
             DiskCache.saveAsync(issueTypeNames, account: account, name: "issueTypes")
@@ -144,10 +142,22 @@ final class AccountState: Identifiable {
     }
 
     private var starredKey: String { "starred.\(host)|\(account.email)" }
+    private var unstarredKey: String { "unstarred.\(host)|\(account.email)" }
+    private var localStars: Set<String> { Set(UserDefaults.standard.stringArray(forKey: starredKey) ?? []) }
+    /// Jira's own project stars can be read but not written through the public API, so one the user
+    /// unstarred here is remembered and kept out until Jira itself drops it.
+    private var jiraStars: Set<String> {
+        Set(projects.filter { $0.favourite == true }.map(\.key)).subtracting(UserDefaults.standard.stringArray(forKey: unstarredKey) ?? [])
+    }
 
     func toggleStar(_ project: Project) {
-        if starred.contains(project.key) { starred.remove(project.key) } else { starred.insert(project.key) }
-        UserDefaults.standard.set(Array(starred).sorted(), forKey: starredKey)
+        var local = localStars
+        var unstarred = Set(UserDefaults.standard.stringArray(forKey: unstarredKey) ?? [])
+        if starred.contains(project.key) { local.remove(project.key); unstarred.insert(project.key) }
+        else { local.insert(project.key); unstarred.remove(project.key) }
+        UserDefaults.standard.set(Array(local).sorted(), forKey: starredKey)
+        UserDefaults.standard.set(Array(unstarred).sorted(), forKey: unstarredKey)
+        starred = local.union(jiraStars)
     }
 
     func rename(_ title: String) {

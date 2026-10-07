@@ -314,8 +314,8 @@ struct JiraClient: Sendable {
         let accountId: String
         if let me { accountId = me } else { accountId = try await myself().accountId }
         if on {
-            struct Body: Encodable { let accountId: String }
-            _ = try await request("issue/\(key)/watchers", method: "POST", body: Body(accountId: accountId))
+            // The body is the bare account id as a JSON string, not an object; Jira answers 400 to `{"accountId": …}`.
+            _ = try await request("issue/\(key)/watchers", method: "POST", body: accountId)
         } else {
             _ = try await request("issue/\(key)/watchers", query: ["accountId": accountId], method: "DELETE")
         }
