@@ -157,7 +157,7 @@ struct BoardView: View {
     private var state: AccountState? { session.state(target.accountID) }
 
     var body: some View {
-        ScrollView(swimlanes == .none ? .horizontal : [.horizontal, .vertical]) {
+        ScrollView(.horizontal) {
             if swimlanes == .none {
                 HStack(alignment: .top, spacing: 12) {
                     ForEach(store.columns) { column in
@@ -166,7 +166,18 @@ struct BoardView: View {
                 }
                 .padding(16)
             } else {
-                lanes
+                // Headers stay put; only the lanes scroll vertically, inside the sideways scroll.
+                VStack(alignment: .leading, spacing: 8) {
+                    let laneList = swimlanes.lanes(store.issues)
+                    HStack(spacing: 12) {
+                        ForEach(store.columns) { column in
+                            // Counted the way the lanes draw them, so the header agrees with the cards below it.
+                            BoardColumnHeader(column: column, count: laneList.reduce(0) { $0 + store.issues(in: column, from: $1.issues, fold: swimlanes != .parent).count }).frame(width: 280)
+                        }
+                    }
+                    .padding(.horizontal, 16).padding(.top, 16)
+                    ScrollView(.vertical) { lanes }
+                }
             }
         }
         .environment(\.jira, state)
@@ -245,14 +256,9 @@ struct BoardView: View {
         .frame(minWidth: 700, minHeight: 400)
     }
 
-    /// Column headers once at the top, then a row of columns per lane.
+    /// A row of columns per lane; the headers sit above, outside the vertical scroll.
     private var lanes: some View {
         VStack(alignment: .leading, spacing: 18) {
-            HStack(spacing: 12) {
-                ForEach(store.columns) { column in
-                    BoardColumnHeader(column: column, count: store.issues(in: column, fold: swimlanes != .parent).count).frame(width: 280)
-                }
-            }
             ForEach(swimlanes.lanes(store.issues)) { lane in
                 VStack(alignment: .leading, spacing: 8) {
                     Text("\(lane.title)  ·  \(lane.issues.count)").font(.headline).lineLimit(1)
@@ -264,7 +270,7 @@ struct BoardView: View {
                 }
             }
         }
-        .padding(16)
+        .padding(.horizontal, 16).padding(.bottom, 16)
     }
 
     @ViewBuilder
@@ -295,8 +301,15 @@ struct BoardView: View {
         { key in if let c = state?.client { Task { await store.move(key, to: column, client: c) } } }
     }
 
+    /// Cards drawn right now: with lanes, subtasks stand on their own; without, they fold into their parent.
+    private var cardCount: Int {
+        if swimlanes == .none { return store.columns.reduce(0) { $0 + store.issues(in: $1, fold: true).count } }
+        let laneList = swimlanes.lanes(store.issues)
+        return store.columns.reduce(0) { sum, column in sum + laneList.reduce(0) { $0 + store.issues(in: column, from: $1.issues, fold: swimlanes != .parent).count } }
+    }
+
     private var subtitle: String {
-        var s = "\(store.issues.count) issues"
+        var s = issues(cardCount)
         if store.truncated { s += " (first 2000)" }
         if let sp = store.sprint { s = sp.name + " · " + s }
         return s
@@ -368,21 +381,13 @@ struct BoardColumn: View {
                     .draggable(issue.key)
                     .onTapGesture(count: 2) { if let jira { openWindow(id: "issue", value: IssueTarget(accountID: jira.id, key: issue.key)) } }
                     .contextMenu {
-                        if let jira {
-                            Button("Open in Main Window", systemImage: "arrow.up.forward.app") { open(issue.key) }
-                            IssueMenu(issue: issue, state: jira) { op in Task { try? await op(); onWrite() } }
-                        }
+                        if let jira { IssueMenu(issue: issue, state: jira) { op in Task { try? await op(); onWrite() } } }
                     }
             }
         }
         .padding(2)
     }
 
-    private func open(_ key: String) {
-        guard let jira else { return }
-        session.pendingOpen = IssueTarget(accountID: jira.id, key: key)
-        NSApp.windows.first { $0.identifier?.rawValue.hasPrefix("main") == true }?.makeKeyAndOrderFront(nil)
-    }
 }
 
 struct BoardCard: View {
@@ -401,6 +406,7 @@ struct BoardCard: View {
                 .strikethrough(issue.isDone).foregroundStyle(issue.isDone ? .secondary : .primary)
             HStack(spacing: 6) {
                 RemoteImage(url: issue.fields.issuetype.iconUrl, placeholder: "circle").frame(width: 14, height: 14)
+                    .accessibilityLabel(issue.fields.issuetype.name)
                 Text(issue.key).font(.caption.monospaced()).foregroundStyle(.secondary)
                 if let p = issue.subtaskProgress {
                     Label("\(p.done)/\(p.total)", systemImage: "checklist").font(.caption2)

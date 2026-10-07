@@ -6,6 +6,9 @@
 	<true/>
 	<key>com.apple.security.network.client</key>
 	<true/>
+	<!-- Open and save panels (Attach Files, Save As) need this; without it the panel never appears. -->
+	<key>com.apple.security.files.user-selected.read-write</key>
+	<true/>
 	<!-- Puts accounts in the data protection keychain (see Keychain in JiraClient.swift). Needs a signing team,
 	     which Release builds on CI do not have, hence a separate file. -->
 	<key>keychain-access-groups</key>

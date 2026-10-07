@@ -48,6 +48,8 @@ struct IssueType: Codable, Hashable, Sendable, Identifiable {
     let name: String
     let iconUrl: URL?
     let subtask: Bool?
+    /// -1 subtask, 0 standard, 1 epic: a parent sits one level up.
+    var hierarchyLevel: Int?
     var isSubtask: Bool { subtask == true }
 }
 
@@ -63,7 +65,7 @@ struct SprintPage: Codable, Sendable { let values: [Sprint]; let isLast: Bool? }
 struct Attachment: Codable, Hashable, Sendable, Identifiable {
     let id: String
     let filename: String
-    let mimeType: String
+    let mimeType: String?
     let size: Int
     let content: URL
     let thumbnail: URL?

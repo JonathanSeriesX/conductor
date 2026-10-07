@@ -243,6 +243,17 @@ struct JiraClient: Sendable {
 
     func priorities() async throws -> [Priority] { try await get("priority") }
 
+    /// Every label on the site, for suggestions while typing one.
+    func labels() async throws -> [String] {
+        struct Page: Decodable { let values: [String]; let isLast: Bool }
+        var all: [String] = []
+        while true {
+            let page: Page = try await get("label", query: ["maxResults": "1000", "startAt": "\(all.count)"])
+            all += page.values
+            if page.isLast || page.values.isEmpty { return all }
+        }
+    }
+
     func issueTypes() async throws -> [IssueType] { try await get("issuetype") }
 
     // MARK: Attachments
@@ -278,19 +289,24 @@ struct JiraClient: Sendable {
         return l.issueLinkTypes
     }
 
-    func link(type: String, outward: String, inward: String) async throws {
+    /// Creates "`from` <type's outward wording> `to`", e.g. from blocks to. Jira's POST names the sides the
+    /// other way round from what it later reports on each issue: the issue posted as `inwardIssue` is the one
+    /// whose link reads with the outward wording.
+    func link(type: String, from: String, to: String) async throws {
         struct Ref: Encodable { let key: String }
         struct T: Encodable { let name: String }
         struct Body: Encodable { let type: T; let inwardIssue: Ref; let outwardIssue: Ref }
-        _ = try await request("issueLink", method: "POST", body: Body(type: T(name: type), inwardIssue: Ref(key: inward), outwardIssue: Ref(key: outward)))
+        _ = try await request("issueLink", method: "POST", body: Body(type: T(name: type), inwardIssue: Ref(key: from), outwardIssue: Ref(key: to)))
     }
 
     func deleteLink(id: String) async throws {
         _ = try await request("issueLink/\(id)", method: "DELETE")
     }
 
-    func pickIssues(query: String, excluding key: String? = nil) async throws -> [IssuePickerResult.Item] {
-        var q = ["query": query, "showSubTasks": "true"]
+    func pickIssues(query: String, excluding key: String? = nil, jql: String = "ORDER BY updated DESC") async throws -> [IssuePickerResult.Item] {
+        // Jira's "History Search" section only knows issues opened on the web; the "Current Search" section
+        // needs a JQL scope, and an empty-text query lists recent issues of that scope.
+        var q = ["query": query, "showSubTasks": "true", "currentJQL": jql]
         if let key { q["currentIssueKey"] = key }
         let r: IssuePickerResult = try await get("issue/picker", query: q)
         return r.items
@@ -298,17 +314,25 @@ struct JiraClient: Sendable {
 
     // MARK: Worklogs & watching
 
-    func addWorklog(_ key: String, seconds: Int, comment: ADFNode?, started: Date) async throws {
+    /// `adjustsEstimate`: subtract the time from the remaining estimate, which Jira otherwise does on its own and
+    /// which leaves a "0m remaining" on an issue that never had an estimate.
+    func addWorklog(_ key: String, seconds: Int, comment: ADFNode?, started: Date, adjustsEstimate: Bool) async throws {
         struct Body: Encodable { let timeSpentSeconds: Int; let comment: ADFNode?; let started: String }
         let f = DateFormatter()
         f.locale = Locale(identifier: "en_US_POSIX")
         f.dateFormat = "yyyy-MM-dd'T'HH:mm:ss.SSSZ"
-        _ = try await request("issue/\(key)/worklog", method: "POST", body: Body(timeSpentSeconds: seconds, comment: comment, started: f.string(from: started)))
+        _ = try await request("issue/\(key)/worklog", query: ["adjustEstimate": adjustsEstimate ? "auto" : "leave"], method: "POST",
+                              body: Body(timeSpentSeconds: seconds, comment: comment, started: f.string(from: started)))
     }
 
     func deleteWorklog(_ key: String, id: String) async throws {
-        _ = try await request("issue/\(key)/worklog/\(id)", method: "DELETE")
+        // Jira's default ("auto") hands the time back to the remaining estimate, inventing one on issues that had none.
+        _ = try await request("issue/\(key)/worklog/\(id)", query: ["adjustEstimate": "leave"], method: "DELETE")
     }
+
+    /// Transitions available from one status, as seen on a representative issue. Status and type decide the
+    /// workflow within a project, so one fetch serves every row that shares them.
+    func transitionsCached(for issue: Issue) async throws -> [Transition] { try await transitions(issue.key) }
 
     func watch(_ key: String, _ on: Bool, me: String? = nil) async throws {
         let accountId: String

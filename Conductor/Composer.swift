@@ -21,6 +21,8 @@ struct Composer: View {
     @State private var preview = false
     @State private var uploading = false
     @State private var error: String?
+    /// Row of the suggestion list the arrow keys point at.
+    @State private var highlighted = 0
     private var isFocused: Bool { focus?.wrappedValue ?? ownFocus }
 
     var body: some View {
@@ -36,7 +38,7 @@ struct Composer: View {
             }
             if !candidates.isEmpty {
                 VStack(alignment: .leading, spacing: 0) {
-                    ForEach(candidates) { u in
+                    ForEach(Array(candidates.enumerated()), id: \.element.id) { i, u in
                         Button { accept(u) } label: {
                             HStack(spacing: 8) {
                                 Avatar(user: u, size: 18)
@@ -44,6 +46,7 @@ struct Composer: View {
                                 Spacer()
                             }
                             .padding(.horizontal, 8).padding(.vertical, 5)
+                            .background(i == highlighted ? Color.accentColor.opacity(0.18) : .clear, in: .rect(cornerRadius: 6))
                             .contentShape(.rect)
                         }
                         .buttonStyle(.plain)
@@ -56,8 +59,10 @@ struct Composer: View {
             if let error { Text(error).font(.caption).foregroundStyle(.red) }
         }
         .onChange(of: text) { _, new in
-            // A trailing "@name" drives the suggestion list; anything else dismisses it.
-            if let m = new.firstMatch(of: /@([\p{L}\p{N}][\p{L}\p{N} .'-]{0,30})$/) { query = String(m.1) }
+            // A trailing "@name" drives the suggestion list; anything else dismisses it. A name just accepted
+            // from the list (followed by its space) is complete and must not open the list again.
+            if let m = new.firstMatch(of: /@([\p{L}\p{N}][\p{L}\p{N} .'-]{0,30})$/),
+               !mentions.keys.contains(where: { String(m.1).hasPrefix($0 + " ") || String(m.1) == $0 }) { query = String(m.1) }
             else { query = ""; candidates = [] }
         }
         .task(id: query) {
@@ -65,6 +70,7 @@ struct Composer: View {
             try? await Task.sleep(for: .milliseconds(200))
             guard !Task.isCancelled else { return }
             let found = (try? await c.users(matching: query)) ?? []
+            highlighted = 0
             withAnimation(.easeOut(duration: 0.15)) { candidates = Array(found.filter { $0.active != false }.prefix(5)) }
         }
     }
@@ -92,7 +98,8 @@ struct Composer: View {
     }
 
     private func tool(_ symbol: String, _ help: String, key: KeyEquivalent? = nil, _ action: @escaping () -> Void) -> some View {
-        Button(action: action) { Image(systemName: symbol).frame(width: 24, height: 20).contentShape(.rect) }
+        // A Label, so VoiceOver reads "Quote" rather than the symbol's own name ("Lyrics").
+        Button(action: action) { Label(help, systemImage: symbol).labelStyle(.iconOnly).frame(width: 24, height: 20).contentShape(.rect) }
             .buttonStyle(.plain)
             .foregroundStyle(.secondary)
             .help(help)
@@ -155,10 +162,33 @@ struct Composer: View {
                             .padding(.horizontal, 11).padding(.vertical, 6).allowsHitTesting(false)
                     }
                 }
-                // ⌘V with an image and no text on the pasteboard: upload it and link it here.
+                // ⌘V with files or an image on the pasteboard: upload them and link them here, instead of
+                // letting the text view paste the file paths.
                 .background(WindowEventMonitor(mask: .keyDown) { e in
-                    guard isFocused, let uploadImage, e.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
-                          e.charactersIgnoringModifiers == "v", let image = PastedImage.read() else { return e }
+                    guard isFocused else { return e }
+                    // Smart quotes and dashes would corrupt code and tables; the text view is only reachable here.
+                    if let tv = e.window?.firstResponder as? NSTextView, tv.isAutomaticQuoteSubstitutionEnabled || tv.isAutomaticDashSubstitutionEnabled {
+                        tv.isAutomaticQuoteSubstitutionEnabled = false
+                        tv.isAutomaticDashSubstitutionEnabled = false
+                        tv.isAutomaticTextReplacementEnabled = false
+                    }
+                    // While the mention list shows, the arrows, ↩ and Tab pick from it; Esc dismisses it.
+                    if !candidates.isEmpty, e.modifierFlags.intersection(.deviceIndependentFlagsMask).isEmpty {
+                        switch e.keyCode {
+                        case 125: highlighted = min(highlighted + 1, candidates.count - 1); return nil
+                        case 126: highlighted = max(highlighted - 1, 0); return nil
+                        case 36, 48: accept(candidates[highlighted]); return nil
+                        case 53: candidates = []; return nil
+                        default: break
+                        }
+                    }
+                    guard let uploadImage, e.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
+                          e.charactersIgnoringModifiers == "v" else { return e }
+                    if let files = PastedImage.readFiles() {
+                        for f in files { pasteImage(f, uploadImage) }
+                        return nil
+                    }
+                    guard let image = PastedImage.read() else { return e }
                     pasteImage(image, uploadImage)
                     return nil
                 })
@@ -178,24 +208,40 @@ struct Composer: View {
 
     private func accept(_ user: JiraUser) {
         guard let r = text.range(of: "@" + query, options: .backwards) else { return }
-        text.replaceSubrange(r, with: "@\(user.displayName) ")
-        mentions[user.displayName] = user.accountId
+        mentions[user.displayName] = user.accountId   // before the text change, so onChange knows the name is complete
+        let inserted = "@\(user.displayName) "
+        let start = text.distance(from: text.startIndex, to: r.lowerBound)
+        text.replaceSubrange(r, with: inserted)
+        // The caret stays where the "@" was unless it is moved past the name.
+        selection = TextSelection(insertionPoint: text.index(text.startIndex, offsetBy: start + inserted.count))
         candidates = []
         query = ""
+        focusEditor()
     }
 }
 
 /// An image on the general pasteboard with no text alongside, as PNG with a dated name.
 enum PastedImage {
+    /// Files copied in the Finder, read into memory with their own names.
+    @MainActor static func readFiles() -> [(data: Data, name: String)]? {
+        let urls = (NSPasteboard.general.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL]) ?? []
+        let files = urls.compactMap { url -> (Data, String)? in
+            guard let data = try? Data(contentsOf: url) else { return nil }
+            return (data, url.lastPathComponent)
+        }
+        return files.isEmpty ? nil : files
+    }
+
     @MainActor static func read() -> (data: Data, name: String)? {
         let pb = NSPasteboard.general
         guard pb.string(forType: .string) == nil,
               let image = (pb.readObjects(forClasses: [NSImage.self]) as? [NSImage])?.first,
               let tiff = image.tiffRepresentation,
               let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) else { return nil }
-        let stamp = Date().formatted(.iso8601.year().month().day().dateSeparator(.dash)) + " "
-            + Date().formatted(date: .omitted, time: .shortened).replacingOccurrences(of: ":", with: ".")
-        return (png, "Pasted image \(stamp).png")
+        let f = DateFormatter()   // local time; POSIX so a forced 12-hour clock cannot rewrite the pattern
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "yyyy-MM-dd HH.mm.ss"
+        return (png, "Pasted image \(f.string(from: .now)).png")
     }
 }
 
@@ -237,6 +283,7 @@ struct Chip: View {
             if let onRemove {
                 Button(action: onRemove) { Image(systemName: "xmark").font(.system(size: 8, weight: .bold)) }
                     .buttonStyle(.plain).foregroundStyle(.secondary)
+                    .accessibilityLabel("Remove \(text)")
             }
         }
         .font(.caption.weight(.medium))

@@ -188,6 +188,18 @@ final class LiveWriteTests: XCTestCase {
 }
 
 final class MarkdownTests: XCTestCase {
+    func testPipeTablesRoundTrip() {
+        let md = "| Name | Size |\n| --- | --- |\n| **a** | 1 |\n| b | 2 |"
+        let doc = ADFNode.document(markdown: md)
+        XCTAssertEqual(doc.content?.first?.type, "table")
+        XCTAssertEqual(doc.content?.first?.content?.count, 3)
+        XCTAssertEqual(doc.content?.first?.content?.first?.content?.first?.type, "tableHeader")
+        XCTAssertEqual(doc.content?.first?.content?.last?.content?.first?.type, "tableCell")
+        XCTAssertFalse(doc.hasLossyNodes)
+        var mentions: [String: String] = [:]
+        XCTAssertEqual(doc.markdown(mentions: &mentions), md)
+    }
+
     func testBlocksAndMarksRoundTrip() {
         let md = """
         # Title
@@ -247,7 +259,7 @@ final class MarkdownTests: XCTestCase {
     }
 
     func testLossyDetection() {
-        XCTAssertTrue(ADFNode(type: "doc", content: [ADFNode(type: "table")]).hasLossyNodes)
+        XCTAssertTrue(ADFNode(type: "doc", content: [ADFNode(type: "panel")]).hasLossyNodes)   // tables round-trip now
         XCTAssertFalse(ADFNode.document(markdown: "plain").hasLossyNodes)
     }
 }

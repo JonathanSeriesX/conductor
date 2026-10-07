@@ -6,32 +6,10 @@ struct SettingsView: View {
     @AppStorage("notificationsEnabled") private var notifications = true
     @AppStorage("pollMinutes") private var pollMinutes = 3
     @AppStorage("checkForUpdates") private var checkForUpdates = true
-    @AppStorage("backdrop") private var backdrop = "mesh"
     @Environment(Session.self) private var session
 
     var body: some View {
         Form {
-            Section("Appearance") {
-                Picker("Background", selection: $backdrop) {
-                    Text("Aurora").tag("mesh")
-                    Text("Aurora, muted").tag("muted")
-                    Text("Dusk").tag("dusk")
-                    Text("Forest").tag("forest")
-                    Text("Plain").tag("plain")
-                }
-                HStack(spacing: 8) {
-                    ForEach(["mesh", "muted", "dusk", "forest", "plain"], id: \.self) { style in
-                        Button { backdrop = style } label: {
-                            BackdropSwatch(style: style)
-                                .frame(width: 54, height: 36)
-                                .clipShape(.rect(cornerRadius: 8))
-                                .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(backdrop == style ? Color.accentColor : .primary.opacity(0.15), lineWidth: backdrop == style ? 2 : 1))
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                Text("Plain follows the light or dark appearance of the window.").font(.caption).foregroundStyle(.secondary)
-            }
             Section("Sidebar") {
                 Picker("Open at launch", selection: $defaultSource) {
                     ForEach(Smart.allCases, id: \.rawValue) { Text($0.title).tag($0.rawValue) }
@@ -68,13 +46,5 @@ struct SettingsView: View {
         .formStyle(.grouped)
         .frame(width: 460)
         .fixedSize(horizontal: false, vertical: true)
-    }
-}
-
-/// A small preview of one backdrop style, independent of the stored setting.
-private struct BackdropSwatch: View {
-    let style: String
-    var body: some View {
-        Backdrop().environment(\.backdropOverride, style)
     }
 }

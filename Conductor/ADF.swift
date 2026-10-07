@@ -31,6 +31,7 @@ enum JSONValue: Codable, Hashable, Sendable {
 
     var string: String? { if case .string(let s) = self { return s }; return nil }
     var number: Double? { if case .number(let n) = self { return n }; return nil }
+    var bool: Bool? { if case .bool(let b) = self { return b }; return nil }
 }
 
 struct ADFMark: Codable, Hashable, Sendable {
@@ -65,13 +66,14 @@ struct ADFNode: Codable, Hashable, Sendable {
 // MARK: - Inline rendering
 
 extension ADFNode {
-    func inlineAttributed() -> AttributedString {
+    /// `base` is the block's font: headings pass theirs, so bold and code runs keep the heading size.
+    func inlineAttributed(base: Font = .body) -> AttributedString {
         var out = AttributedString()
-        for n in content ?? [] { out += n.inlineRun() }
+        for n in content ?? [] { out += n.inlineRun(base: base) }
         return out
     }
 
-    private func inlineRun() -> AttributedString {
+    private func inlineRun(base: Font) -> AttributedString {
         switch type {
         case "text":
             var s = AttributedString(text ?? "")
@@ -88,7 +90,8 @@ extension ADFNode {
                 default: break
                 }
             }
-            var font: Font = .system(.body, design: code ? .monospaced : .default).weight(bold ? .semibold : .regular)
+            var font: Font = code ? base.monospaced() : base
+            if bold { font = font.weight(.semibold) }
             if italic { font = font.italic() }
             s.font = font
             if code { s.backgroundColor = Color.primary.opacity(0.08) }
@@ -110,7 +113,16 @@ extension ADFNode {
         case "status":
             var s = AttributedString(" \(attr("text")?.uppercased() ?? "") ")
             s.font = .caption.weight(.bold)
-            s.backgroundColor = Color.primary.opacity(0.1)
+            let tint: Color = switch attr("color") {   // Jira's lozenge colours
+            case "green": .green
+            case "red": .red
+            case "blue": .blue
+            case "yellow": .orange
+            case "purple": .purple
+            default: .secondary
+            }
+            s.foregroundColor = tint
+            s.backgroundColor = tint.opacity(0.15)
             return s
         case "date":
             if let ms = attrs?["timestamp"]?.string.flatMap(Double.init) {
@@ -138,11 +150,11 @@ extension Color {
 
 struct ADFView: View {
     let node: ADFNode
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            ADFBlocks(nodes: node.content ?? [])
-        }
-        .textSelection(.enabled)
+    /// Off where a click starts editing: selectable text swallows the click before any tap gesture sees it.
+    var selectable = true
+    @ViewBuilder var body: some View {
+        let blocks = VStack(alignment: .leading, spacing: 10) { ADFBlocks(nodes: node.content ?? []) }
+        if selectable { blocks.textSelection(.enabled) } else { blocks.textSelection(.disabled) }
     }
 }
 
@@ -158,13 +170,14 @@ struct ADFBlocks: View {
 struct ADFBlock: View {
     let node: ADFNode
     @Environment(\.adfAttachments) private var attachments
+    @Environment(\.adfHeaderCell) private var headerCell
 
     var body: some View {
         switch node.type {
         case "paragraph":
-            Text(node.inlineAttributed()).fixedSize(horizontal: false, vertical: true)
+            Text(node.inlineAttributed(base: headerCell ? .body.weight(.semibold) : .body)).fixedSize(horizontal: false, vertical: true)
         case "heading":
-            Text(node.inlineAttributed()).font(headingFont).padding(.top, 4).fixedSize(horizontal: false, vertical: true)
+            Text(node.inlineAttributed(base: headingFont)).font(headingFont).padding(.top, 4).fixedSize(horizontal: false, vertical: true)
         case "bulletList":
             list(ordered: false)
         case "orderedList":
@@ -184,10 +197,9 @@ struct ADFBlock: View {
                 .background(.quaternary.opacity(0.5), in: .rect(cornerRadius: 8))
             }
         case "blockquote":
-            HStack(alignment: .top, spacing: 10) {
-                RoundedRectangle(cornerRadius: 2).fill(.tertiary).frame(width: 3)
-                VStack(alignment: .leading, spacing: 8) { ADFBlocks(nodes: node.content ?? []) }
-            }
+            VStack(alignment: .leading, spacing: 8) { ADFBlocks(nodes: node.content ?? []) }
+                .padding(.leading, 13)
+                .overlay(alignment: .leading) { RoundedRectangle(cornerRadius: 2).fill(.tertiary).frame(width: 3) }
         case "rule":
             Divider()
         case "panel":
@@ -204,9 +216,9 @@ struct ADFBlock: View {
                     GridRow {
                         ForEach(Array((row.content ?? []).enumerated()), id: \.offset) { _, cell in
                             VStack(alignment: .leading, spacing: 6) { ADFBlocks(nodes: cell.content ?? []) }
-                                .font(cell.type == "tableHeader" ? .body.weight(.semibold) : .body)
+                                .environment(\.adfHeaderCell, cell.type == "tableHeader")   // text runs set their own font
                                 .padding(8)
-                                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                                .frame(maxWidth: .infinity, alignment: .topLeading)   // no maxHeight: a scroll view would stretch every row
                                 .background(cell.type == "tableHeader" ? Color.primary.opacity(0.06) : .clear)
                                 .border(Color.primary.opacity(0.12), width: 0.5)
                         }
@@ -216,7 +228,7 @@ struct ADFBlock: View {
         case "mediaSingle", "mediaGroup":
             HStack(alignment: .top, spacing: 8) {
                 ForEach(Array((node.content ?? []).enumerated()), id: \.offset) { _, m in
-                    if let a = attachments.first(where: { $0.filename == m.attr("alt") }), a.mimeType.hasPrefix("image/") {
+                    if let a = attachments.first(where: { $0.filename == m.attr("alt") }), (a.mimeType ?? "").hasPrefix("image/") {
                         InlineImage(attachment: a)
                     } else {
                         Label(m.attr("alt") ?? "Attached media", systemImage: "photo")
@@ -275,9 +287,9 @@ struct ADFBlock: View {
 
     private var headingFont: Font {
         switch Int(node.attrs?["level"]?.number ?? 3) {
-        case 1: .title
-        case 2: .title2
-        case 3: .title3
+        case 1: .title.weight(.semibold)
+        case 2: .title2.weight(.semibold)
+        case 3: .title3.weight(.semibold)
         default: .headline
         }
     }
@@ -347,4 +359,9 @@ struct InlineImage: View {
         .onHover { inside in inside ? NSCursor.pointingHand.push() : NSCursor.pop() }
         .help("\(attachment.filename) — click to preview")
     }
+}
+
+extension EnvironmentValues {
+    /// Inside a table header cell, where every run is bold.
+    @Entry var adfHeaderCell = false
 }

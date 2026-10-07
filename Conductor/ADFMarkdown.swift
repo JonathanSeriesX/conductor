@@ -1,7 +1,7 @@
 import Foundation
 
 // Minimal Markdown ⇄ Atlassian Document Format, enough for comments and descriptions
-// written by hand: headings, lists (nested), quotes, fenced code, rules, bold/italic/code/strike,
+// written by hand: headings, lists (nested), quotes, fenced code, rules, pipe tables, bold/italic/code/strike,
 // links, bare URLs and @mentions. Anything fancier survives a read but not an edit round-trip.
 
 extension ADFNode {
@@ -48,6 +48,25 @@ extension ADFNode {
                     i += 1
                 }
                 blocks.append(ADFNode(type: "blockquote", content: [ADFNode(type: "paragraph", content: joinedInline(quote, mentions: mentions))]))
+                continue
+            }
+            // A pipe table: a header row, a |---| rule, then rows. The one block the editor shows that way.
+            if t.hasPrefix("|"), i + 1 < lines.count, lines[i + 1].trimmingCharacters(in: .whitespaces).firstMatch(of: /^\|(\s*:?-+:?\s*\|)+$/) != nil {
+                flush()
+                var rows: [ADFNode] = []
+                var r = 0
+                while i < lines.count, lines[i].trimmingCharacters(in: .whitespaces).hasPrefix("|") {
+                    let row = lines[i].trimmingCharacters(in: .whitespaces)
+                    i += 1
+                    if r == 1 { r += 1; continue }   // the rule line
+                    let cells = row.dropFirst().dropLast(row.hasSuffix("|") ? 1 : 0).split(separator: "|", omittingEmptySubsequences: false)
+                        .map { $0.trimmingCharacters(in: .whitespaces) }
+                    rows.append(ADFNode(type: "tableRow", content: cells.map {
+                        ADFNode(type: r == 0 ? "tableHeader" : "tableCell", content: [ADFNode(type: "paragraph", content: inlineNodes($0, mentions: mentions))])
+                    }))
+                    r += 1
+                }
+                blocks.append(ADFNode(type: "table", attrs: ["isNumberColumnEnabled": .bool(false), "layout": .string("default")], content: rows))
                 continue
             }
             if let marker = listMarker(line) {
@@ -145,7 +164,7 @@ extension ADFNode {
 
     /// Node types the Markdown round-trip would flatten or drop.
     var hasLossyNodes: Bool {
-        let lossy: Set<String> = ["table", "media", "mediaSingle", "mediaGroup", "mediaInline", "panel", "expand", "nestedExpand", "layoutSection", "taskList", "decisionList"]
+        let lossy: Set<String> = ["media", "mediaSingle", "mediaGroup", "mediaInline", "panel", "expand", "nestedExpand", "layoutSection", "taskList", "decisionList"]
         if lossy.contains(type) { return true }
         return (content ?? []).contains { $0.hasLossyNodes }
     }

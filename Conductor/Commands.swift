@@ -38,10 +38,10 @@ struct AppCommands: Commands {
     var body: some Commands {
         CommandGroup(replacing: .printItem) {}
         CommandMenu("Go") {
-            Button("Assigned to Me") { session.navigationRequest = session.filters(for: .assigned) }.keyboardShortcut("1")
-            Button("Reported by Me") { session.navigationRequest = session.filters(for: .reported) }.keyboardShortcut("2")
-            Button("Recently Viewed") { session.navigationRequest = session.filters(for: .recent) }.keyboardShortcut("3")
-            Button("Watching") { session.navigationRequest = session.filters(for: .watching) }.keyboardShortcut("4")
+            Button("Assigned to Me") { go(.assigned) }.keyboardShortcut("1")
+            Button("Reported by Me") { go(.reported) }.keyboardShortcut("2")
+            Button("Recently Viewed") { go(.recent) }.keyboardShortcut("3")
+            Button("Watching") { go(.watching) }.keyboardShortcut("4")
             Divider()
             Button("Reload") { session.reloadTick += 1 }.keyboardShortcut("r")
             Button("Refresh Projects") { Task { await session.refreshAll() } }
@@ -50,6 +50,11 @@ struct AppCommands: Commands {
             Button("Save Filter…") { list?.saveFilter?() }
                 .keyboardShortcut("s")
                 .disabled(list?.saveFilter == nil)
+        }
+        CommandGroup(before: .windowList) {
+            // Mail's "Message Viewer" ⌘0: the list window, after it was closed behind an issue window.
+            Button("Issues") { showMain() }.keyboardShortcut("0")
+            Divider()
         }
         CommandGroup(before: .sidebar) {
             Button("Open Board") { list?.openBoard?() }
@@ -86,6 +91,21 @@ struct AppCommands: Commands {
         }
     }
 
+    private func go(_ smart: Smart) {
+        session.navigationRequest = session.filters(for: smart)
+        showMain()
+    }
+
+    /// Brings the list window to the front, making one when it was closed. Only an issue or board window
+    /// may be open, and every list command needs the list.
+    private func showMain() {
+        if let w = NSApp.windows.first(where: { $0.identifier?.rawValue.hasPrefix("main") == true && $0.isVisible }) {
+            w.makeKeyAndOrderFront(nil)
+        } else {
+            openWindow(id: "main")
+        }
+    }
+
     private func item(_ title: String, _ action: IssueActions.Action, _ key: KeyEquivalent? = nil, _ modifiers: EventModifiers = .command) -> some View {
         Button(title) { issue?.perform(action) }
             .keyboardShortcut(key.map { KeyboardShortcut($0, modifiers: modifiers) })
@@ -96,13 +116,16 @@ struct AppCommands: Commands {
 /// An issue in a window of its own, so two can sit side by side. Links inside it navigate in place.
 struct IssueWindow: View {
     @State var target: IssueTarget
+    /// Issues this window showed before the current one, so a jump to a subtask or link can come back.
+    @State private var trail: [IssueTarget] = []
     @Environment(Session.self) private var session
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         Group {
             if let st = session.state(target.accountID) {
-                IssueDetailView(target: target, open: { target = $0 })
+                IssueDetailView(target: target, open: { trail.append(target); target = $0 },
+                                back: trail.isEmpty ? nil : { target = trail.removeLast() })
                     .environment(\.jira, st)
                     .id(target)
             } else if session.isRestoring {

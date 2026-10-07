@@ -92,6 +92,9 @@ struct CreateIssueView: View {
     @State private var m = CreateIssueModel()
     @State private var showAssign = false
     @State private var labelDraft = ""
+    @FocusState private var summaryFocused: Bool
+    @State private var confirmDiscard = false
+    private var hasDraft: Bool { !m.summary.isEmpty || !m.text.isEmpty }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -117,7 +120,7 @@ struct CreateIssueView: View {
                     }
                 }
                 .labelsHidden()
-                .frame(maxWidth: 220)
+                .fixedSize()
                 if m.isLoadingMeta { ProgressView().controlSize(.small) }
                 Spacer()
             }
@@ -125,6 +128,7 @@ struct CreateIssueView: View {
             TextField("Summary", text: $m.summary, axis: .vertical)
                 .font(.title3)
                 .textFieldStyle(.plain)
+                .focused($summaryFocused)
                 .lineLimit(1...3)
                 .padding(10)
                 .background(.quaternary.opacity(0.4), in: .rect(cornerRadius: 10))
@@ -189,7 +193,7 @@ struct CreateIssueView: View {
 
             HStack {
                 Spacer()
-                Button("Cancel") { dismiss() }.buttonStyle(.glass).keyboardShortcut(.cancelAction)
+                Button("Cancel") { if hasDraft { confirmDiscard = true } else { dismiss() } }.buttonStyle(.glass).keyboardShortcut(.cancelAction)
                 Button(action: create) {
                     if m.isWorking { ProgressView().controlSize(.small).frame(width: 60) } else { Text("Create").frame(width: 60) }
                 }
@@ -200,12 +204,22 @@ struct CreateIssueView: View {
         }
         .padding(22)
         .frame(width: 640)
+        .interactiveDismissDisabled(hasDraft)
+        .confirmationDialog("Discard this issue?", isPresented: $confirmDiscard, titleVisibility: .visible) {
+            Button("Discard", role: .destructive) { dismiss() }
+            Button("Keep Editing", role: .cancel) {}
+        }
         .task {
+            DispatchQueue.main.async { summaryFocused = true }
             let last = UserDefaults.standard.string(forKey: "lastCreateProject")
+            // The list's project, else the one used last time, else a starred one, else the first. An issue's
+            // own project record lacks fields the picker's entries have, so the catalog's copy stands in.
             if let (p, st) = defaultProject {
-                m.choice = ProjectChoice(project: p, accountID: st.id)
-            } else if let st = session.states.first(where: { "\($0.id)|" + ($0.projects.first { "\($0.key)" == last?.split(separator: "|").last.map(String.init) }?.key ?? "-") == last }),
+                m.choice = ProjectChoice(project: st.projects.first { $0.key == p.key } ?? p, accountID: st.id)
+            } else if let last, let st = session.states.first(where: { last.hasPrefix("\($0.id)|") }),
                       let p = st.projects.first(where: { "\(st.id)|\($0.key)" == last }) {
+                m.choice = ProjectChoice(project: p, accountID: st.id)
+            } else if let st = session.states.first(where: { !$0.starredProjects.isEmpty }), let p = st.starredProjects.first {
                 m.choice = ProjectChoice(project: p, accountID: st.id)
             } else if let st = session.states.first, let p = st.projects.first {
                 m.choice = ProjectChoice(project: p, accountID: st.id)
@@ -245,6 +259,7 @@ struct CreateIssueView: View {
             do {
                 let created = try await c.createIssue(fields: try m.payload())
                 UserDefaults.standard.set("\(st.id)|\(m.project?.key ?? "")", forKey: "lastCreateProject")
+                session.listTick += 1
                 dismiss()
                 onCreated(IssueTarget(accountID: st.id, key: created.key))
             } catch { m.error = error.localizedDescription }

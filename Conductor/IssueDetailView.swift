@@ -13,6 +13,8 @@ final class IssueDetailStore {
     var error: String?
     var isWorking = false
     var previewURL: URL?
+    /// Jira answered 404: the issue was deleted or moved since it was cached.
+    var gone = false
 
     var priorities: [Priority] {
         editMeta?.fields["priority"]?.allowedValues?.compactMap { v in
@@ -22,6 +24,17 @@ final class IssueDetailStore {
     }
 
     func canEdit(_ field: String?) -> Bool { field.flatMap { editMeta?.fields[$0] } != nil }
+
+    /// Types this issue can change to, from its edit screen. Empty when the type is not editable.
+    var issueTypes: [IssueType] {
+        editMeta?.fields["issuetype"]?.allowedValues?.compactMap { v in
+            guard let o = v.object, let id = o["id"]?.string, let name = o["name"]?.string else { return nil }
+            return IssueType(id: id, name: name, iconUrl: o["iconUrl"]?.string.flatMap(URL.init), subtask: o["subtask"]?.bool)
+        } ?? []
+    }
+
+    /// Every label on the site, fetched once per page for the labels editor.
+    var allLabels: [String] = []
 
     /// Values editmeta offers for components or fix versions; archived versions are left out.
     func options(_ field: String) -> [NamedRef] {
@@ -59,26 +72,36 @@ final class IssueDetailStore {
                 if let list = await types { linkTypes = list }
             }
         } catch {
-            if !error.isOffline { self.error = error.localizedDescription }
+            if (error as? JiraError)?.status == 404 { gone = true; issue = nil; return }
+            if !error.isOffline, !error.isCancelled { self.error = error.localizedDescription }
             return
         }
         if full, canEdit(client.sprintField), let project = issue?.fields.project?.key {
             sprints = await state.sprints(project: project)
         }
+        if full, allLabels.isEmpty, canEdit("labels") { allLabels = (try? await client.labels()) ?? [] }
     }
 
     /// Runs a write, then refreshes only what a write can change: the issue, its transitions and editmeta.
-    func perform(_ state: AccountState, key: String, _ op: @Sendable (JiraClient) async throws -> Void) async {
+    /// False when the write failed, so the caller can keep the user's draft.
+    @discardableResult
+    func perform(_ state: AccountState, key: String, _ op: @Sendable (JiraClient) async throws -> Void) async -> Bool {
         isWorking = true
         defer { isWorking = false }
-        do { try await op(state.client) } catch { self.error = error.localizedDescription }
+        do { try await op(state.client) } catch {
+            if !error.isCancelled { self.error = error.localizedDescription }
+            return false
+        }
         await load(state, key: key, full: false)
+        return true
     }
 }
 
 struct IssueDetailView: View {
     let target: IssueTarget
     var open: (IssueTarget) -> Void
+    /// Set by the window when there is an issue to go back to.
+    var back: (() -> Void)? = nil
     @Environment(Session.self) private var session
     @Environment(\.jira) private var jira
     @Environment(\.openWindow) private var openWindow
@@ -91,6 +114,9 @@ struct IssueDetailView: View {
     @State private var summaryDraft: String?
     @State private var descriptionDraft: String?
     @State private var descriptionMentions: [String: String] = [:]
+    /// What the editors opened with, so an untouched draft is never written back (the Markdown trip loses panels and media).
+    @State private var descriptionOriginal = ""
+    @State private var editOriginal = ""
     @State private var editingComment: Comment?
     @State private var editDraft = ""
     @State private var editMentions: [String: String] = [:]
@@ -101,15 +127,22 @@ struct IssueDetailView: View {
     @State private var showCreateSubtask = false
     @State private var showDueDate = false
     @State private var showRemind = false
+    @State private var showParent = false
     @State private var isDropTargeted = false
+    /// A destructive action waiting for the user's confirmation: what it is and what it does.
+    @State private var pendingDelete: (title: String, verb: String, perform: () -> Void)?
     @FocusState private var summaryFocused: Bool
     @FocusState private var descriptionFocused: Bool
+    @FocusState private var editCommentFocused: Bool
+    @FocusState private var commentFocused: Bool
     @State private var commentRequest = 0
 
     var body: some View {
         Group {
             if let issue = store.issue {
                 content(issue)
+            } else if store.gone {
+                ContentUnavailableView("\(key) no longer exists", systemImage: "trash", description: Text("It was deleted or moved in Jira."))
             } else if store.error == nil {
                 ProgressView()
             } else {
@@ -122,7 +155,6 @@ struct IssueDetailView: View {
         .navigationSubtitle(store.issue?.fields.project?.name ?? "")
         .toolbar(id: "issue") { toolbar }
         .focusedSceneValue(\.issueActions, actions)
-        .toolbarBackgroundVisibility(.hidden, for: .windowToolbar) // let the backdrop run under the glass buttons
         .task(id: "\(key)|\(session.reloadTick)") { if let jira { await store.load(jira, key: key) } }
         .errorAlert($store.error)
         .quickLookPreview($store.previewURL)
@@ -140,7 +172,16 @@ struct IssueDetailView: View {
         .sheet(isPresented: $showCreateSubtask) {
             CreateIssueView(defaultProject: store.issue?.fields.project.flatMap { p in jira.map { (p, $0) } }, parentKey: key) { open($0) }
         }
+        .confirmationDialog(pendingDelete?.title ?? "", isPresented: Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } }), titleVisibility: .visible) {
+            Button(pendingDelete?.verb ?? "Delete", role: .destructive) { pendingDelete?.perform(); pendingDelete = nil }
+            Button("Cancel", role: .cancel) { pendingDelete = nil }
+        } message: {
+            Text("This can't be undone.")
+        }
     }
+
+    /// Asks first, then runs the write. Jira has no undo for these.
+    private func confirmDelete(_ title: String, verb: String = "Delete", _ perform: @escaping () -> Void) { pendingDelete = (title, verb, perform) }
 
     // MARK: Layout
 
@@ -195,19 +236,17 @@ struct IssueDetailView: View {
 
     private func header(_ issue: Issue) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 6) {
-                if let parent = issue.fields.parent {
-                    Button { open(parent.key) } label: {
-                        HStack(spacing: 4) {
-                            RemoteImage(url: parent.fields.issuetype?.iconUrl).frame(width: 14, height: 14)
-                            Text(parent.key)
-                        }
+            // The key and type icon are the window title; only the parent, when there is one, needs a line here.
+            if let parent = issue.fields.parent {
+                Button { open(parent.key) } label: {
+                    HStack(spacing: 4) {
+                        RemoteImage(url: parent.fields.issuetype?.iconUrl).frame(width: 14, height: 14)
+                        Text(parent.key).font(.callout.monospaced())
+                        Text(parent.fields.summary).font(.callout).lineLimit(1)
                     }
-                    .buttonStyle(.link)
-                    Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.tertiary)
                 }
-                RemoteImage(url: issue.fields.issuetype.iconUrl).frame(width: 16, height: 16)
-                Text(issue.key).font(.body.monospaced()).foregroundStyle(.secondary).textSelection(.enabled)
+                .buttonStyle(.link)
+                .help("Open the parent issue")
             }
             if summaryDraft != nil {
                 TextField("Summary", text: Binding($summaryDraft, or: ""), axis: .vertical)
@@ -220,50 +259,48 @@ struct IssueDetailView: View {
                     .padding(.horizontal, 8).padding(.vertical, 4)
                     .background(.quaternary.opacity(0.4), in: .rect(cornerRadius: 10))
                     .padding(.horizontal, -8)
-                    .onAppear { summaryFocused = true }
+                    .task { focusSoon($summaryFocused) }
                 Text("↩ to save · esc to cancel").font(.caption2).foregroundStyle(.tertiary)
             } else {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(issue.fields.summary)
-                        .font(.system(.largeTitle, design: .rounded, weight: .semibold))
-                        .textSelection(.enabled)
-                        .contentShape(.rect)
-                        .onTapGesture(count: 2) { if store.canEdit("summary") { summaryDraft = issue.fields.summary } }
-                    if store.canEdit("summary") {
-                        Button { summaryDraft = issue.fields.summary } label: { Image(systemName: "pencil") }
-                            .buttonStyle(.plain).foregroundStyle(.secondary).help("Rename (⌘E)")
-                    }
-                }
+                // One click edits, as on the web. No pencil: the hover cursor says it.
+                Text(issue.fields.summary)
+                    .font(.system(.largeTitle, design: .rounded, weight: .semibold))
+                    .contentShape(.rect)
+                    .onTapGesture { if store.canEdit("summary") { summaryDraft = issue.fields.summary } }
+                    .help(store.canEdit("summary") ? "Click to rename (⌘E)" : "")
             }
         }
     }
 
     private func descriptionCard(_ issue: Issue) -> some View {
         GlassCard {
-            HStack {
-                Text("Description").font(.headline).foregroundStyle(.secondary)
-                Spacer()
-                if descriptionDraft == nil, store.canEdit("description") {
-                    Button { beginDescriptionEdit(issue) } label: { Image(systemName: "pencil") }
-                        .buttonStyle(.plain).foregroundStyle(.secondary).help("Edit description")
-                }
-            }
+            Text("Description").font(.headline).foregroundStyle(.secondary)
             if descriptionDraft != nil {
                 Composer(text: Binding($descriptionDraft, or: ""), mentions: $descriptionMentions, placeholder: "Description", minHeight: 140, maxHeight: 420, uploadImage: uploadPasted, focus: $descriptionFocused)
-                    .onAppear { descriptionFocused = true }
+                    .task { focusSoon($descriptionFocused) }
                 if issue.fields.description?.hasLossyNodes == true {
-                    Label("This description has tables, images or panels that the editor can't keep. Saving replaces it with what you see here.", systemImage: "exclamationmark.triangle")
+                    Label("This description has images, panels or other content the editor can't keep. Saving replaces them with the text shown here; Cancel leaves the description as it is.", systemImage: "exclamationmark.triangle")
                         .font(.caption).foregroundStyle(.orange)
                 }
-                HStack {
+                HStack(spacing: 10) {
                     Spacer()
                     Button("Cancel") { descriptionDraft = nil }.buttonStyle(.glass).keyboardShortcut(.cancelAction)
-                    Button("Save") { saveDescription() }.buttonStyle(.glassProminent).keyboardShortcut(.return, modifiers: .command)
+                    // ⌘↩ belongs to whichever editor has focus; the comment box has the same shortcut.
+                    Button("Save") { saveDescription() }.buttonStyle(.glassProminent)
+                        .keyboardShortcut(descriptionFocused ? KeyboardShortcut(.return, modifiers: .command) : nil)
                 }
             } else if let d = issue.fields.description, !(d.content ?? []).isEmpty {
-                ADFView(node: d)
+                ADFView(node: d, selectable: !store.canEdit("description"))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(.rect)
+                    .onTapGesture { if store.canEdit("description") { beginDescriptionEdit(issue) } }
+                    .help(store.canEdit("description") ? "Click to edit" : "")
             } else if store.isPartial {
                 ProgressView().controlSize(.small)
+            } else if store.canEdit("description") {
+                Text("Add a description…").foregroundStyle(.tertiary)
+                    .frame(maxWidth: .infinity, alignment: .leading).contentShape(.rect)
+                    .onTapGesture { beginDescriptionEdit(issue) }
             } else {
                 Text("No description").foregroundStyle(.tertiary)
             }
@@ -276,9 +313,9 @@ struct IssueDetailView: View {
                 field("Status") {
                     Menu {
                         ForEach(store.transitions) { t in
-                            Button { run { try await $0.transition(key, to: t.id) } } label: {
-                                Label(t.name, systemImage: t.to.statusCategory.key == "done" ? "checkmark.circle" : "circle")
-                            }
+                            Toggle(isOn: Binding(get: { t.to.id == issue.fields.status.id }, set: { on in
+                                if on { run { try await $0.transition(key, to: t.id) } }
+                            })) { Text(t.name) }
                         }
                     } label: {
                         StatusPill(status: issue.fields.status)
@@ -289,7 +326,7 @@ struct IssueDetailView: View {
                 field("Assignee") {
                     Button { showAssign = true } label: {
                         HStack(spacing: 6) {
-                            Avatar(user: issue.fields.assignee, size: 20)
+                            Avatar(user: issue.fields.assignee, size: 20).accessibilityHidden(true)   // the text beside it says the same
                             Text(issue.fields.assignee?.displayName ?? "Unassigned").foregroundStyle(issue.fields.assignee == nil ? .secondary : .primary)
                         }
                     }
@@ -321,7 +358,48 @@ struct IssueDetailView: View {
                         priorityLabel(issue.fields.priority)
                     }
                 }
-                field("Type") { Text(issue.fields.issuetype.name) }
+                field("Type") {
+                    let types = store.issueTypes
+                    if !types.isEmpty {
+                        Menu {
+                            ForEach(types) { t in
+                                Toggle(isOn: Binding(get: { t.id == issue.fields.issuetype.id }, set: { on in
+                                    if on { run { try await $0.editIssue(key, fields: ["issuetype": .object(["id": .string(t.id)])]) } }
+                                })) { Text(t.name) }
+                            }
+                        } label: {
+                            HStack(spacing: 6) { RemoteImage(url: issue.fields.issuetype.iconUrl).frame(width: 14, height: 14); Text(issue.fields.issuetype.name) }
+                                .accessibilityLabel("Type: \(issue.fields.issuetype.name)")
+                        }
+                        .menuStyle(.button).buttonStyle(.plain).fixedSize()
+                    } else {
+                        Text(issue.fields.issuetype.name)
+                    }
+                }
+                if issue.fields.parent != nil || store.canEdit("parent") {
+                    field("Parent") {
+                        Button { showParent = true } label: {
+                            if let p = issue.fields.parent {
+                                HStack(spacing: 6) {
+                                    RemoteImage(url: p.fields.issuetype?.iconUrl).frame(width: 14, height: 14)
+                                    Text(p.key).font(.callout.monospaced())
+                                    Text(p.fields.summary).lineLimit(1)
+                                }
+                            } else {
+                                Text("None").foregroundStyle(.secondary)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(!store.canEdit("parent"))
+                        .popover(isPresented: $showParent, arrowEdge: .leading) {
+                            ParentPicker(key: key, current: issue.fields.parent?.key,
+                                         jql: "project = \"\(issue.fields.project?.key ?? "")\" AND hierarchyLevel = \((issue.fields.issuetype.hierarchyLevel ?? 0) + 1) ORDER BY updated DESC") { new in
+                                showParent = false
+                                run { try await $0.editIssue(key, fields: ["parent": new.map { .object(["key": .string($0)]) } ?? .null]) }
+                            }
+                        }
+                    }
+                }
                 if store.canEdit(jira?.client.sprintField), !store.sprints.isEmpty {
                     field("Sprint") {
                         Menu {
@@ -385,7 +463,7 @@ struct IssueDetailView: View {
                     .buttonStyle(.plain)
                     .disabled(!store.canEdit("labels"))
                     .popover(isPresented: $showLabels, arrowEdge: .leading) {
-                        LabelsEditor(labels: issue.fields.labels ?? []) { new in
+                        LabelsEditor(labels: issue.fields.labels ?? [], suggestions: store.allLabels) { new in
                             showLabels = false
                             run { try await $0.editIssue(key, fields: ["labels": .array(new.map(JSONValue.string))]) }
                         }
@@ -446,7 +524,7 @@ struct IssueDetailView: View {
 
     private func priorityLabel(_ p: Priority?) -> some View {
         HStack(spacing: 6) {
-            if let p { PriorityIcon(priority: p); Text(p.name) } else { Text("None").foregroundStyle(.secondary) }
+            if let p { PriorityIcon(priority: p).accessibilityHidden(true); Text(p.name) } else { Text("None").foregroundStyle(.secondary) }
         }
     }
 
@@ -470,7 +548,7 @@ struct IssueDetailView: View {
                         }
                         Button("Save As…", systemImage: "square.and.arrow.down") { saveAs(a) }
                         Divider()
-                        Button("Delete", systemImage: "trash", role: .destructive) { run { try await $0.deleteAttachment(id: a.id) } }
+                        Button("Delete", systemImage: "trash", role: .destructive) { confirmDelete("Delete “\(a.filename)”?") { run { try await $0.deleteAttachment(id: a.id) } } }
                     }
             }
         }
@@ -533,7 +611,7 @@ struct IssueDetailView: View {
                             }
                             .buttonStyle(.plain)
                             .contextMenu {
-                                Button("Remove Link", systemImage: "link.badge.minus", role: .destructive) { run { try await $0.deleteLink(id: link.id) } }
+                                Button("Remove Link", systemImage: "link.badge.minus", role: .destructive) { confirmDelete("Remove the link to \(o.key)?", verb: "Remove") { run { try await $0.deleteLink(id: link.id) } } }
                             }
                         }
                     }
@@ -557,7 +635,7 @@ struct IssueDetailView: View {
                     }
                     Spacer()
                     if w.author?.accountId == jira?.me?.accountId {
-                        Button { run { try await $0.deleteWorklog(key, id: w.id) } } label: { Image(systemName: "trash") }
+                        Button { confirmDelete("Delete this work log?") { run { try await $0.deleteWorklog(key, id: w.id) } } } label: { Label("Delete", systemImage: "trash").labelStyle(.iconOnly) }
                             .buttonStyle(.plain).foregroundStyle(.tertiary).help("Delete work log")
                     }
                 }
@@ -580,19 +658,21 @@ struct IssueDetailView: View {
                             if c.updated.timeIntervalSince(c.created) > 60 { Text("· edited").font(.caption).foregroundStyle(.tertiary) }
                             Spacer()
                             if c.author?.accountId == jira?.me?.accountId, editingComment == nil {
-                                Menu {
-                                    Button("Edit", systemImage: "pencil") { beginCommentEdit(c) }
-                                    Button("Delete", systemImage: "trash", role: .destructive) { run { try await $0.deleteComment(key, id: c.id) } }
-                                } label: { Image(systemName: "ellipsis.circle") }
-                                .menuStyle(.borderlessButton).fixedSize().foregroundStyle(.secondary)
+                                // Plain buttons, not a menu: editing your own comment is a one-click thing.
+                                Button { beginCommentEdit(c) } label: { Label("Edit", systemImage: "pencil").labelStyle(.iconOnly) }
+                                    .buttonStyle(.plain).foregroundStyle(.tertiary).help("Edit comment")
+                                Button { confirmDelete("Delete this comment?") { run { try await $0.deleteComment(key, id: c.id) } } } label: { Label("Delete", systemImage: "trash").labelStyle(.iconOnly) }
+                                    .buttonStyle(.plain).foregroundStyle(.tertiary).help("Delete comment")
                             }
                         }
                         if editingComment?.id == c.id {
-                            Composer(text: $editDraft, mentions: $editMentions, placeholder: "Edit comment", uploadImage: uploadPasted)
-                            HStack {
+                            Composer(text: $editDraft, mentions: $editMentions, placeholder: "Edit comment", uploadImage: uploadPasted, focus: $editCommentFocused)
+                                .task { focusSoon($editCommentFocused) }
+                            HStack(spacing: 10) {
                                 Spacer()
                                 Button("Cancel") { editingComment = nil }.buttonStyle(.glass).keyboardShortcut(.cancelAction)
-                                Button("Save") { saveCommentEdit(c) }.buttonStyle(.glassProminent).keyboardShortcut(.return, modifiers: .command)
+                                Button("Save") { saveCommentEdit(c) }.buttonStyle(.glassProminent)
+                                    .keyboardShortcut(editCommentFocused ? KeyboardShortcut(.return, modifiers: .command) : nil)
                                     .disabled(editDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                             }
                         } else {
@@ -602,8 +682,8 @@ struct IssueDetailView: View {
                 }
             }
             Divider()
-            CommentComposer(disabled: store.isWorking || editingComment != nil, focusRequest: commentRequest, uploadImage: uploadPasted) { doc in
-                run { try await $0.addComment(key, body: doc) }
+            CommentComposer(disabled: store.isWorking || editingComment != nil, focusRequest: commentRequest, uploadImage: uploadPasted, focus: $commentFocused) { doc in
+                await run { try await $0.addComment(key, body: doc) }.value
             }
         }
     }
@@ -611,6 +691,19 @@ struct IssueDetailView: View {
     // MARK: Toolbar
 
     @ToolbarContentBuilder private var toolbar: some CustomizableToolbarContent {
+        ToolbarItem(id: "back", placement: .navigation) {
+            if let back {
+                Button(action: back) { Label("Back", systemImage: "chevron.left") }
+                    .help("Back to the previous issue (⌘[)")
+                    .keyboardShortcut("[", modifiers: .command)
+            }
+        }
+        ToolbarItem(id: "type", placement: .navigation) {
+            // The type icon sits beside the key in the title, as it does on a list row.
+            RemoteImage(url: store.issue?.fields.issuetype.iconUrl, placeholder: "circle").frame(width: 16, height: 16)
+                .help(store.issue?.fields.issuetype.name ?? "")
+                .accessibilityLabel(store.issue?.fields.issuetype.name ?? "Issue type")
+        }
         NewIssueToolbarItem()
         ToolbarSpacer(.flexible)
         ToolbarItem(id: "refresh") {
@@ -620,6 +713,7 @@ struct IssueDetailView: View {
         ToolbarItem(id: "attach") {
             Button { attachFiles() } label: { Label("Attach Files", systemImage: "paperclip") }
                 .help("Attach files. You can also drop them anywhere or paste an image.")
+                .disabled(store.issue == nil)
         }
         ToolbarItem(id: "more") {
             Menu {
@@ -629,6 +723,7 @@ struct IssueDetailView: View {
                 Button("Remind Me…", systemImage: "bell") { showRemind = true }
             } label: { Label("More", systemImage: "ellipsis.circle") }
             .help("Subtask, link, log work, reminder")
+            .disabled(store.issue == nil)
             .popover(isPresented: $showRemind, arrowEdge: .bottom) {
                 if let url = jira?.client.browseURL(key) {
                     ReminderView(url: url, key: key, summary: store.issue?.fields.summary ?? "") { showRemind = false }
@@ -637,13 +732,14 @@ struct IssueDetailView: View {
             .popover(isPresented: $showLink, arrowEdge: .bottom) {
                 LinkIssueView(key: key, types: store.linkTypes) { type, outward, inward in
                     showLink = false
-                    run { try await $0.link(type: type, outward: outward, inward: inward) }
+                    run { try await $0.link(type: type, from: outward, to: inward) }
                 }
             }
             .popover(isPresented: $showLogWork, arrowEdge: .bottom) {
                 LogWorkView { seconds, comment, started in
                     showLogWork = false
-                    run { try await $0.addWorklog(key, seconds: seconds, comment: comment.isEmpty ? nil : .document(markdown: comment), started: started) }
+                    let estimated = store.issue?.fields.timetracking.map { $0.originalEstimate != nil || $0.remainingEstimate != nil } ?? false
+                    run { try await $0.addWorklog(key, seconds: seconds, comment: comment.isEmpty ? nil : .document(markdown: comment), started: started, adjustsEstimate: estimated) }
                 }
             }
         }
@@ -651,10 +747,12 @@ struct IssueDetailView: View {
         ToolbarItem(id: "copy") {
             Button { perform(.copyLink) } label: { Label("Copy Link", systemImage: "link") }
                 .help("Copy link (⌘⇧C)")
+                .disabled(store.issue == nil)
         }
         ToolbarItem(id: "browser") {
             Button { perform(.openInBrowser) } label: { Label("Open in Browser", systemImage: "safari") }
                 .help("Open in browser (⌘⇧O)")
+                .disabled(store.issue == nil)
         }
         ToolbarSpacer(.flexible)
     }
@@ -701,30 +799,43 @@ struct IssueDetailView: View {
         }
     }
 
-    private func run(_ op: @escaping @Sendable (JiraClient) async throws -> Void) {
-        guard let jira else { return }
-        Task { await store.perform(jira, key: key, op) }
+    /// The task resolves to whether the write succeeded, so editors can keep a draft that failed to save.
+    @discardableResult
+    private func run(_ op: @escaping @Sendable (JiraClient) async throws -> Void) -> Task<Bool, Never> {
+        guard let jira else { return Task { false } }
+        return Task {
+            let ok = await store.perform(jira, key: key, op)
+            if ok { session.listTick += 1 }
+            return ok
+        }
+    }
+
+    /// Focus set in the same pass that creates the field is lost; one turn of the run loop later it sticks.
+    private func focusSoon(_ focus: FocusState<Bool>.Binding) {
+        DispatchQueue.main.async { focus.wrappedValue = true }
     }
 
     private func saveSummary() {
         guard let draft = summaryDraft?.trimmingCharacters(in: .whitespacesAndNewlines), !draft.isEmpty else { return }
         summaryDraft = nil
         guard draft != store.issue?.fields.summary else { return }
-        run { try await $0.editIssue(key, fields: ["summary": .string(draft)]) }
+        Task { if !(await run { try await $0.editIssue(key, fields: ["summary": .string(draft)]) }.value) { summaryDraft = draft } }
     }
 
     private func beginDescriptionEdit(_ issue: Issue) {
         var mentions: [String: String] = [:]
         descriptionDraft = issue.fields.description?.markdown(mentions: &mentions) ?? ""
+        descriptionOriginal = descriptionDraft ?? ""
         descriptionMentions = mentions
     }
 
     private func saveDescription() {
         guard let draft = descriptionDraft else { return }
-        let doc = ADFNode.document(markdown: draft, mentions: descriptionMentions)
         descriptionDraft = nil
+        guard draft != descriptionOriginal else { return }
+        let doc = ADFNode.document(markdown: draft, mentions: descriptionMentions)
         guard let value = try? JSONValue(doc) else { return }
-        run { try await $0.editIssue(key, fields: ["description": value]) }
+        Task { if !(await run { try await $0.editIssue(key, fields: ["description": value]) }.value) { descriptionDraft = draft } }
     }
 
     private func setSprint(_ id: Int?) {
@@ -735,14 +846,16 @@ struct IssueDetailView: View {
     private func beginCommentEdit(_ c: Comment) {
         var mentions: [String: String] = [:]
         editDraft = c.body.markdown(mentions: &mentions)
+        editOriginal = editDraft
         editMentions = mentions
         editingComment = c
     }
 
     private func saveCommentEdit(_ c: Comment) {
-        let doc = ADFNode.document(markdown: editDraft, mentions: editMentions)
         editingComment = nil
-        run { try await $0.updateComment(key, id: c.id, body: doc) }
+        guard editDraft != editOriginal else { return }
+        let doc = ADFNode.document(markdown: editDraft, mentions: editMentions)
+        Task { if !(await run { try await $0.updateComment(key, id: c.id, body: doc) }.value) { editingComment = c } }
     }
 
     private func preview(_ a: Attachment) {
@@ -815,7 +928,8 @@ struct AttachmentTile: View {
             VStack(alignment: .leading, spacing: 6) {
                 ZStack {
                     if attachment.thumbnail != nil {
-                        RemoteImage(url: attachment.thumbnail)
+                        // Behind a clear colour, so a wide thumbnail cannot widen the tile into its neighbour.
+                        Color.clear.overlay { RemoteImage(url: attachment.thumbnail) }.clipped()
                     } else {
                         Image(systemName: icon).font(.title).foregroundStyle(.secondary)
                     }
@@ -836,10 +950,11 @@ struct AttachmentTile: View {
     }
 
     private var icon: String {
-        if attachment.mimeType.hasPrefix("image/") { return "photo" }
-        if attachment.mimeType.hasPrefix("video/") { return "film" }
-        if attachment.mimeType.contains("zip") { return "doc.zipper" }
-        if attachment.mimeType.contains("pdf") { return "doc.richtext" }
+        let mime = attachment.mimeType ?? ""
+        if mime.hasPrefix("image/") { return "photo" }
+        if mime.hasPrefix("video/") { return "film" }
+        if mime.contains("zip") { return "doc.zipper" }
+        if mime.contains("pdf") { return "doc.richtext" }
         return "doc"
     }
 
@@ -858,28 +973,29 @@ struct CommentComposer: View {
     let disabled: Bool
     let focusRequest: Int
     let uploadImage: (Data, String) async throws -> URL
-    let send: (ADFNode) -> Void
+    var focus: FocusState<Bool>.Binding
+    /// Posts the comment; true once Jira has it. The draft stays on failure.
+    let send: (ADFNode) async -> Bool
     @State private var text = ""
     @State private var mentions: [String: String] = [:]
-    @FocusState private var focused: Bool
 
     var body: some View {
         VStack(alignment: .trailing, spacing: 8) {
-            Composer(text: $text, mentions: $mentions, placeholder: "Add a comment…  ⌘↩ to send", minHeight: 44, uploadImage: uploadImage, focus: $focused)
+            Composer(text: $text, mentions: $mentions, placeholder: "Add a comment…  ⌘↩ to send", minHeight: 44, uploadImage: uploadImage, focus: focus)
             Button("Comment") { post() }
                 .buttonStyle(.glassProminent)
-                .keyboardShortcut(.return, modifiers: .command)
+                // Only while this box has focus: the description and comment editors share the shortcut.
+                .keyboardShortcut(focus.wrappedValue ? KeyboardShortcut(.return, modifiers: .command) : nil)
                 .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || disabled)
         }
-        .onChange(of: focusRequest) { focused = true }
+        .onChange(of: focusRequest) { focus.wrappedValue = true }
     }
 
     private func post() {
         let body = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !body.isEmpty else { return }
-        send(ADFNode.document(markdown: body, mentions: mentions))
-        text = ""
-        mentions = [:]
+        let doc = ADFNode.document(markdown: body, mentions: mentions)
+        Task { if await send(doc) { text = ""; mentions = [:] } }
     }
 }
 
@@ -916,7 +1032,8 @@ struct ReminderView: View {
         let cal = Calendar.current
         let tomorrow9 = cal.date(bySettingHour: 9, minute: 0, second: 0, of: cal.date(byAdding: .day, value: 1, to: .now)!)!
         let monday9 = cal.nextDate(after: .now, matching: DateComponents(hour: 9, minute: 0, weekday: 2), matchingPolicy: .nextTime)!
-        return [("In 1 Hour", .now.addingTimeInterval(3600)), ("Tomorrow at 9:00", tomorrow9), ("Next Monday at 9:00", monday9)]
+        let at = { (d: Date) in d.formatted(date: .omitted, time: .shortened) }
+        return [("In 1 Hour", .now.addingTimeInterval(3600)), ("Tomorrow at \(at(tomorrow9))", tomorrow9), ("Next Monday at \(at(monday9))", monday9)]
     }
 
     var body: some View {
@@ -991,19 +1108,33 @@ struct DueDatePicker: View {
 
 struct LabelsEditor: View {
     @State var labels: [String]
+    /// Every label on the site; the ones matching the draft are offered below the field.
+    var suggestions: [String] = []
     var onSave: ([String]) -> Void
     @State private var draft = ""
+    @FocusState private var focused: Bool
+
+    private var matches: [String] {
+        let q = draft.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !q.isEmpty else { return [] }
+        return suggestions.filter { $0.lowercased().contains(q) && !labels.contains($0) }.prefix(6).map { $0 }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Labels").font(.headline)
             if labels.isEmpty { Text("No labels").foregroundStyle(.tertiary).font(.callout) }
             Wrap { ForEach(labels, id: \.self) { l in Chip(text: l) { labels.removeAll { $0 == l } } } }
-            TextField("Add label, ↩ to add", text: $draft).textFieldStyle(.roundedBorder).onSubmit(add)
+            TextField("Add label, ↩ to add", text: $draft).textFieldStyle(.roundedBorder).onSubmit(add).focused($focused)
+            ForEach(matches, id: \.self) { m in
+                Button { labels.append(m); draft = "" } label: { Text(m).frame(maxWidth: .infinity, alignment: .leading).contentShape(.rect) }
+                    .buttonStyle(.plain).padding(.horizontal, 6).padding(.vertical, 3)
+            }
             HStack { Spacer(); Button("Save") { add(); onSave(labels) }.buttonStyle(.glassProminent).keyboardShortcut(.return, modifiers: .command) }
         }
         .padding(12)
         .frame(width: 280)
+        .task { DispatchQueue.main.async { focused = true } }
     }
 
     private func add() {
@@ -1011,6 +1142,53 @@ struct LabelsEditor: View {
         guard !l.isEmpty else { return }
         if !labels.contains(l) { labels.append(l) }
         draft = ""
+    }
+}
+
+/// Sets or clears the parent: a key typed or picked from the search.
+struct ParentPicker: View {
+    let key: String
+    let current: String?
+    /// Scope of the search: the same project, one hierarchy level up.
+    var jql: String
+    var onSave: (String?) -> Void
+    @Environment(\.jira) private var jira
+    @State private var query = ""
+    @State private var results: [IssuePickerResult.Item] = []
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Parent").font(.headline)
+            TextField("Key or search", text: $query).textFieldStyle(.roundedBorder).focused($focused)
+                // ↩ takes the typed key when the search found it, else the first result; an ineligible key stays put.
+                .onSubmit { let k = query.trimmingCharacters(in: .whitespaces).uppercased(); if let r = results.first(where: { $0.key == k }) ?? results.first { onSave(r.key) } }
+            List(results) { r in
+                Button { onSave(r.key) } label: {
+                    HStack(spacing: 8) {
+                        Text(r.key).font(.callout.monospaced()).foregroundStyle(.secondary)
+                        Text(r.summaryText ?? "").lineLimit(1)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading).contentShape(.rect)
+                }
+                .buttonStyle(.plain)
+            }
+            .listStyle(.plain).scrollContentBackground(.hidden).frame(height: 160)
+            HStack {
+                if current != nil { Button("Clear") { onSave(nil) }.buttonStyle(.glass) }
+                Spacer()
+                Button("Set") { if let r = results.first { onSave(r.key) } }.buttonStyle(.glassProminent)
+                    .disabled(results.isEmpty)
+            }
+        }
+        .padding(12)
+        .frame(width: 320)
+        .task { DispatchQueue.main.async { focused = true } }
+        .task(id: query) {
+            try? await Task.sleep(for: .milliseconds(250))
+            guard !Task.isCancelled, let c = jira?.client else { return }
+            results = ((try? await c.pickIssues(query: query, excluding: key, jql: jql)) ?? []).filter { $0.key != key }
+        }
     }
 }
 
@@ -1023,6 +1201,7 @@ struct LinkIssueView: View {
     @State private var query = ""
     @State private var results: [IssuePickerResult.Item] = []
     @State private var picked: IssuePickerResult.Item?
+    @FocusState private var linkFocused: Bool
 
     /// Every link type offers both directions, worded from this issue's side.
     private var relations: [(id: String, label: String, type: LinkType, outward: Bool)] {
@@ -1036,36 +1215,46 @@ struct LinkIssueView: View {
             Picker("This issue", selection: $relation) {
                 ForEach(relations, id: \.id) { Text($0.label).tag($0.id) }
             }
-            TextField("Search issues by key or text", text: $query).textFieldStyle(.roundedBorder)
-            List(selection: $picked) {
-                ForEach(results) { r in
+            TextField("Search issues by key or text", text: $query).textFieldStyle(.roundedBorder).focused($linkFocused)
+                .onSubmit { if picked == nil { picked = results.first }; link() }
+            // Buttons rather than list selection: a click in a popover's List does not reliably select its row.
+            List(results) { r in
+                Button { picked = r } label: {
                     HStack(spacing: 8) {
                         Text(r.key).font(.callout.monospaced()).foregroundStyle(.secondary)
                         Text(r.summaryText ?? "").lineLimit(1)
+                        Spacer()
+                        if picked == r { Image(systemName: "checkmark").foregroundStyle(.secondary) }
                     }
-                    .tag(r)
+                    .contentShape(.rect)
                 }
+                .buttonStyle(.plain)
+                .listRowBackground(picked == r ? Color.accentColor.opacity(0.15) : .clear)
             }
-            .listStyle(.plain)
+            .listStyle(.plain).scrollContentBackground(.hidden)
             .frame(height: 180)
             HStack {
                 Spacer()
-                Button("Link") {
-                    guard let r = relations.first(where: { $0.id == relation }), let p = picked else { return }
-                    onLink(r.type.name, r.outward ? key : p.key, r.outward ? p.key : key)
-                }
-                .buttonStyle(.glassProminent)
-                .disabled(picked == nil || relation.isEmpty)
+                Button("Link") { link() }
+                    .buttonStyle(.glassProminent)
+                    .disabled(picked == nil || relation.isEmpty)
             }
         }
         .padding(12)
         .frame(width: 360)
         .onAppear { if relation.isEmpty { relation = relations.first?.id ?? "" } }
+        .task { DispatchQueue.main.async { linkFocused = true } }
         .task(id: query) {
             try? await Task.sleep(for: .milliseconds(250))
             guard !Task.isCancelled, let c = jira?.client else { return }
             results = ((try? await c.pickIssues(query: query, excluding: key)) ?? []).filter { $0.key != key }
         }
+    }
+
+    /// "This issue blocks X": the link runs from this issue to X.
+    private func link() {
+        guard let r = relations.first(where: { $0.id == relation }), let p = picked else { return }
+        onLink(r.type.name, r.outward ? key : p.key, r.outward ? p.key : key)
     }
 }
 

@@ -9,6 +9,7 @@ struct BoardTarget: Hashable, Codable {
 @main
 struct ConductorApp: App {
     @State private var session = Session()
+    @Environment(\.openWindow) private var openWindow
 
     var body: some Scene {
         WindowGroup(id: "main") {
@@ -28,9 +29,13 @@ struct ConductorApp: App {
         .handlesExternalEvents(matching: ["*"])
         .commands {
             CommandGroup(replacing: .newItem) {
-                Button("New Issue…") { session.createIssueRequested = true }
-                    .keyboardShortcut("n")
-                    .disabled(!session.isSignedIn)
+                Button("New Issue…") {
+                    // The sheet hangs off the list window; make sure there is one.
+                    if !NSApp.windows.contains(where: { $0.identifier?.rawValue.hasPrefix("main") == true && $0.isVisible }) { openWindow(id: "main") }
+                    session.createIssueRequested = true
+                }
+                .keyboardShortcut("n")
+                .disabled(!session.isSignedIn)
             }
             // Takes ⌘F away from the text-editing Find panel: in this app, Find means the issue search.
             CommandGroup(replacing: .textEditing) {
@@ -39,6 +44,7 @@ struct ConductorApp: App {
             CommandGroup(after: .appSettings) {
                 Button("Check for Updates…") { UpdateChecker.shared.check(interactive: true) }
             }
+            CommandGroup(replacing: .help) {}   // there is no help book; the system item would only say so
             SidebarCommands()
             ToolbarCommands()
             AppCommands(session: session)
@@ -87,7 +93,7 @@ struct RootView: View {
                 ZStack { Backdrop(); ProgressView() }
             } else if session.isSignedIn {
                 NavigationSplitView {
-                    SidebarView(selection: Binding(get: { filters }, set: { if let f = $0 { filters = f } }))
+                    SidebarView(selection: Binding(get: { session.preset(matching: filters)?.filters ?? filters }, set: { if let f = $0 { filters = f } }))
                 } detail: {
                     IssueListView(filters: $filters)
                 }
@@ -101,11 +107,14 @@ struct RootView: View {
         // macOS 27 pins a Siri button beside the caret of every text view; hiding just the button has no effect there,
         // so Writing Tools goes off for the whole window (it reaches sheets through the environment).
         .writingToolsBehavior(.disabled)
+        // Every URL lands in this window rather than opening another main window per link.
+        .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
         .onAppear { restoreOnce() }
         .onChange(of: session.states.count) { restoreOnce() }
         .onChange(of: session.isRestoring) { restoreOnce() }
         .onChange(of: filters) { _, new in
             storedFilters = (try? JSONEncoder().encode(new)).flatMap { String(data: $0, encoding: .utf8) } ?? ""
+            session.lastFilters = new
         }
         .onChange(of: session.navigationRequest) { _, req in
             if let req { filters = req; session.navigationRequest = nil }
@@ -146,8 +155,12 @@ struct RootView: View {
         guard !session.isRestoring, session.isSignedIn else { return }
         if !restored {
             restored = true
+            // A window the system restored keeps its list; one opened with ⌘0 continues the last list; a launch
+            // starts on the "Open at launch" list.
             if let data = storedFilters.data(using: .utf8), let f = try? JSONDecoder().decode(ListFilters.self, from: data),
                f.account.map({ session.state($0) != nil }) ?? true {
+                filters = f
+            } else if let f = session.lastFilters, f.account.map({ session.state($0) != nil }) ?? true {
                 filters = f
             } else if let f = session.filters(for: Smart(rawValue: defaultSource) ?? .assigned) {
                 filters = f
