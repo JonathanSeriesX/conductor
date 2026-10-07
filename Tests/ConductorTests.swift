@@ -11,38 +11,39 @@ final class JQLTests: XCTestCase {
         var f = blank
         f.account = account
         f.project = "IN"
-        XCTAssertEqual(f.jql(), "project = \"IN\" ORDER BY updated DESC")
+        XCTAssertEqual(f.jql, "project = \"IN\" ORDER BY updated DESC")
     }
 
     func testFreeTextBecomesTextSearch() {
         var f = Smart.assigned.filters(account: account)
         f.status = .open
         f.text = "billing \"engine\""
-        XCTAssertEqual(f.jql(), "statusCategory != Done AND assignee = currentUser() AND text ~ \"billing \\\"engine\\\"\" ORDER BY updated DESC")
+        XCTAssertEqual(f.jql, "statusCategory != Done AND assignee = currentUser() AND text ~ \"billing \\\"engine\\\"\" ORDER BY updated DESC")
     }
 
     func testIssueKeyIsLookedUpDirectly() {
         var f = blank
         f.text = "es-2284"
-        XCTAssertEqual(f.jql(), "key = \"ES-2284\"")
+        XCTAssertEqual(f.jql, "key = \"ES-2284\"")
     }
 
     func testRawJQLPassesThrough() {
         var f = blank
         f.text = "status = Done order by created"
-        XCTAssertEqual(f.jql(), "status = Done order by created")
+        XCTAssertEqual(f.jql, "status = Done order by created")
     }
 
     func testPresetsCarryTheirOwnOrderAndRoundTripThroughJSON() throws {
         let recent = Smart.recent.filters(account: account)
-        XCTAssertEqual(recent.jql(), "issuekey IN issueHistory() ORDER BY lastViewed DESC")
+        XCTAssertEqual(recent.jql, "issuekey IN issueHistory() ORDER BY lastViewed DESC")
         XCTAssertEqual(Smart.reported.filters(account: nil).sort.field, .created)
-        var f = Smart.starred.filters(account: account)
+        var f = Smart.watching.filters(account: account)
+        f.status = .any
         f.jiraFilter = Filter(id: "7", name: "x", jql: "")
         f.type = "Bug"
         f.sort = .init(field: .priority, descending: false)
         XCTAssertEqual(try JSONDecoder().decode(ListFilters.self, from: JSONEncoder().encode(f)), f)
-        XCTAssertEqual(f.jql(starredKeys: ["ES-1", "ES-2"]), "filter = 7 AND issuekey IN (\"ES-1\", \"ES-2\") AND issuetype = \"Bug\" ORDER BY priority ASC")
+        XCTAssertEqual(f.jql, "filter = 7 AND watcher = currentUser() AND issuetype = \"Bug\" ORDER BY priority ASC")
     }
 
     func testMergeOrderMatchesTheClause() throws {
@@ -258,18 +259,18 @@ final class FilterAndDurationTests: XCTestCase {
         f.assignee = .me
         f.type = "Bug"
         f.updated = .week
-        XCTAssertEqual(f.jql(), "issuekey IN issueHistory() AND statusCategory = \"In Progress\" AND assignee = currentUser() AND issuetype = \"Bug\" AND updated >= startOfWeek() ORDER BY lastViewed DESC")
+        XCTAssertEqual(f.jql, "issuekey IN issueHistory() AND statusCategory = \"In Progress\" AND assignee = currentUser() AND issuetype = \"Bug\" AND updated >= startOfWeek() ORDER BY lastViewed DESC")
         f.text = "status = Done"
-        XCTAssertEqual(f.jql(), "status = Done", "raw JQL ignores chips")
+        XCTAssertEqual(f.jql, "status = Done", "raw JQL ignores chips")
         f = Smart.assigned.filters(account: nil)
         f.status = .open
-        XCTAssertEqual(f.jql(), "statusCategory != Done AND assignee = currentUser() ORDER BY updated DESC")
+        XCTAssertEqual(f.jql, "statusCategory != Done AND assignee = currentUser() ORDER BY updated DESC")
         f.status = .any
-        XCTAssertEqual(f.jql(), "assignee = currentUser() ORDER BY updated DESC", "Done is a filter, not baked into the list")
+        XCTAssertEqual(f.jql, "assignee = currentUser() ORDER BY updated DESC", "Done is a filter, not baked into the list")
         var everything = ListFilters()
         everything.status = .any
         everything.sort.descending = false
-        XCTAssertEqual(everything.jql(), "ORDER BY updated ASC", "no chips at all is the whole site")
+        XCTAssertEqual(everything.jql, "ORDER BY updated ASC", "no chips at all is the whole site")
         XCTAssertFalse(everything.isBounded, "Jira refuses that, so the list must not ask")
         everything.text = "es-1"
         XCTAssertTrue(everything.isBounded)

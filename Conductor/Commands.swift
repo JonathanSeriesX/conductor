@@ -5,12 +5,11 @@ import SwiftUI
 struct IssueActions {
     enum Action: Hashable {
         case openInBrowser, openInWindow, copyLink, copyKey, copyMarkdown
-        case assign, assignToMe, watch, star, remind, transition(String)
+        case assign, assignToMe, watch, remind, transition(String)
         case editSummary, editDescription, comment, attach, link, logWork, subtask, refresh
     }
     let key: String
     let watching: Bool
-    let starred: Bool
     let assignedToMe: Bool
     let transitions: [Transition]
     let canEditSummary: Bool
@@ -43,7 +42,6 @@ struct AppCommands: Commands {
             Button("Reported by Me") { session.navigationRequest = session.filters(for: .reported) }.keyboardShortcut("2")
             Button("Recently Viewed") { session.navigationRequest = session.filters(for: .recent) }.keyboardShortcut("3")
             Button("Watching") { session.navigationRequest = session.filters(for: .watching) }.keyboardShortcut("4")
-            Button("Starred") { session.navigationRequest = session.filters(for: .starred) }.keyboardShortcut("5")
             Divider()
             Button("Reload") { session.reloadTick += 1 }.keyboardShortcut("r")
             Button("Refresh Projects") { Task { await session.refreshAll() } }
@@ -74,7 +72,6 @@ struct AppCommands: Commands {
             item("Assign…", .assign, "a", [.command, .shift])
             item("Assign to Me", .assignToMe, "i", [.command, .shift]).disabled(issue?.assignedToMe == true)
             item(issue?.watching == true ? "Stop Watching This Issue" : "Watch This Issue", .watch)
-            item(issue?.starred == true ? "Unstar Issue" : "Star Issue", .star, "d")
             item("Remind Me…", .remind, "r", [.command, .option])
             Divider()
             item("Edit Summary", .editSummary, "e").disabled(issue?.canEditSummary != true)

@@ -103,12 +103,7 @@ final class IssueListStore {
         unbounded = !f.isBounded
         if unbounded { rows = []; return }
         let states = f.account.map { id in session.states.filter { $0.id == id } } ?? session.states
-        // One query per account. The Starred scope lists each account's own stars and skips accounts without any.
-        let queries: [(AccountState, String)] = states.compactMap { st in
-            guard f.scope == .starred else { return (st, f.jql()) }
-            let keys = session.starredTargets.filter { $0.target.accountID == st.id }.map(\.target.key)
-            return keys.isEmpty ? nil : (st, f.jql(starredKeys: keys))
-        }
+        let queries: [(AccountState, String)] = states.map { ($0, f.jql) }
         // Typed searches are not cached: they change with every keystroke and would litter the disk.
         let cacheable = f.text.isEmpty
         let queryKey = queries.map { "\($0.0.id)|\($0.1)" }.joined()
@@ -130,7 +125,6 @@ final class IssueListStore {
                 rows = merged(byAccount)
             }
             isLoading = true
-            // ponytail: a starred issue that was deleted or moved fails its account's whole query; prune stars on error if that bites.
             let tasks = queries.map { st, jql in
                 (st.id, Task<[ListRow]?, Never> { @MainActor in
                     guard let page = try? await Self.fetch(jql: jql, state: st, cache: cacheable) else { return nil }
@@ -202,7 +196,7 @@ struct IssueListView: View {
     private var isUnified: Bool { filters.account == nil }
     /// The account the chips describe; the first one stands in for unified lists (search assist, issue types).
     private var state: AccountState? { filters.account.flatMap(session.state) ?? session.states.first }
-    private var loadKey: String { "\(filters)|\(session.reloadTick)|\(filters.scope == .starred ? session.stars.count : 0)" }
+    private var loadKey: String { "\(filters)|\(session.reloadTick)" }
     /// What the clear button goes back to: the chips reset, the account and the search stay.
     private var cleared: ListFilters {
         var f = ListFilters()
@@ -513,8 +507,6 @@ struct IssueMenu: View {
         Button("Copy as Markdown", systemImage: "text.quote") { copyToPasteboard(state.client.markdownLink(key, summary: issue.fields.summary)) }
         ShareLink(item: url)
         Divider()
-        let starred = session.isStarred(target)
-        Button(starred ? "Unstar" : "Star", systemImage: starred ? "star.slash" : "star") { session.toggleStar(target, summary: issue.fields.summary) }
         Button(watching ? "Stop Watching This Issue" : "Watch This Issue", systemImage: watching ? "eye.slash" : "eye") {
             write { try await state.client.watch(key, !watching, me: me) }
         }

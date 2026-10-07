@@ -108,8 +108,8 @@ final class AccountState: Identifiable {
 
     /// Warms every smart list so each sidebar shortcut opens from disk, and the unified lists with it.
     func prefetchLists() async {
-        let tasks = Smart.allCases.filter { $0 != .starred }.map { smart in
-            let jql = smart.filters(account: id).jql()
+        let tasks = Smart.allCases.map { smart in
+            let jql = smart.filters(account: id).jql
             return Task { @MainActor in
                 guard let page = try? await IssueListStore.fetch(jql: jql, state: self, cache: true) else { return }
                 if smart == .assigned { IssueListStore.prefetchDetails(page.issues.map { ListRow(issue: $0, state: self) }) }
@@ -156,8 +156,6 @@ final class Session {
     private(set) var isRestoring = true
     /// Recently viewed, across accounts, newest first. Jira's own history can't be merged across sites.
     private(set) var history: [IssueTarget] = []
-    /// Issues starred in Conductor, newest first. Local only: Jira has no issue stars.
-    private(set) var stars: [Star] = (try? JSONDecoder().decode([Star].self, from: UserDefaults.standard.data(forKey: "stars") ?? Data())) ?? []
 
     /// One-shot requests from menu commands, URLs and other windows; the root view consumes them.
     var createIssueRequested = false
@@ -355,23 +353,6 @@ final class Session {
 
     private func savePresets() { UserDefaults.standard.set(try? JSONEncoder().encode(customPresets), forKey: "customPresets") }
 
-    func isStarred(_ t: IssueTarget) -> Bool {
-        guard let host = state(t.accountID)?.host else { return false }
-        return stars.contains { $0.host == host && $0.key == t.key }
-    }
-
-    func toggleStar(_ t: IssueTarget, summary: String) {
-        guard let host = state(t.accountID)?.host else { return }
-        if isStarred(t) { stars.removeAll { $0.host == host && $0.key == t.key } }
-        else { stars.insert(Star(host: host, key: t.key, summary: summary), at: 0) }
-        UserDefaults.standard.set(try? JSONEncoder().encode(stars), forKey: "stars")
-    }
-
-    /// Starred issues of signed-in accounts, as targets.
-    var starredTargets: [(target: IssueTarget, summary: String)] {
-        stars.compactMap { s in state(host: s.host).map { (IssueTarget(accountID: $0.id, key: s.key), s.summary) } }
-    }
-
     func recordView(_ target: IssueTarget) {
         history.removeAll { $0 == target }
         history.insert(target, at: 0)
@@ -431,13 +412,6 @@ struct CustomPreset: Codable, Identifiable {
     let id: UUID
     var name: String
     var filters: ListFilters
-}
-
-/// Keyed by host rather than account id: ids of accounts from the environment change every launch.
-struct Star: Codable, Hashable, Sendable {
-    let host: String
-    let key: String
-    var summary: String
 }
 
 extension EnvironmentValues {

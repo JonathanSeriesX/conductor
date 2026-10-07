@@ -648,11 +648,6 @@ struct IssueDetailView: View {
             }
         }
         // Shortcuts live on the Issue menu items, so the menu bar lists them.
-        ToolbarItem(id: "star") {
-            let starred = session.isStarred(target)
-            Button { perform(.star) } label: { Label(starred ? "Unstar" : "Star", systemImage: starred ? "star.fill" : "star") }
-                .help(starred ? "Unstar (⌘D)" : "Star: keep it in the sidebar (⌘D)")
-        }
         ToolbarItem(id: "copy") {
             Button { perform(.copyLink) } label: { Label("Copy Link", systemImage: "link") }
                 .help("Copy link (⌘⇧C)")
@@ -671,7 +666,6 @@ struct IssueDetailView: View {
         return IssueActions(
             key: key,
             watching: issue.fields.watches?.isWatching == true,
-            starred: session.isStarred(target),
             assignedToMe: issue.fields.assignee?.accountId != nil && issue.fields.assignee?.accountId == jira?.me?.accountId,
             transitions: store.transitions,
             canEditSummary: store.canEdit("summary"),
@@ -695,7 +689,6 @@ struct IssueDetailView: View {
             let on = store.issue?.fields.watches?.isWatching != true, me = jira.me?.accountId
             run { try await $0.watch(key, on, me: me) }
         case .transition(let id): run { try await $0.transition(key, to: id) }
-        case .star: session.toggleStar(target, summary: summary)
         case .remind: showRemind = true
         case .editSummary: summaryDraft = summary
         case .editDescription: if let issue = store.issue { beginDescriptionEdit(issue) }
