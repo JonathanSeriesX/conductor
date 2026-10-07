@@ -62,7 +62,7 @@ struct JiraClient: Sendable {
         "Basic " + Data("\(account.email):\(account.token)".utf8).base64EncodedString()
     }
 
-    static let listFields = "summary,status,assignee,priority,issuetype,updated,project,watches"
+    static let listFields = "summary,status,assignee,priority,issuetype,updated,project,watches,parent,subtasks"
     var detailFields: String {
         var f = "summary,description,status,assignee,reporter,priority,issuetype,labels,created,updated,comment,attachment,project,parent,subtasks,issuelinks,worklog,timetracking,watches,duedate,components,fixVersions"
         if let sprintField { f += "," + sprintField }
@@ -340,7 +340,7 @@ struct JiraClient: Sendable {
     /// `jql` narrows the board, e.g. with its quick filters. `parent` comes along for swimlanes.
     func boardIssues(_ id: Int, sprint: Int?, jql: String? = nil, startAt: Int = 0) async throws -> AgileIssuePage {
         let path = sprint.map { "board/\(id)/sprint/\($0)/issue" } ?? "board/\(id)/issue"
-        var q = ["maxResults": "100", "startAt": "\(startAt)", "fields": Self.listFields + ",parent"]
+        var q = ["maxResults": "100", "startAt": "\(startAt)", "fields": Self.listFields]
         if let jql { q["jql"] = jql }
         return try await get(path, query: q, base: agile)
     }
@@ -383,7 +383,11 @@ enum Keychain {
         q[kSecReturnData as String] = true
         q[kSecMatchLimit as String] = kSecMatchLimitOne
         var out: CFTypeRef?
-        guard SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess, let data = out as? Data else { return [] }
+        let status = SecItemCopyMatching(q as CFDictionary, &out)
+        guard status == errSecSuccess, let data = out as? Data else {
+            if status != errSecItemNotFound { NSLog("Keychain read failed: %d", status) }
+            return []
+        }
         return (try? JSONDecoder().decode([Account].self, from: data)) ?? []
     }
 

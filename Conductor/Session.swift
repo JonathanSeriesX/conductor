@@ -224,14 +224,16 @@ final class Session {
             if failure == nil {
                 attach(st)
             } else if let e = failure as? JiraError, e.status == 401 {
-                remove(account) // the token is dead; forget it
+                // Never forget an account on its own: a captive portal or proxy can answer 401 for every site.
+                unreachable[account.id] = "Sign-in was rejected. Check the API token, then retry."
             } else if states.contains(where: { $0.id == st.id }) {
                 st.error = failure?.localizedDescription
             } else {
                 unreachable[account.id] = failure?.localizedDescription ?? "Unknown error"
             }
         }
-        if persist { Keychain.save(stored) }
+        // Restore never writes the Keychain: a read that failed (a rebuilt dev binary is a different app to the
+        // Keychain) would otherwise save an empty list and wipe every account. Add and remove save for themselves.
     }
 
     /// Adds a state to the live list, keeping the stored order and dealing a colour the first time.
