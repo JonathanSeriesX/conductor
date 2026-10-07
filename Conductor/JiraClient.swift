@@ -384,11 +384,11 @@ struct JiraClient: Sendable {
     }
 
     func browseURL(_ key: String) -> URL { account.site.appending(path: "browse/\(key)") }
-    /// Jira's board page: the project's first board, or `board` when given. RapidBoard.jspa redirects to the
-    /// team- or company-managed URL for us.
+    /// A board on the web: `rapidView=ID` redirects to the right team- or company-managed URL. Without an id,
+    /// `/projects/KEY` lands on the project's own board; `RapidBoard.jspa?projectKey=` picks a wrong board.
     func boardURL(project: String, board: Int? = nil) -> URL {
-        account.site.appending(path: "secure/RapidBoard.jspa")
-            .appending(queryItems: [URLQueryItem(name: "projectKey", value: project)] + (board.map { [URLQueryItem(name: "rapidView", value: String($0))] } ?? []))
+        guard let board else { return account.site.appending(path: "projects/\(project)") }
+        return account.site.appending(path: "secure/RapidBoard.jspa").appending(queryItems: [URLQueryItem(name: "rapidView", value: String(board))])
     }
     /// `[ES-123: summary](https://site/browse/ES-123)`, for pasting into Slack, Linear or Notion.
     func markdownLink(_ key: String, summary: String) -> String { "[\(key): \(summary)](\(browseURL(key).absoluteString))" }
