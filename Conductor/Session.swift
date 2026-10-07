@@ -23,6 +23,29 @@ final class AccountState: Identifiable {
     @ObservationIgnored var peek: [String: Issue] = [:]
     @ObservationIgnored private var linkTypesCache: [LinkType]?
     @ObservationIgnored private var sprintsByProject: [String: [Sprint]] = [:]
+    /// Transitions per "project|type|status", so a row's context menu can offer them without a round trip.
+    /// ponytail: a workflow can differ per issue inside one project (conditions, screens); a wrong guess just errors.
+    var transitionsByWorkflow: [String: [Transition]] = [:]
+    @ObservationIgnored private var warming: Set<String> = []
+
+    static func workflowKey(_ i: Issue) -> String { "\(i.fields.project?.key ?? "")|\(i.fields.issuetype.id)|\(i.fields.status.id)" }
+
+    /// Fetches the transitions of one representative issue per workflow not yet known. Sequential: it runs behind a list.
+    func warmTransitions(_ issues: [Issue]) {
+        var todo: [Issue] = []
+        for i in issues {
+            let k = Self.workflowKey(i)
+            if transitionsByWorkflow[k] == nil, warming.insert(k).inserted { todo.append(i) }
+        }
+        guard !todo.isEmpty else { return }
+        Task { @MainActor in
+            for i in todo {
+                let k = Self.workflowKey(i)
+                if let t = try? await client.transitions(i.key) { transitionsByWorkflow[k] = t }
+                warming.remove(k)
+            }
+        }
+    }
     private var customTitle: String
     /// Name of a `Palette` colour; chosen by the user or dealt from the palette by sidebar position.
     var colorName: String
@@ -163,7 +186,12 @@ final class Session {
     var pendingOpen: IssueTarget?
     var focusSearchRequested = false
     var reloadTick = 0
+    /// Bumped after any write to an issue, so every list redraws with the change; issue pages reload themselves.
+    var listTick = 0
     var addAccountRequested = false
+    /// What the list window showed last, so one opened afresh (⌘0) continues there. In memory only: a fresh
+    /// launch follows the "Open at launch" setting instead.
+    var lastFilters: ListFilters?
 
     var isSignedIn: Bool { !states.isEmpty }
     var accounts: [Account] { stored }
@@ -321,7 +349,14 @@ final class Session {
     /// The sidebar entry these filters came from, for the window title.
     func title(for f: ListFilters) -> String {
         if let key = f.project, let st = f.account.flatMap(state) { return st.projects.first { $0.key == key }?.name ?? key }
-        return (presets(account: nil) + states.flatMap { presets(account: $0) }).first { $0.filters == f }?.name ?? "Issues"
+        return preset(matching: f)?.name ?? "Issues"
+    }
+
+    /// The sidebar entry these filters came from. The status chip is left out of the comparison: a preset is
+    /// built with whatever the Hide Done default is at the time, and flipping that setting must not unname a list.
+    func preset(matching f: ListFilters) -> Preset? {
+        var want = f; want.status = .any; want.text = ""
+        return (presets(account: nil) + states.flatMap { presets(account: $0) }).first { var p = $0.filters; p.status = .any; return p == want }
     }
 
     func addPreset(name: String, filters: ListFilters) {
@@ -477,6 +512,11 @@ final class Connectivity {
 }
 
 extension Error {
+    /// A request this app itself abandoned, e.g. a window closing or a newer load superseding it: not news.
+    var isCancelled: Bool {
+        self is CancellationError || (self as? URLError)?.code == .cancelled
+    }
+
     /// A transport failure, as opposed to something Jira answered.
     var isOffline: Bool {
         guard let e = self as? URLError else { return false }

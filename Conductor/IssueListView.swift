@@ -58,6 +58,8 @@ final class IssueListStore {
     var error: String?
     /// The filters restrict nothing, which Jira refuses; the list explains instead of asking.
     var unbounded = false
+    /// Jira rejected a typed query (half-written JQL, usually). Shown in the list, never as an alert.
+    var queryError: String?
     private var generation = 0
     private var single: (AccountState, String, Bool)?
     private var loadedKey = ""
@@ -68,6 +70,7 @@ final class IssueListStore {
     static func fetch(jql: String, state: AccountState, nextPageToken: String? = nil, cache: Bool) async throws -> SearchPage {
         let page = try await state.client.search(jql: jql, nextPageToken: nextPageToken)
         for issue in page.issues { state.peek[issue.key] = issue }
+        state.warmTransitions(page.issues)
         if cache {
             if nextPageToken == nil { DiskCache.saveAsync(page.issues, account: state.account, name: "list-" + DiskCache.hash(jql)) }
             Spotlight.index(page.issues, host: state.host)
@@ -101,6 +104,7 @@ final class IssueListStore {
         single = nil
         sort = f.sort
         unbounded = !f.isBounded
+        queryError = nil
         if unbounded { rows = []; return }
         let states = f.account.map { id in session.states.filter { $0.id == id } } ?? session.states
         let queries: [(AccountState, String)] = states.map { ($0, f.jql) }
@@ -172,8 +176,10 @@ final class IssueListStore {
             nextToken = page.isLast == true ? nil : page.nextPageToken
             if replacing, cacheable { Self.prefetchDetails(rows) }
         } catch {
-            guard gen == generation, !error.isOffline else { return }
-            self.error = error.localizedDescription
+            guard gen == generation, !error.isOffline, !error.isCancelled else { return }
+            // A 400 on a typed search is the query itself; an alert would steal the keystrokes that fix it.
+            if !cacheable, (error as? JiraError)?.status == 400 { queryError = error.localizedDescription; rows = [] }
+            else { self.error = error.localizedDescription }
         }
     }
 }
@@ -196,7 +202,9 @@ struct IssueListView: View {
     private var isUnified: Bool { filters.account == nil }
     /// The account the chips describe; the first one stands in for unified lists (search assist, issue types).
     private var state: AccountState? { filters.account.flatMap(session.state) ?? session.states.first }
-    private var loadKey: String { "\(filters)|\(session.reloadTick)" }
+    /// Ticks when the app comes to the front or every few minutes, so the list never sits stale for long.
+    @State private var refreshTick = 0
+    private var loadKey: String { "\(filters)|\(session.reloadTick)|\(session.listTick)|\(refreshTick)" }
     /// What the clear button goes back to: the chips reset, the account and the search stay.
     private var cleared: ListFilters {
         var f = ListFilters()
@@ -221,6 +229,12 @@ struct IssueListView: View {
                 HStack { Spacer(); ProgressView().controlSize(.small); Spacer() }
                     .listRowSeparator(.hidden)
             }
+            if filters.scope == .recent, !store.rows.isEmpty, !store.isLoading {
+                // Jira's history only records issues opened on the web; nothing Conductor does can add to it.
+                Text("Jira keeps this list from the issues you open on the web. Issues opened in Conductor don't count.")
+                    .font(.caption).foregroundStyle(.tertiary).padding(.vertical, 8)
+                    .listRowSeparator(.hidden)
+            }
         }
         .listStyle(.inset)
         .contextMenu(forSelectionType: IssueTarget.self) { targets in
@@ -229,13 +243,24 @@ struct IssueListView: View {
             // Double-click (or ↩) opens the issue in its own window; a single click only selects.
             for t in targets { openWindow(id: "issue", value: t) }
         }
+        .onKeyPress(.rightArrow) { fold(open: true) }
+        .onKeyPress(.leftArrow) { fold(open: false) }
         .safeAreaInset(edge: .top, spacing: 0) { chips }
         .overlay {
             if store.unbounded {
                 ContentUnavailableView("Pick a filter", systemImage: "line.3.horizontal.decrease.circle",
                                        description: Text("Jira won't list a whole site at once. Choose a project, a status, a person or a scope, or type a search."))
+            } else if let e = store.queryError {
+                ContentUnavailableView("Incomplete query", systemImage: "text.magnifyingglass", description: Text(e))
             } else if !store.isLoading, store.rows.isEmpty {
-                ContentUnavailableView(filters.isActive ? "No matches" : "No issues", systemImage: "tray")
+                ContentUnavailableView {
+                    Label(filters.isActive ? "No matches" : "No issues", systemImage: "tray")
+                } description: {
+                    if filters != cleared { Text("Nothing matches these filters.") }
+                } actions: {
+                    if !filters.text.isEmpty { Button("Clear Search") { filters.text = "" } }
+                    else if filters != cleared { Button("Clear Filters") { filters = cleared } }
+                }
             }
         }
         .focusedSceneValue(\.listActions, ListActions(
@@ -288,10 +313,29 @@ struct IssueListView: View {
             await store.load(filters, session: session)
         }
         .task(id: filters.text) { await updateSuggestions() }
+        .task {
+            // ponytail: a fixed 3-minute reload; a per-list "updated since" poll would be lighter if it ever matters.
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(180))
+                refreshTick += 1
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in refreshTick += 1 }
+        .onChange(of: filters) { old, new in
+            if new.text.isEmpty, old.text.isEmpty, old != new { searchFocused = false }
+        }
         .onChange(of: session.focusSearchRequested) { _, on in
             if on { searchFocused = true; session.focusSearchRequested = false }
         }
         .errorAlert($store.error)
+    }
+
+    /// → unfolds the selected parent's subtasks, ← folds them, as in an outline.
+    private func fold(open: Bool) -> KeyPress.Result {
+        guard let sel = selection, let d = displayRows.first(where: { $0.row.target == sel }), !d.children.isEmpty,
+              expanded.contains(d.id) != open else { return .ignored }
+        withAnimation(.snappy(duration: 0.25)) { expanded.formSymmetricDifference([d.id]) }
+        return .handled
     }
 
     private var boardTarget: BoardTarget? {
@@ -301,7 +345,7 @@ struct IssueListView: View {
 
     private var subtitle: String {
         guard !store.rows.isEmpty else { return "" }
-        return "\(store.rows.count)\(store.nextToken == nil ? "" : "+") issues"
+        return issues(store.rows.count, more: store.nextToken != nil)
     }
 
     // MARK: Row actions
@@ -379,9 +423,9 @@ struct IssueListView: View {
         }
         .background(.bar)
         .overlay(alignment: .bottom) { Divider() }
-        .disabled(filters.isRawJQL)
-        .opacity(filters.isRawJQL ? 0.4 : 1)
-        .help(filters.isRawJQL ? "Filters don't apply to raw JQL" : "")
+        .disabled(filters.isRawJQL || filters.isKey)
+        .opacity(filters.isRawJQL || filters.isKey ? 0.4 : 1)
+        .help(filters.isRawJQL ? "Filters don't apply to raw JQL" : filters.isKey ? "A key opens that issue whatever the filters" : "")
     }
 
     // MARK: Search assist
@@ -458,8 +502,9 @@ struct IssueRow: View {
                     if let toggle {
                         Spacer(minLength: 0)
                         Button(action: toggle) {
-                            Image(systemName: expanded ? "chevron.down" : "chevron.right")
-                                .font(.caption.weight(.semibold)).foregroundStyle(.secondary).frame(width: 16, height: 16)
+                            Label(expanded ? "Hide subtasks" : "Show subtasks", systemImage: expanded ? "chevron.down" : "chevron.right")
+                                .labelStyle(.iconOnly)
+                                .font(.caption.weight(.semibold)).foregroundStyle(.secondary).frame(width: 22, height: 22).contentShape(.rect)
                         }
                         .buttonStyle(.plain)
                         .help(expanded ? "Hide subtasks" : "Show \(folded) subtasks from this list")
@@ -510,9 +555,25 @@ struct IssueMenu: View {
         Button(watching ? "Stop Watching This Issue" : "Watch This Issue", systemImage: watching ? "eye.slash" : "eye") {
             write { try await state.client.watch(key, !watching, me: me) }
         }
+        Divider()
+        // From the account's cache: a menu's content is fixed once open, so nothing can load inside it.
+        if let transitions = state.transitionsByWorkflow[AccountState.workflowKey(issue)] {
+            Menu("Change Status") {
+                ForEach(transitions) { t in
+                    Toggle(isOn: Binding(get: { t.to.id == issue.fields.status.id }, set: { on in if on { write { try await state.client.transition(key, to: t.id) } } })) { Text(t.name) }
+                }
+            }
+        } else {
+            Button("Change Status…") { openWindow(id: "issue", value: target); state.warmTransitions([issue]) }
+        }
         if let me, issue.fields.assignee?.accountId != me {
             Button("Assign to Me", systemImage: "person.crop.circle.badge.checkmark") {
                 write { try await state.client.assign(key, to: me) }
+            }
+        }
+        if issue.fields.assignee != nil {
+            Button("Unassign", systemImage: "person.crop.circle.badge.minus") {
+                write { try await state.client.assign(key, to: nil) }
             }
         }
     }
@@ -573,9 +634,13 @@ final class ChipMenuController: NSObject, NSMenuDelegate {
             self.openID = nil
             let mouse = NSEvent.mouseLocation
             for (id, view) in self.anchors where id != closed {
-                guard let window = view.window else { continue }
+                guard let window = view.window, let content = window.contentView else { continue }
                 let frame = window.convertToScreen(view.convert(view.bounds, to: nil))
-                if frame.contains(mouse) { self.open(id); return }
+                guard frame.contains(mouse) else { continue }
+                // A chip scrolled under the sort chip, or the trailing edge of the chip strip, must not count.
+                let local = content.convert(window.convertPoint(fromScreen: mouse), from: nil)
+                guard let hit = content.hitTest(local), hit.isDescendant(of: view) || view.isDescendant(of: hit) else { continue }
+                self.open(id); return
             }
         }
     }

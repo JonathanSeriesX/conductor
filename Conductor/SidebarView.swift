@@ -68,7 +68,7 @@ struct ListFilters: Hashable, Codable {
     }
 
     private var query: String { text.trimmingCharacters(in: .whitespacesAndNewlines) }
-    private var isKey: Bool { query.range(of: #"^[A-Za-z][A-Za-z0-9_]+-\d+$"#, options: .regularExpression) != nil }
+    var isKey: Bool { query.range(of: #"^[A-Za-z][A-Za-z0-9_]+-\d+$"#, options: .regularExpression) != nil }
 
     /// Jira refuses a search with no restriction at all ("unbounded"), so the list says so instead of asking.
     var isBounded: Bool { isRawJQL || isKey || !restrictions.isEmpty }
@@ -174,6 +174,8 @@ struct SidebarView: View {
     @State private var renaming: AccountState?
     @State private var renamingPreset: Preset?
     @State private var newTitle = ""
+    @State private var signingOut: AccountState?
+    @State private var deletingPreset: Preset?
 
     var body: some View {
         List(selection: $selection) {
@@ -196,14 +198,14 @@ struct SidebarView: View {
                             Button("Rename…", systemImage: "pencil") { newTitle = st.title; renaming = st }
                             Menu("Colour") {
                                 ForEach(Palette.names, id: \.self) { name in
-                                    Button { st.setColor(name) } label: {
-                                        Label { Text(name.capitalized + (st.colorName == name ? "  ✓" : "")) } icon: { Image(nsImage: Palette.swatch(name)) }
+                                    Toggle(isOn: Binding(get: { st.colorName == name }, set: { if $0 { st.setColor(name) } })) {
+                                        Label { Text(name.capitalized) } icon: { Image(nsImage: Palette.swatch(name)) }
                                     }
                                 }
                             }
                             Button("Refresh", systemImage: "arrow.clockwise") { Task { try? await st.load() } }
                             Divider()
-                            Button("Sign Out of \(st.title)", systemImage: "rectangle.portrait.and.arrow.right", role: .destructive) { session.remove(st.account) }
+                            Button("Sign Out of \(st.title)…", systemImage: "rectangle.portrait.and.arrow.right", role: .destructive) { signingOut = st }
                         }
                 }
             }
@@ -248,6 +250,16 @@ struct SidebarView: View {
         } message: {
             Text("Shown as the section title in the sidebar.")
         }
+        .confirmationDialog("Sign out of \(signingOut?.title ?? "")?", isPresented: Binding(get: { signingOut != nil }, set: { if !$0 { signingOut = nil } }), titleVisibility: .visible) {
+            Button("Sign Out", role: .destructive) { if let st = signingOut { session.remove(st.account) }; signingOut = nil }
+            Button("Cancel", role: .cancel) { signingOut = nil }
+        } message: {
+            Text("The token is removed from the Keychain. Cached issues stay until the cache is cleared.")
+        }
+        .confirmationDialog("Delete the filter “\(deletingPreset?.name ?? "")”?", isPresented: Binding(get: { deletingPreset != nil }, set: { if !$0 { deletingPreset = nil } }), titleVisibility: .visible) {
+            Button("Delete", role: .destructive) { if let p = deletingPreset { session.removePreset(p.id) }; deletingPreset = nil }
+            Button("Cancel", role: .cancel) { deletingPreset = nil }
+        }
         .alert("Rename Filter", isPresented: Binding(get: { renamingPreset != nil }, set: { if !$0 { renamingPreset = nil } })) {
             TextField("Name", text: $newTitle)
             Button("Rename") { if let p = renamingPreset { session.renamePreset(p.id, to: newTitle) }; renamingPreset = nil }
@@ -282,7 +294,7 @@ struct SidebarView: View {
             .contextMenu {
                 if p.custom {
                     Button("Rename…", systemImage: "pencil") { newTitle = p.name; renamingPreset = p }
-                    Button("Delete", systemImage: "trash", role: .destructive) { session.removePreset(p.id) }
+                    Button("Delete…", systemImage: "trash", role: .destructive) { deletingPreset = p }
                 } else {
                     Button("Hide", systemImage: "eye.slash") { session.hidePreset(p.id) }
                 }

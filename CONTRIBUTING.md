@@ -64,5 +64,6 @@ Push a `v*` tag; `.github/workflows/release.yml` builds, zips and publishes the 
 
 - Search uses `/search/jql` with page tokens; the old `/search` returns 410.
 - Project keys are quoted in JQL because keys like `IN` are reserved words.
-- Project stars can be read (`expand=favourite`) but not written through the public API, so Conductor keeps its own per account.
+- Project stars can be read (`expand=favourite`) but not written through the public API, so the sidebar shows Jira's own and offers no star menu. Issues have no stars at all.
+- `issue/picker` only searches the web history unless `currentJQL` is passed; `issueHistory()` likewise only knows issues opened on the web.
 - Media nodes in descriptions carry a media-services id with no public mapping to attachments, so inline images match on filename.

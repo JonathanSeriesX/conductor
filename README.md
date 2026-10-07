@@ -14,7 +14,7 @@ Jira's own Mac app was discontinued. Conductor is what it should have become: ev
 - **Search that understands you.** Type words, an issue key, raw JQL with field and value suggestions, or paste a Jira link. Chips for account, project, scope (recently viewed, watching), status, assignee, reporter, type and recency, and a sort order. Save any combination as a sidebar filter.
 - **Notifications.** Assignments, status changes and new comments on issues you are involved in, on every account, with a dock badge.
 - **Spotlight.** Every issue you have seen is indexed. Search "ES-123" or a summary from anywhere and land in Conductor.
-- **Mac details.** ⌘N new issue, ⌘F find, ⌘1 to ⌘4 for your lists, ⌘R reload, `conductor://issue/KEY` links, window restoration, five glass backgrounds including a plain one for light and dark mode.
+- **Mac details.** ⌘N new issue, ⌘F find, ⌘1 to ⌘4 for your lists, ⌘0 back to the list window, ⌘R reload, `conductor://issue/KEY` links, window restoration.
 
 ## Requirements
 
@@ -42,12 +42,14 @@ Right-click an account's section title to rename it, pick its colour or sign out
 | ⌘1 ⌘2 ⌘3 ⌘4 | Assigned to Me, Reported by Me, Recently Viewed, Watching |
 | ⌘S | Save the current chips and search as a sidebar filter |
 | Double-click a row | Open the issue in its own window |
+| ⌘0 | The list window, when only issue windows are open |
 | ⌘R | Reload the list |
+| ⌘[ | Back to the previous issue in an issue window |
 | ⌘⇧R | Refresh the issue |
 | ⌘⇧C | Copy the issue link |
 | ⌘⇧O | Open the issue in the browser |
 | ⌘↩ | Send a comment or save an edit |
-| Double-click the title | Edit the summary |
+| Click the title or description | Edit it |
 
 ## Privacy
 

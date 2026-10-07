@@ -1,37 +1,8 @@
 import SwiftUI
 
-/// What sits behind the glass panes. Chosen in Settings; "plain" follows the window appearance.
+/// The window background, so glass panes sit on the system colour in light and dark mode.
 struct Backdrop: View {
-    @AppStorage("backdrop") private var stored = "mesh"
-    @Environment(\.backdropOverride) private var override
-    private var style: String { override ?? stored }
-
-    var body: some View {
-        Group {
-            switch style {
-            case "plain":
-                Color(nsColor: .windowBackgroundColor)
-            case "muted":
-                mesh.opacity(0.1)
-            case "dusk":
-                MeshGradient(width: 3, height: 3, points: Self.points,
-                             colors: [.orange, .pink, .purple, .red, .purple, .indigo, .brown, .indigo, .blue]).opacity(0.2)
-            case "forest":
-                MeshGradient(width: 3, height: 3, points: Self.points,
-                             colors: [.mint, .green, .teal, .green, .teal, .cyan, .yellow, .mint, .blue]).opacity(0.2)
-            default:
-                mesh.opacity(0.22)
-            }
-        }
-        .ignoresSafeArea()
-    }
-
-    private static let points: [SIMD2<Float>] = [[0, 0], [0.5, 0], [1, 0], [0, 0.5], [0.55, 0.45], [1, 0.5], [0, 1], [0.5, 1], [1, 1]]
-
-    private var mesh: some View {
-        MeshGradient(width: 3, height: 3, points: Self.points,
-                     colors: [.indigo, .blue, .cyan, .purple, .blue, .teal, .pink, .indigo, .mint])
-    }
+    var body: some View { Color(nsColor: .windowBackgroundColor).ignoresSafeArea() }
 }
 
 @MainActor enum ImageCache {
@@ -87,6 +58,7 @@ struct Avatar: View {
         .frame(width: size, height: size)
         .clipShape(.circle)
         .help(user?.displayName ?? "Unassigned")
+        .accessibilityLabel(user?.displayName ?? "Unassigned")
     }
 }
 
@@ -124,6 +96,7 @@ struct PriorityIcon: View {
 
     var body: some View {
         RemoteImage(url: priority.iconUrl, placeholder: "minus")
+            .accessibilityLabel(priority.name)
             .frame(width: size, height: size)
             .padding(2) // constant so the glyph does not shift when the disc appears
             .background(prominence == .increased ? .white.opacity(0.9) : .clear, in: .circle)
@@ -157,17 +130,15 @@ extension View {
     }
 }
 
+/// "1 issue", "2 issues": subtitles and counts read as English.
+func issues(_ n: Int, more: Bool = false) -> String { n == 1 && !more ? "1 issue" : "\(n)\(more ? "+" : "") issues" }
+
 extension View {
     func errorAlert(_ error: Binding<String?>) -> some View {
         alert("Something went wrong", isPresented: Binding(get: { error.wrappedValue != nil }, set: { if !$0 { error.wrappedValue = nil } })) {
             Button("OK") { error.wrappedValue = nil }
         } message: { Text(error.wrappedValue ?? "") }
     }
-}
-
-extension EnvironmentValues {
-    /// Lets a preview swatch show a style other than the one in Settings.
-    @Entry var backdropOverride: String? = nil
 }
 
 /// Sees events of `mask` aimed at the window this view sits in, before any view handles them; return nil to swallow one.
@@ -206,6 +177,7 @@ extension Binding {
     /// the value went nil (Save sets the draft to nil while the editor is still on screen), which crashed.
     /// This one hands back `fallback` instead.
     init(_ source: Binding<Value?>, or fallback: Value) {
-        self.init(get: { source.wrappedValue ?? fallback }, set: { source.wrappedValue = $0 })
+        // Writes after the draft went nil are the field's own echo of its last text; taking them would reopen it.
+        self.init(get: { source.wrappedValue ?? fallback }, set: { if source.wrappedValue != nil { source.wrappedValue = $0 } })
     }
 }

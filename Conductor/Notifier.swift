@@ -11,6 +11,9 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     private var lastPoll: [UUID: Date] = [:]
     private var meIDs: [UUID: String] = [:]
     private var seenComments: Set<String> = []
+    /// Assignment and status banners already shown, keyed by issue and its `updated` stamp: the poll
+    /// windows overlap by a minute, so the same change comes back once more.
+    private var announced: Set<String> = []
     private var unread = 0
 
     func start(_ session: Session) {
@@ -59,10 +62,14 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         let involved = "(assignee = currentUser() OR reporter = currentUser() OR watcher = currentUser())"
 
         if let page = try? await client.search(jql: "assignee CHANGED TO currentUser() AFTER -\(minutes)m AND NOT assignee CHANGED BY currentUser() AFTER -\(minutes)m ORDER BY updated DESC") {
-            for i in page.issues { notify("Assigned to you", "\(i.key)  \(i.fields.summary)", host: host, key: i.key) }
+            for i in page.issues where announced.insert("\(host)|\(i.key)|assigned|\(i.fields.updated?.timeIntervalSince1970 ?? 0)").inserted {
+                notify("Assigned to you", "\(i.key)  \(i.fields.summary)", host: host, key: i.key)
+            }
         }
         if let page = try? await client.search(jql: "\(involved) AND status CHANGED AFTER -\(minutes)m AND NOT status CHANGED BY currentUser() AFTER -\(minutes)m ORDER BY updated DESC") {
-            for i in page.issues { notify("\(i.key) is now \(i.fields.status.name)", i.fields.summary, host: host, key: i.key) }
+            for i in page.issues where announced.insert("\(host)|\(i.key)|status|\(i.fields.status.id)").inserted {
+                notify("\(i.key) is now \(i.fields.status.name)", i.fields.summary, host: host, key: i.key)
+            }
         }
         if let page = try? await client.search(jql: "\(involved) AND updated >= -\(minutes)m ORDER BY updated DESC", fields: "summary,comment") {
             for i in page.issues {
