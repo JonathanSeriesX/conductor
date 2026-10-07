@@ -6,6 +6,14 @@ Open `Conductor.xcodeproj` in Xcode 26 and run the `Conductor` scheme. The proje
 
 Swift 6 language mode with strict concurrency, macOS 26 deployment target, no dependencies.
 
+Debug builds are signed with the Apple Development certificate of team `7X7PA8RA37` (a free Personal Team is enough; Xcode creates and renews the certificate). A stable signature is what lets the Keychain remember "Always Allow" across rebuilds; ad-hoc signing gives every build a new identity and asks again. Using another team? Change `DEVELOPMENT_TEAM` in `project.yml`. Release builds stay ad-hoc unless CI has the Developer ID secrets.
+
+From a shell:
+
+```bash
+xcodebuild -scheme Conductor -derivedDataPath build -allowProvisioningUpdates build
+```
+
 ## Layout
 
 | File | Role |

@@ -172,14 +172,6 @@
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 1430;
 				TargetAttributes = {
-					3CB839982A2ACEF6F28983E5 = {
-						DevelopmentTeam = "";
-						ProvisioningStyle = Manual;
-					};
-					B3585E64249DDCCDE777FD17 = {
-						DevelopmentTeam = "";
-						ProvisioningStyle = Manual;
-					};
 				};
 			};
 			buildConfigurationList = 564A5101C844129075A52976 /* Build configuration list for PBXProject "Conductor" */;
@@ -309,11 +301,11 @@
 				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
-				CODE_SIGN_IDENTITY = "-";
-				CODE_SIGN_STYLE = Manual;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
 				DEBUG_INFORMATION_FORMAT = dwarf;
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = 7X7PA8RA37;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
 				GCC_C_LANGUAGE_STANDARD = gnu11;
