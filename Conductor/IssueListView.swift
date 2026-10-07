@@ -218,9 +218,6 @@ struct IssueListView: View {
                 IssueRow(issue: row.issue, site: isUnified && session.states.count > 1 ? (row.state.title, row.state.color) : nil,
                          depth: d.depth, folded: d.children.count, expanded: expanded.contains(d.id),
                          toggle: d.children.isEmpty ? nil : { withAnimation(.snappy(duration: 0.25)) { expanded.formSymmetricDifference([d.id]) } })
-                    .contentShape(.rect)
-                    // A click opens the issue in its own window; the arrow keys only move the selection.
-                    .onTapGesture { openWindow(id: "issue", value: row.target) }
                     .tag(row.target)
                     .onAppear { if d.id == displayRows.last?.id { Task { await store.loadMore() } } }
                     // Drag a row into Slack, a browser or a note as its Jira link.
@@ -235,6 +232,7 @@ struct IssueListView: View {
         .contextMenu(forSelectionType: IssueTarget.self) { targets in
             if let t = targets.first, let row = store.rows.first(where: { $0.target == t }) { rowMenu(row) }
         } primaryAction: { targets in
+            // Double-click (or ↩) opens the issue in its own window; a single click only selects.
             for t in targets { openWindow(id: "issue", value: t) }
         }
         .safeAreaInset(edge: .top, spacing: 0) { chips }
