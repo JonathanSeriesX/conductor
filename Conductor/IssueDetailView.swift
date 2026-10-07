@@ -55,7 +55,11 @@ final class IssueDetailStore {
         if issue == nil {
             // Last opened copy from disk, else what the list row already knows: either way, no blank page.
             issue = await DiskCache.loadAsync(account: state.account, name: "issue-\(key)") ?? state.peek[key]
+            // Everything the right column is built from, so no row appears or wakes up a second later.
+            if let m: EditMeta = await DiskCache.loadAsync(account: state.account, name: "editmeta-\(key)") { editMeta = m }
+            if let t: [Transition] = await DiskCache.loadAsync(account: state.account, name: "transitions-\(key)") { transitions = t }
             if full, let kids: [Issue] = await DiskCache.loadAsync(account: state.account, name: "children-\(key)") { children = kids }
+            if full, canEdit(client.sprintField), let project = issue?.fields.project?.key { sprints = await state.sprints(project: project) }
         }
         do {
             async let i = client.issue(key)
@@ -66,8 +70,8 @@ final class IssueDetailStore {
             issue = try await i
             DiskCache.saveAsync(issue, account: state.account, name: "issue-\(key)")
             Spotlight.index([issue!], host: state.host)
-            transitions = (try? await t) ?? []
-            editMeta = try? await m
+            if let fresh = try? await t { transitions = fresh; DiskCache.saveAsync(fresh, account: state.account, name: "transitions-\(key)") }
+            if let fresh = try? await m { editMeta = fresh; DiskCache.saveAsync(fresh, account: state.account, name: "editmeta-\(key)") }
             if full {
                 if let page = try? await kids {
                     children = page.issues.filter { !$0.fields.issuetype.isSubtask }
@@ -112,7 +116,12 @@ struct IssueDetailView: View {
     @State private var store = IssueDetailStore()
     private var key: String { target.key }
     /// Keys from subtasks, links and parents live in the same account as this issue.
-    private func open(_ key: String) { open(IssueTarget(accountID: target.accountID, key: key)) }
+    private func open(_ key: String) {
+        let t = IssueTarget(accountID: target.accountID, key: key)
+        // ⌘-click opens beside, as links do in a browser.
+        if NSEvent.modifierFlags.contains(.command) { openWindow(id: "issue", value: t) } else { open(t) }
+    }
+    private func openWindow(_ key: String) { openWindow(id: "issue", value: IssueTarget(accountID: target.accountID, key: key)) }
 
     // Editing state
     @State private var summaryDraft: String?
@@ -369,22 +378,35 @@ struct IssueDetailView: View {
                         Text(issue.fields.issuetype.name)
                     }
                 }
-                if issue.fields.parent != nil || store.canEdit("parent") {
-                    field("Parent") {
-                        Button { showParent = true } label: {
-                            if let p = issue.fields.parent {
+                field("Parent") {
+                    Group {
+                        if let p = issue.fields.parent {
+                            // Click goes to the parent, ⌘-click opens it beside; changing it is on the menu.
+                            Button { open(p.key) } label: {
                                 HStack(spacing: 6) {
                                     RemoteImage(url: p.fields.issuetype?.iconUrl).frame(width: 14, height: 14)
                                     Text(p.key).font(.callout.monospaced())
                                     Text(p.fields.summary).lineLimit(1)
                                 }
-                                .contextMenu { Button("Open \(p.key)", systemImage: "arrow.up.forward.app") { open(p.key) } }
-                            } else {
-                                Text("None").foregroundStyle(.secondary)
+                                .contentShape(.rect)
                             }
+                            .buttonStyle(.plain)
+                            .help("Open \(p.key); ⌘-click for a new window")
+                            .contextMenu {
+                                Button("Open", systemImage: "arrow.right") { open(IssueTarget(accountID: target.accountID, key: p.key)) }
+                                Button("Open in New Window", systemImage: "macwindow.badge.plus") { openWindow(p.key) }
+                                if store.canEdit("parent") {
+                                    Divider()
+                                    Button("Replace…", systemImage: "arrow.triangle.2.circlepath") { showParent = true }
+                                    Button("Remove", systemImage: "minus.circle", role: .destructive) { run { try await $0.editIssue(key, fields: ["parent": .null]) } }
+                                }
+                            }
+                        } else {
+                            Button { showParent = true } label: { Text("None").foregroundStyle(.secondary) }
+                                .buttonStyle(.plain)
+                                .disabled(!store.canEdit("parent"))
                         }
-                        .buttonStyle(.plain)
-                        .disabled(!store.canEdit("parent"))
+                    }
                         .popover(isPresented: $showParent, arrowEdge: .leading) {
                             ParentPicker(key: key, current: issue.fields.parent?.key,
                                          jql: "project = \"\(issue.fields.project?.key ?? "")\" AND hierarchyLevel = \((issue.fields.issuetype.hierarchyLevel ?? 0) + 1) ORDER BY updated DESC") { new in
@@ -392,8 +414,9 @@ struct IssueDetailView: View {
                                 run { try await $0.editIssue(key, fields: ["parent": new.map { .object(["key": .string($0)]) } ?? .null]) }
                             }
                         }
-                    }
                 }
+                // Sprint, due date and points rows are there from the first frame: a site that has the field shows the
+                // row, and the menu wakes up once the edit screen is known. Nothing moves when it arrives.
                 if store.canEdit(jira?.client.sprintField), !store.sprints.isEmpty {
                     field("Sprint") {
                         Menu {
@@ -408,11 +431,11 @@ struct IssueDetailView: View {
                         }
                         .menuStyle(.button).buttonStyle(.plain).fixedSize()
                     }
-                } else if let s = issue.activeSprint {
-                    field("Sprint") { Text(s.name) }
+                } else if jira?.client.sprintField != nil, issue.fields.project?.projectTypeKey == "software" || issue.activeSprint != nil {
+                    field("Sprint") { Text(issue.activeSprint?.name ?? "None").foregroundStyle(issue.activeSprint == nil ? .secondary : .primary) }
                 }
                 let due = issue.fields.duedate.flatMap(DueDate.parse)
-                if due != nil || store.canEdit("duedate") {
+                if due != nil || store.canEdit("duedate") || store.editMeta == nil {
                     field("Due") {
                         Button { showDueDate = true } label: {
                             let overdue = due.map { $0 < Calendar.current.startOfDay(for: .now) } == true && issue.fields.status.statusCategory.key != "done"
@@ -441,8 +464,8 @@ struct IssueDetailView: View {
                         }
                         .menuStyle(.button).buttonStyle(.plain).fixedSize()
                     }
-                } else if let points = issue.points {
-                    field("Story Points") { Text(points.formatted()) }
+                } else if issue.points != nil || !(jira?.client.pointsFields.isEmpty ?? true) {
+                    field("Story Points") { Text(issue.points?.formatted() ?? "None").foregroundStyle(issue.points == nil ? .secondary : .primary) }
                 }
                 multiValue("Components", field: "components", current: issue.fields.components ?? [])
                 multiValue("Fix Versions", field: "fixVersions", current: issue.fields.fixVersions ?? [])

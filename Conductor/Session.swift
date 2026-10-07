@@ -154,13 +154,25 @@ final class AccountState: Identifiable {
     /// Active and future sprints of a project's scrum boards, fetched once per session.
     func sprints(project: String) async -> [Sprint] {
         if let cached = sprintsByProject[project] { return cached }
-        guard let boards = try? await client.boards(project: project) else { return [] }
+        // Last run's list at once; the fresh one lands behind it for the next open.
+        if let disk: [Sprint] = await DiskCache.loadAsync(account: account, name: "sprints-\(project)") {
+            sprintsByProject[project] = disk
+            Task { @MainActor in await self.fetchSprints(project: project) }
+            return disk
+        }
+        return await fetchSprints(project: project)
+    }
+
+    @discardableResult
+    private func fetchSprints(project: String) async -> [Sprint] {
+        guard let boards = try? await client.boards(project: project) else { return sprintsByProject[project] ?? [] }
         let tasks = boards.filter { $0.type == "scrum" }.map { b in Task { @MainActor in (try? await self.client.sprints(board: b.id)) ?? [] } }
         var all: [Sprint] = []
         for t in tasks { all += await t.value }
         var seen = Set<Int>()
         let unique = all.filter { seen.insert($0.id).inserted }
         sprintsByProject[project] = unique
+        DiskCache.saveAsync(unique, account: account, name: "sprints-\(project)")
         return unique
     }
 
