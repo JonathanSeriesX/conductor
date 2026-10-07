@@ -270,6 +270,12 @@ final class FilterAndDurationTests: XCTestCase {
         everything.status = .any
         everything.sort.descending = false
         XCTAssertEqual(everything.jql(), "ORDER BY updated ASC", "no chips at all is the whole site")
+        XCTAssertFalse(everything.isBounded, "Jira refuses that, so the list must not ask")
+        everything.text = "es-1"
+        XCTAssertTrue(everything.isBounded)
+        everything.text = ""
+        everything.project = "ES"
+        XCTAssertTrue(everything.isBounded)
     }
 
     func testBoardURL() {
