@@ -118,6 +118,9 @@ final class AccountState: Identifiable {
             }
         }
         for t in tasks { await t.value }
+        // Starred projects' boards next, one at a time: a board is three or four requests and they should
+        // not compete with the lists that are on screen.
+        for p in starredProjects { await BoardStore.prefetch(p.key, state: self) }
     }
 
     func linkTypes() async -> [LinkType] {
