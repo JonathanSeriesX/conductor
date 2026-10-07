@@ -207,20 +207,24 @@ final class Session {
         watchConnectivity()
         defer { isRestoring = false }
         history = (try? JSONDecoder().decode([IssueTarget].self, from: UserDefaults.standard.data(forKey: "history") ?? Data())) ?? []
+        stored = Keychain.load()
         #if DEBUG
-        // Dev convenience: CONDUCTOR_SITE/EMAIL/TOKEN (and _2, _3…) skip the login form; nothing is persisted.
+        // Dev convenience: CONDUCTOR_SITE/EMAIL/TOKEN (and _2, _3…) sign in without the form. They are merged
+        // into the Keychain and saved, so a build run from Xcode without them finds the same accounts: every
+        // Debug build is signed with the same team and reads the same data protection keychain item.
         let env = ProcessInfo.processInfo.environment
         let envAccounts: [Account] = ["", "_2", "_3"].compactMap { n in
             guard let site = env["CONDUCTOR_SITE\(n)"].flatMap(Account.normalizeSite), let email = env["CONDUCTOR_EMAIL\(n)"], let token = env["CONDUCTOR_TOKEN\(n)"] else { return nil }
             return Account(site: site, email: email, token: token)
         }
         if !envAccounts.isEmpty {
-            stored = envAccounts
-            await connectAll(persist: false)
-            return
+            // An env account replaces its stored twin (same id: host + email) in place, so the sidebar order holds.
+            for a in envAccounts {
+                if let i = stored.firstIndex(where: { $0.id == a.id }) { stored[i] = a } else { stored.append(a) }
+            }
+            Keychain.save(stored)
         }
         #endif
-        stored = Keychain.load()
         await connectAll(persist: true)
     }
 

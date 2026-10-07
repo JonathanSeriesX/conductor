@@ -39,7 +39,7 @@ Environment variables honoured by Debug builds, handy in the scheme's Run argume
 
 | Variable | Effect |
 |---|---|
-| `CONDUCTOR_SITE`, `CONDUCTOR_EMAIL`, `CONDUCTOR_TOKEN` | Sign in without touching the Keychain; add `_2`, `_3` suffixes for more accounts |
+| `CONDUCTOR_SITE`, `CONDUCTOR_EMAIL`, `CONDUCTOR_TOKEN` | Sign in without the form; add `_2`, `_3` suffixes for more accounts. They are merged into the Keychain, so a build run from Xcode without them is signed in to the same accounts |
 | `CONDUCTOR_OPEN=KEY-123` | Open that issue (first account) at launch |
 | `CONDUCTOR_SCROLL=comments` | Scroll the opened issue to its comments |
 | `CONDUCTOR_SHOW=create` / `addAccount` / `settings` / `board:KEY` | Open that sheet or window at launch |
