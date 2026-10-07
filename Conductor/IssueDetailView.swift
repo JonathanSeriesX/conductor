@@ -864,13 +864,12 @@ struct CommentComposer: View {
     @FocusState private var focused: Bool
 
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
+        VStack(alignment: .trailing, spacing: 8) {
             Composer(text: $text, mentions: $mentions, placeholder: "Add a comment…  ⌘↩ to send", minHeight: 44, uploadImage: uploadImage, focus: $focused)
             Button("Comment") { post() }
                 .buttonStyle(.glassProminent)
                 .keyboardShortcut(.return, modifiers: .command)
                 .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || disabled)
-                .padding(.top, 6)
         }
         .onChange(of: focusRequest) { focused = true }
     }
