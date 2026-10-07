@@ -2,7 +2,7 @@ import SwiftUI
 
 /// The one query behind the list. Every sidebar entry is a preset of it; the chips edit it in place.
 struct ListFilters: Hashable, Codable {
-    enum Scope: String, CaseIterable, Codable { case all = "Everything", starred = "Starred", recent = "Recently viewed", watching = "Watching" }
+    enum Scope: String, CaseIterable, Codable { case all = "Everything", recent = "Recently viewed", watching = "Watching" }
     enum Status: String, CaseIterable, Codable { case any = "Any status", open = "Open", todo = "To Do", inProgress = "In Progress", done = "Done" }
     enum Assignee: String, CaseIterable, Codable { case any = "Any assignee", me = "Assigned to me", unassigned = "Unassigned" }
     enum Reporter: String, CaseIterable, Codable { case any = "Any reporter", me = "Reported by me" }
@@ -71,17 +71,17 @@ struct ListFilters: Hashable, Codable {
     private var isKey: Bool { query.range(of: #"^[A-Za-z][A-Za-z0-9_]+-\d+$"#, options: .regularExpression) != nil }
 
     /// Jira refuses a search with no restriction at all ("unbounded"), so the list says so instead of asking.
-    var isBounded: Bool { isRawJQL || isKey || !restrictions(starredKeys: []).isEmpty }
+    var isBounded: Bool { isRawJQL || isKey || !restrictions.isEmpty }
 
-    /// JQL for one account. `starredKeys` are that account's starred issues, for the Starred scope.
-    func jql(starredKeys: [String] = []) -> String {
+    /// JQL for one account.
+    var jql: String {
         if isRawJQL { return query }
         if isKey { return "key = \"\(query.uppercased())\"" }
-        let c = restrictions(starredKeys: starredKeys)
+        let c = restrictions
         return (c.isEmpty ? "" : c.joined(separator: " AND ") + " ") + "ORDER BY " + sort.clause
     }
 
-    private func restrictions(starredKeys: [String]) -> [String] {
+    private var restrictions: [String] {
         let q = query
         var c: [String] = []
         if let f = jiraFilter { c.append("filter = \(f.id)") }
@@ -89,7 +89,6 @@ struct ListFilters: Hashable, Codable {
         if let project { c.append("project = \"\(project)\"") }
         switch scope {
         case .all: break
-        case .starred: c.append("issuekey IN (\(starredKeys.map { "\"\($0)\"" }.joined(separator: ", ")))")
         case .recent: c.append("issuekey IN issueHistory()")
         case .watching: c.append("watcher = currentUser()")
         }
@@ -121,11 +120,10 @@ struct ListFilters: Hashable, Codable {
 
 /// The built-in sidebar entries. Unified across accounts, or per account.
 enum Smart: String, CaseIterable, Codable {
-    case starred, assigned, reported, recent, watching
+    case assigned, reported, recent, watching
 
     var title: String {
         switch self {
-        case .starred: "Starred"
         case .assigned: "Assigned to Me"
         case .reported: "Reported by Me"
         case .recent: "Recently Viewed"
@@ -135,7 +133,6 @@ enum Smart: String, CaseIterable, Codable {
 
     var symbol: String {
         switch self {
-        case .starred: "star"
         case .assigned: "person.crop.circle"
         case .reported: "square.and.pencil"
         case .recent: "clock"
@@ -147,7 +144,6 @@ enum Smart: String, CaseIterable, Codable {
         var f = ListFilters()
         f.account = account
         switch self {
-        case .starred: f.scope = .starred; f.status = .any   // a star is a bookmark: Done ones stay listed
         case .assigned: f.assignee = .me
         case .reported: f.reporter = .me; f.sort.field = .created
         case .recent: f.scope = .recent; f.status = .any; f.sort.field = .viewed
