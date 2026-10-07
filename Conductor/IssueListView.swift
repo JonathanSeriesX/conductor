@@ -17,7 +17,7 @@ struct DisplayRow: Identifiable {
     var depth = 0
     var id: String { row.id }
 
-    static func nest(_ rows: [ListRow], expanded: Bool) -> [DisplayRow] {
+    static func nest(_ rows: [ListRow], expanded: Bool, sort: ListFilters.Sort) -> [DisplayRow] {
         let present = Set(rows.map(\.id))
         var children: [String: [ListRow]] = [:]
         var top: [ListRow] = []
@@ -28,11 +28,17 @@ struct DisplayRow: Identifiable {
                 top.append(r)
             }
         }
-        // A parent whose children were touched more recently moves up with them.
-        func latest(_ r: ListRow) -> Date {
-            max(r.issue.fields.updated ?? .distantPast, children[r.id]?.compactMap(\.issue.fields.updated).max() ?? .distantPast)
+        // Sorted by update, a parent whose children were touched more recently moves with them; any other
+        // order is the server's and stays as it came.
+        if sort.field == .updated {
+            func latest(_ r: ListRow) -> Date {
+                max(r.issue.fields.updated ?? .distantPast, children[r.id]?.compactMap(\.issue.fields.updated).max() ?? .distantPast)
+            }
+            top.sort { a, b in
+                let (la, lb) = (latest(a), latest(b))
+                return la != lb ? (sort.descending ? la > lb : la < lb) : a.id < b.id
+            }
         }
-        top.sort { a, b in let (la, lb) = (latest(a), latest(b)); return la != lb ? la > lb : a.id < b.id }
         var out: [DisplayRow] = []
         for r in top {
             let kids = children[r.id] ?? []
@@ -52,11 +58,7 @@ final class IssueListStore {
     private var generation = 0
     private var single: (AccountState, String, Bool)?
     private var loadedKey = ""
-
-    private static func byUpdated(_ a: ListRow, _ b: ListRow) -> Bool {
-        let (ua, ub) = (a.issue.fields.updated ?? .distantPast, b.issue.fields.updated ?? .distantPast)
-        return ua != ub ? ua > ub : a.id < b.id
-    }
+    private var sort = ListFilters.Sort()
 
     /// One page of a query for one account. With `cache` on, the page is saved to disk, indexed for
     /// Spotlight and remembered as a peek for the issue page. Shared by the list and the launch prefetch.
@@ -88,26 +90,26 @@ final class IssueListStore {
         }
     }
 
-    /// Loads a source: one account with pagination, or every account merged by update time.
-    func load(_ source: Source, session: Session, search: String, filters: ListFilters) async {
+    /// Loads the filters: one account with pagination, or every account merged in the chosen order.
+    func load(_ f: ListFilters, session: Session) async {
         generation += 1
         let gen = generation
         nextToken = nil
         single = nil
-        // Unified sources run one query per account; Starred's differs per account, everything else is the same.
-        let queries: [(AccountState, String)] = session.states.compactMap { st in
-            guard case .starred = source else { return (st, source.jql(search: search, filters: filters)) }
+        sort = f.sort
+        let states = f.account.map { id in session.states.filter { $0.id == id } } ?? session.states
+        // One query per account. The Starred scope lists each account's own stars and skips accounts without any.
+        let queries: [(AccountState, String)] = states.compactMap { st in
+            guard f.scope == .starred else { return (st, f.jql()) }
             let keys = session.starredTargets.filter { $0.target.accountID == st.id }.map(\.target.key)
-            return keys.isEmpty ? nil : (st, source.jql(search: search, filters: filters, starredKeys: keys))
+            return keys.isEmpty ? nil : (st, f.jql(starredKeys: keys))
         }
-        let jql = source.jql(search: search, filters: filters)
         // Typed searches are not cached: they change with every keystroke and would litter the disk.
-        let cacheable = search.isEmpty
-        let queryKey = source.id + queries.map(\.1).joined()
+        let cacheable = f.text.isEmpty
+        let queryKey = queries.map { "\($0.0.id)|\($0.1)" }.joined()
         let isNewQuery = loadedKey != queryKey
         loadedKey = queryKey
-        switch source {
-        case .all, .starred:
+        if f.account == nil {
             // Each account's rows stay put (from cache on a new query, else what is shown) until its own fresh
             // page lands, so the list never collapses to the fastest site and then grows back.
             var byAccount: [UUID: [ListRow]] = Dictionary(grouping: rows, by: \.state.id)
@@ -120,7 +122,7 @@ final class IssueListStore {
                     }
                 }
                 guard gen == generation else { return }
-                rows = byAccount.values.flatMap { $0 }.sorted(by: Self.byUpdated)
+                rows = merged(byAccount)
             }
             isLoading = true
             // ponytail: a starred issue that was deleted or moved fails its account's whole query; prune stars on error if that bites.
@@ -134,12 +136,12 @@ final class IssueListStore {
                 let fresh = await t.value
                 guard gen == generation else { return }
                 if let fresh { byAccount[id] = fresh }   // a failed site keeps what it had
-                rows = byAccount.values.flatMap { $0 }.sorted(by: Self.byUpdated)
+                rows = merged(byAccount)
             }
             isLoading = false
             if cacheable { Self.prefetchDetails(rows) }
-        default:
-            guard let id = source.accountID, let st = session.state(id) else { rows = []; return }
+        } else {
+            guard let (st, jql) = queries.first else { rows = []; return }
             single = (st, jql, cacheable)
             if isNewQuery {
                 let cached: [Issue] = cacheable ? (await DiskCache.loadAsync(account: st.account, name: "list-" + DiskCache.hash(jql)) ?? []) : []
@@ -148,6 +150,10 @@ final class IssueListStore {
             }
             await fetchPage(gen: gen, replacing: true)
         }
+    }
+
+    private func merged(_ byAccount: [UUID: [ListRow]]) -> [ListRow] {
+        byAccount.values.flatMap { $0 }.sorted { sort.areInOrder($0.issue, $1.issue) }
     }
 
     func loadMore() async {
@@ -174,13 +180,11 @@ final class IssueListStore {
 }
 
 struct IssueListView: View {
-    let source: Source
-    @Binding var selection: IssueTarget?
+    @Binding var filters: ListFilters
     @Environment(Session.self) private var session
     @Environment(\.openWindow) private var openWindow
     @State private var store = IssueListStore()
-    @State private var search = ""
-    @State private var filters = ListFilters()
+    @State private var selection: IssueTarget?
     @State private var suggestions: [(display: String, completion: String)] = []
     @State private var savingFilter = false
     @State private var filterName = ""
@@ -188,19 +192,30 @@ struct IssueListView: View {
     @FocusState private var searchFocused: Bool
     /// One switch for every list: parents show their folded subtasks or only a progress count.
     @AppStorage("subtasksExpanded") private var subtasksExpanded = false
-    private var displayRows: [DisplayRow] { DisplayRow.nest(store.rows, expanded: subtasksExpanded) }
+    private var displayRows: [DisplayRow] { DisplayRow.nest(store.rows, expanded: subtasksExpanded, sort: filters.sort) }
 
-    private var isRawJQL: Bool { Source.looksLikeJQL(search) }
-    private var state: AccountState? { source.accountID.flatMap(session.state) ?? session.states.first }
-    private var loadKey: String { "\(source.id)|\(search)|\(filters)|\(session.reloadTick)|\(source == .starred ? session.stars.count : 0)" }
+    private var isUnified: Bool { filters.account == nil }
+    /// The account the chips describe; the first one stands in for unified lists (search assist, issue types).
+    private var state: AccountState? { filters.account.flatMap(session.state) ?? session.states.first }
+    private var loadKey: String { "\(filters)|\(session.reloadTick)|\(filters.scope == .starred ? session.stars.count : 0)" }
+    /// What the clear button goes back to: the chips reset, the account and the search stay.
+    private var cleared: ListFilters {
+        var f = ListFilters()
+        f.account = filters.account
+        f.text = filters.text
+        return f
+    }
 
     var body: some View {
         List(selection: $selection) {
             ForEach(displayRows) { d in
                 let row = d.row
-                IssueRow(issue: row.issue, site: source.isUnified && session.states.count > 1 ? (row.state.title, row.state.color) : nil,
+                IssueRow(issue: row.issue, site: isUnified && session.states.count > 1 ? (row.state.title, row.state.color) : nil,
                          depth: d.depth, folded: d.children.count, expanded: subtasksExpanded,
                          toggle: d.children.isEmpty ? nil : { subtasksExpanded.toggle() })
+                    .contentShape(.rect)
+                    // A click opens the issue in its own window; the arrow keys only move the selection.
+                    .onTapGesture { openWindow(id: "issue", value: row.target) }
                     .tag(row.target)
                     .onAppear { if d.id == displayRows.last?.id { Task { await store.loadMore() } } }
                     // Drag a row into Slack, a browser or a note as its Jira link.
@@ -215,23 +230,21 @@ struct IssueListView: View {
         .contextMenu(forSelectionType: IssueTarget.self) { targets in
             if let t = targets.first, let row = store.rows.first(where: { $0.target == t }) { rowMenu(row) }
         } primaryAction: { targets in
-            // Double-click (or ↩) moves the issue to a window of its own, like a message in Mail.
             for t in targets { openWindow(id: "issue", value: t) }
-            selection = nil
         }
         .safeAreaInset(edge: .top, spacing: 0) { chips }
         .overlay {
             if !store.isLoading, store.rows.isEmpty {
-                ContentUnavailableView(search.isEmpty && !filters.isActive ? "No issues" : "No matches", systemImage: "tray")
+                ContentUnavailableView(filters.isActive ? "No matches" : "No issues", systemImage: "tray")
             }
         }
         .focusedSceneValue(\.listActions, ListActions(
-            saveFilter: search.isEmpty || source.isUnified ? nil : { filterName = ""; savingFilter = true },
+            saveFilter: filters.isActive ? { filterName = ""; savingFilter = true } : nil,
             openBoard: boardTarget.map { b in { openWindow(id: "board", value: b) } }
         ))
-        .navigationTitle(source.title)
+        .navigationTitle(session.title(for: filters))
         .navigationSubtitle(subtitle)
-        .searchable(text: $search, placement: .toolbar, prompt: "Search, JQL, or paste a Jira link")
+        .searchable(text: $filters.text, placement: .toolbar, prompt: "Search, JQL, or paste a Jira link")
         .searchFocused($searchFocused)
         .searchSuggestions {
             ForEach(suggestions, id: \.completion) { s in
@@ -239,14 +252,15 @@ struct IssueListView: View {
             }
         }
         .onSubmit(of: .search) {
-            if let url = URL(string: search), url.scheme?.hasPrefix("http") == true, Session.issueKey(in: url) != nil {
+            if let url = URL(string: filters.text), url.scheme?.hasPrefix("http") == true, Session.issueKey(in: url) != nil {
                 session.open(url: url)
-                search = ""
+                filters.text = ""
                 return
             }
-            session.recordSearch(search)
+            session.recordSearch(filters.text)
         }
         .toolbar(id: "list") {
+            NewIssueToolbarItem()
             ToolbarItem(id: "board") {
                 if let b = boardTarget {
                     Button { openWindow(id: "board", value: b) } label: { Label("Board", systemImage: "rectangle.split.3x1") }
@@ -254,25 +268,26 @@ struct IssueListView: View {
                 }
             }
             ToolbarItem(id: "saveFilter") {
-                Button { filterName = ""; savingFilter = true } label: { Label("Save as Filter", systemImage: "bookmark") }
-                    .help(source.isUnified ? "Pick an account's list to save a filter" : "Save this search as a favourite filter (⌘S)")
-                    .disabled(search.isEmpty || source.isUnified)
+                Button { filterName = ""; savingFilter = true } label: { Label("Save Filter", systemImage: "bookmark") }
+                    .help("Keep these filters and search in the sidebar (⌘S)")
+                    .disabled(!filters.isActive)
             }
         }
-        .alert("Save as Filter", isPresented: $savingFilter) {
+        .alert("Save Filter", isPresented: $savingFilter) {
             TextField("Filter name", text: $filterName)
-            Button("Save") { saveFilter() }.disabled(filterName.trimmingCharacters(in: .whitespaces).isEmpty)
+            Button("Save") { session.addPreset(name: filterName.trimmingCharacters(in: .whitespaces), filters: filters) }
+                .disabled(filterName.trimmingCharacters(in: .whitespaces).isEmpty)
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("The filter is starred and shows up in the sidebar on every device.")
+            Text("The current chips, search and sort order, under \(filters.account.flatMap(session.state)?.title ?? "All Accounts") in the sidebar.")
         }
         .task(id: loadKey) {
             // Debounce typing; JQL is evaluated server-side.
-            if !search.isEmpty { try? await Task.sleep(for: .milliseconds(350)) }
+            if !filters.text.isEmpty { try? await Task.sleep(for: .milliseconds(350)) }
             guard !Task.isCancelled else { return }
-            await store.load(source, session: session, search: search, filters: filters)
+            await store.load(filters, session: session)
         }
-        .task(id: search) { await updateSuggestions() }
+        .task(id: filters.text) { await updateSuggestions() }
         .onChange(of: session.focusSearchRequested) { _, on in
             if on { searchFocused = true; session.focusSearchRequested = false }
         }
@@ -280,8 +295,8 @@ struct IssueListView: View {
     }
 
     private var boardTarget: BoardTarget? {
-        if case .project(let p, let id) = source { return BoardTarget(accountID: id, projectKey: p.key) }
-        return nil
+        guard let id = filters.account, let key = filters.project else { return nil }
+        return BoardTarget(accountID: id, projectKey: key)
     }
 
     private var subtitle: String {
@@ -305,46 +320,80 @@ struct IssueListView: View {
 
     // MARK: Chips
 
-    private var typeNames: [String] { state?.issueTypeNames ?? [] }
+    private func setAccount(_ id: UUID?) {
+        filters.account = id
+        // Projects, favourite filters and issue types belong to one site.
+        filters.project = nil
+        filters.jiraFilter = nil
+        filters.type = nil
+    }
 
     private var chips: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 6) {
-                FilterChip(id: "status", title: filters.status.rawValue, active: filters.status != .any, menus: chipMenus,
-                           items: ListFilters.Status.allCases.map { s in ChipItem(s.rawValue, selected: filters.status == s) { filters.status = s } })
-                FilterChip(id: "assignee", title: filters.assignee.rawValue, active: filters.assignee != .any, menus: chipMenus,
-                           items: ListFilters.Assignee.allCases.map { a in ChipItem(a.rawValue, selected: filters.assignee == a) { filters.assignee = a } })
-                if !source.isUnified { // issue types differ per site, so the chip only makes sense inside one account
-                    FilterChip(id: "type", title: filters.type ?? "Any type", active: filters.type != nil, menus: chipMenus,
-                               items: [ChipItem("Any type", selected: filters.type == nil) { filters.type = nil }, .separator]
-                                   + typeNames.map { t in ChipItem(t, selected: filters.type == t) { filters.type = t } })
+        HStack(spacing: 6) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    if session.states.count > 1 {
+                        FilterChip(id: "account", title: filters.account.flatMap(session.state)?.title ?? "All accounts", active: filters.account != nil, menus: chipMenus,
+                                   items: [ChipItem("All accounts", selected: filters.account == nil) { setAccount(nil) }, .separator]
+                                       + session.states.map { st in ChipItem(st.title, selected: filters.account == st.id) { setAccount(st.id) } })
+                    }
+                    if let st = filters.account.flatMap(session.state) {
+                        let projects = st.starredProjects + st.projects.filter { !st.starred.contains($0.key) }
+                        FilterChip(id: "project", title: projects.first { $0.key == filters.project }?.name ?? filters.project ?? "Any project", active: filters.project != nil, menus: chipMenus,
+                                   items: [ChipItem("Any project", selected: filters.project == nil) { filters.project = nil }, .separator]
+                                       + projects.map { p in ChipItem(p.name, selected: filters.project == p.key) { filters.project = p.key } })
+                    }
+                    if let f = filters.jiraFilter {
+                        FilterChip(id: "jiraFilter", title: f.name, active: true, menus: chipMenus,
+                                   items: [ChipItem("Clear filter", selected: false) { filters.jiraFilter = nil }])
+                    }
+                    FilterChip(id: "scope", title: filters.scope.rawValue, active: filters.scope != .all, menus: chipMenus,
+                               items: ListFilters.Scope.allCases.map { s in ChipItem(s.rawValue, selected: filters.scope == s) { filters.scope = s } })
+                    FilterChip(id: "status", title: filters.status.rawValue, active: filters.status != .any, menus: chipMenus,
+                               items: ListFilters.Status.allCases.map { s in ChipItem(s.rawValue, selected: filters.status == s) { filters.status = s } })
+                    FilterChip(id: "assignee", title: filters.assignee.rawValue, active: filters.assignee != .any, menus: chipMenus,
+                               items: ListFilters.Assignee.allCases.map { a in ChipItem(a.rawValue, selected: filters.assignee == a) { filters.assignee = a } })
+                    FilterChip(id: "reporter", title: filters.reporter.rawValue, active: filters.reporter != .any, menus: chipMenus,
+                               items: ListFilters.Reporter.allCases.map { r in ChipItem(r.rawValue, selected: filters.reporter == r) { filters.reporter = r } })
+                    if let st = filters.account.flatMap(session.state) { // issue types differ per site, so the chip only makes sense inside one account
+                        FilterChip(id: "type", title: filters.type ?? "Any type", active: filters.type != nil, menus: chipMenus,
+                                   items: [ChipItem("Any type", selected: filters.type == nil) { filters.type = nil }, .separator]
+                                       + st.issueTypeNames.map { t in ChipItem(t, selected: filters.type == t) { filters.type = t } })
+                    }
+                    FilterChip(id: "updated", title: filters.updated.rawValue, active: filters.updated != .any, menus: chipMenus,
+                               items: ListFilters.Updated.allCases.map { u in ChipItem(u.rawValue, selected: filters.updated == u) { filters.updated = u } })
+                    if filters != cleared {
+                        Button { filters = cleared } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }
+                            .buttonStyle(.plain).help("Clear filters")
+                    }
                 }
-                FilterChip(id: "updated", title: filters.updated.rawValue, active: filters.updated != .any, menus: chipMenus,
-                           items: ListFilters.Updated.allCases.map { u in ChipItem(u.rawValue, selected: filters.updated == u) { filters.updated = u } })
-                if filters.isActive {
-                    Button { filters = ListFilters() } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }
-                        .buttonStyle(.plain).help("Clear filters")
-                }
+                .padding(.horizontal, 10).padding(.vertical, 8)
             }
-            .padding(.horizontal, 10).padding(.vertical, 8)
+            FilterChip(id: "sort", title: filters.sort.field.rawValue, symbol: filters.sort.descending ? "arrow.down" : "arrow.up", active: false, menus: chipMenus,
+                       items: ListFilters.Sort.Field.allCases.map { f in ChipItem(f.rawValue, selected: filters.sort.field == f) { filters.sort.field = f } }
+                           + [.separator,
+                              ChipItem("Ascending", selected: !filters.sort.descending) { filters.sort.descending = false },
+                              ChipItem("Descending", selected: filters.sort.descending) { filters.sort.descending = true }])
+                .help("Sort order")
+                .padding(.trailing, 10)
         }
         .background(.bar)
         .overlay(alignment: .bottom) { Divider() }
-        .disabled(isRawJQL)
-        .opacity(isRawJQL ? 0.4 : 1)
-        .help(isRawJQL ? "Filters don't apply to raw JQL" : "")
+        .disabled(filters.isRawJQL)
+        .opacity(filters.isRawJQL ? 0.4 : 1)
+        .help(filters.isRawJQL ? "Filters don't apply to raw JQL" : "")
     }
 
     // MARK: Search assist
 
     private func updateSuggestions() async {
-        let q = search
+        let q = filters.text
         if q.isEmpty {
             suggestions = session.recentSearches.map { ($0, $0) }
             return
         }
         let fields = state?.jqlFields ?? []
-        guard isRawJQL || fields.contains(where: { q.lowercased().hasPrefix($0.value.lowercased()) }) else { suggestions = []; return }
+        guard filters.isRawJQL || fields.contains(where: { q.lowercased().hasPrefix($0.value.lowercased()) }) else { suggestions = []; return }
         // "status = In" → values for status; "sta" → field names.
         if let m = q.firstMatch(of: /(.*?)([A-Za-z_][\w\[\]. ]*?)\s*(=|!=|~|!~|>=|<=|>|<|\bin\b|\bnot in\b|\bis not\b|\bis\b)\s*("?)([^"]*)$/.ignoresCase()) {
             let field = String(m.2).trimmingCharacters(in: .whitespaces)
@@ -364,20 +413,6 @@ struct IssueListView: View {
             .filter { $0.value.lowercased().hasPrefix(word) }
             .prefix(8)
             .map { ($0.displayName, head + $0.value + " ") }
-    }
-
-    private func saveFilter() {
-        guard let st = state, let id = source.accountID else { return }
-        let name = filterName.trimmingCharacters(in: .whitespaces)
-        let jql = source.jql(search: search, filters: filters)
-        Task {
-            do {
-                let f = try await st.client.createFilter(name: name, jql: jql)
-                search = ""
-                await st.refreshCatalog()
-                session.navigationRequest = .filter(f, id)
-            } catch { store.error = error.localizedDescription }
-        }
     }
 }
 
@@ -551,6 +586,7 @@ final class ChipMenuController: NSObject, NSMenuDelegate {
 struct FilterChip: View {
     let id: String
     let title: String
+    var symbol: String?
     let active: Bool
     let menus: ChipMenuController
     let items: [ChipItem]
@@ -558,6 +594,7 @@ struct FilterChip: View {
     var body: some View {
         Button { menus.toggle(id) } label: {
             HStack(spacing: 3) {
+                if let symbol { Image(systemName: symbol).font(.system(size: 9, weight: .bold)) }
                 Text(title).lineLimit(1)
                 Image(systemName: "chevron.down").font(.system(size: 8, weight: .bold))
             }

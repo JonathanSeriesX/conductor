@@ -110,8 +110,8 @@ final class AccountState: Identifiable {
 
     /// Warms every smart list so each sidebar shortcut opens from disk, and the unified lists with it.
     func prefetchLists() async {
-        let tasks = Smart.allCases.map { smart in
-            let jql = Source.smart(smart, id).jql(search: "")
+        let tasks = Smart.allCases.filter { $0 != .starred }.map { smart in
+            let jql = smart.filters(account: id).jql()
             return Task { @MainActor in
                 guard let page = try? await IssueListStore.fetch(jql: jql, state: self, cache: true) else { return }
                 if smart == .assigned { IssueListStore.prefetchDetails(page.issues.map { ListRow(issue: $0, state: self) }) }
@@ -170,7 +170,7 @@ final class Session {
 
     /// One-shot requests from menu commands, URLs and other windows; the root view consumes them.
     var createIssueRequested = false
-    var navigationRequest: Source?
+    var navigationRequest: ListFilters?
     var pendingOpen: IssueTarget?
     var focusSearchRequested = false
     var reloadTick = 0
@@ -295,27 +295,74 @@ final class Session {
         }
     }
 
-    // MARK: Navigation helpers
+    // MARK: Sidebar presets
 
-    /// The smart list to show for a shortcut: unified when several accounts are signed in.
-    func source(for smart: Smart) -> Source? {
-        if states.count > 1, smart != .recent { return .all(smart) }
-        return states.first.map { .smart(smart, $0.id) }
+    /// Filters the user saved from the list, shown in the sidebar under their account (or All Accounts).
+    private(set) var customPresets: [CustomPreset] = (try? JSONDecoder().decode([CustomPreset].self, from: UserDefaults.standard.data(forKey: "customPresets") ?? Data())) ?? []
+    /// Built-in entries the user hid; Settings brings them all back.
+    private(set) var hiddenPresets: Set<String> = Set(UserDefaults.standard.stringArray(forKey: "hiddenPresets") ?? [])
+
+    /// The list a Go menu shortcut opens: unified when several accounts are signed in.
+    func filters(for smart: Smart) -> ListFilters? {
+        if states.count > 1, smart != .recent { return smart.filters(account: nil) }
+        return states.first.map { smart.filters(account: $0.id) }
     }
 
-    /// Resolves a `Source.id` once the catalog is loaded.
-    func source(for id: String) -> Source? {
-        let parts = id.split(separator: ":", maxSplits: 2).map(String.init)
-        guard parts.count >= 2 else { return nil }
-        if parts[0] == "all" { return Smart(rawValue: parts[1]).map(Source.all) }
-        if parts == ["local", "starred"] { return .starred }
-        guard let uuid = UUID(uuidString: parts[0]), let st = state(uuid) else { return nil }
-        switch parts[1] {
-        case "project": return parts.count == 3 ? st.projects.first { $0.key == parts[2] }.map { .project($0, uuid) } : nil
-        case "filter": return parts.count == 3 ? st.filters.first { $0.id == parts[2] }.map { .filter($0, uuid) } : nil
-        default: return Smart(rawValue: parts[1]).map { .smart($0, uuid) }
+    /// One sidebar section's entries: the built-in lists, the user's own, and an account's Jira favourite filters.
+    func presets(account st: AccountState?) -> [Preset] {
+        let id = st?.id
+        let prefix = id?.uuidString ?? "all"
+        // Recently Viewed stays per account: Jira's history can't be merged across sites.
+        var list = Smart.allCases.filter { st != nil || $0 != .recent }
+            .map { Preset(id: "\(prefix):\($0.rawValue)", name: $0.title, symbol: $0.symbol, filters: $0.filters(account: id)) }
+        list += customPresets.filter { $0.filters.account == id }
+            .map { Preset(id: $0.id.uuidString, name: $0.name, symbol: "bookmark", filters: $0.filters, custom: true) }
+        if let st {
+            list += st.filters.map { f in
+                var fl = ListFilters()
+                fl.account = st.id
+                fl.jiraFilter = f
+                fl.status = .any   // the filter's own JQL decides what shows
+                return Preset(id: "\(prefix):filter:\(f.id)", name: f.name, symbol: "line.3.horizontal.decrease.circle", filters: fl)
+            }
         }
+        return list.filter { !hiddenPresets.contains($0.id) }
     }
+
+    /// The sidebar entry these filters came from, for the window title.
+    func title(for f: ListFilters) -> String {
+        if let key = f.project, let st = f.account.flatMap(state) { return st.projects.first { $0.key == key }?.name ?? key }
+        return (presets(account: nil) + states.flatMap { presets(account: $0) }).first { $0.filters == f }?.name ?? "Issues"
+    }
+
+    func addPreset(name: String, filters: ListFilters) {
+        customPresets.append(CustomPreset(id: UUID(), name: name, filters: filters))
+        savePresets()
+    }
+
+    func renamePreset(_ id: String, to name: String) {
+        let name = name.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty, let i = customPresets.firstIndex(where: { $0.id.uuidString == id }) else { return }
+        customPresets[i].name = name
+        savePresets()
+    }
+
+    func removePreset(_ id: String) {
+        customPresets.removeAll { $0.id.uuidString == id }
+        savePresets()
+    }
+
+    func hidePreset(_ id: String) {
+        hiddenPresets.insert(id)
+        UserDefaults.standard.set(Array(hiddenPresets).sorted(), forKey: "hiddenPresets")
+    }
+
+    func showHiddenPresets() {
+        hiddenPresets = []
+        UserDefaults.standard.removeObject(forKey: "hiddenPresets")
+    }
+
+    private func savePresets() { UserDefaults.standard.set(try? JSONEncoder().encode(customPresets), forKey: "customPresets") }
 
     func isStarred(_ t: IssueTarget) -> Bool {
         guard let host = state(t.accountID)?.host else { return false }
@@ -387,6 +434,12 @@ final class Session {
         if let v = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "selectedIssue" })?.value { return v.uppercased() }
         return nil
     }
+}
+
+struct CustomPreset: Codable, Identifiable {
+    let id: UUID
+    var name: String
+    var filters: ListFilters
 }
 
 /// Keyed by host rather than account id: ids of accounts from the environment change every launch.

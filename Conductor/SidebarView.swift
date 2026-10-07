@@ -1,135 +1,87 @@
 import SwiftUI
 
-/// The four lists every account has. Unified across accounts, or per account.
-enum Smart: String, CaseIterable, Codable {
-    case assigned, reported, recent, watching
+/// The one query behind the list. Every sidebar entry is a preset of it; the chips edit it in place.
+struct ListFilters: Hashable, Codable {
+    enum Scope: String, CaseIterable, Codable { case all = "Everything", starred = "Starred", recent = "Recently viewed", watching = "Watching" }
+    enum Status: String, CaseIterable, Codable { case any = "Any status", open = "Open", todo = "To Do", inProgress = "In Progress", done = "Done" }
+    enum Assignee: String, CaseIterable, Codable { case any = "Any assignee", me = "Assigned to me", unassigned = "Unassigned" }
+    enum Reporter: String, CaseIterable, Codable { case any = "Any reporter", me = "Reported by me" }
+    enum Updated: String, CaseIterable, Codable { case any = "Any time", today = "Today", week = "This week", month = "This month" }
 
-    var title: String {
-        switch self {
-        case .assigned: "Assigned to Me"
-        case .reported: "Reported by Me"
-        case .recent: "Recently Viewed"
-        case .watching: "Watching"
+    struct Sort: Hashable, Codable {
+        enum Field: String, CaseIterable, Codable {
+            case updated = "Updated", created = "Created", viewed = "Last viewed", due = "Due date", priority = "Priority", key = "Key"
+            var jql: String {
+                switch self {
+                case .updated: "updated"
+                case .created: "created"
+                case .viewed: "lastViewed"
+                case .due: "duedate"
+                case .priority: "priority"
+                case .key: "key"
+                }
+            }
+        }
+        var field: Field = .updated
+        var descending = true
+        var clause: String { "\(field.jql) \(descending ? "DESC" : "ASC")" }
+
+        /// Client-side counterpart of `clause`, for merging pages from several sites into one list.
+        func areInOrder(_ a: Issue, _ b: Issue) -> Bool {
+            let r: ComparisonResult
+            switch field {
+            case .updated, .viewed: r = (a.fields.updated ?? .distantPast).compare(b.fields.updated ?? .distantPast)
+            case .created: r = (a.fields.created ?? .distantPast).compare(b.fields.created ?? .distantPast)
+            case .due: r = (a.fields.duedate ?? "").compare(b.fields.duedate ?? "")   // "2026-10-31": sorts as text
+            case .priority:
+                // Jira's priority ids count up from the highest, so "priority DESC" is the lowest id first.
+                let (pa, pb) = (Int(a.fields.priority?.id ?? "") ?? .max, Int(b.fields.priority?.id ?? "") ?? .max)
+                r = pa == pb ? .orderedSame : pa < pb ? .orderedDescending : .orderedAscending
+            case .key: r = a.key.localizedStandardCompare(b.key)
+            }
+            if r == .orderedSame { return a.key < b.key }
+            return descending ? r == .orderedDescending : r == .orderedAscending
         }
     }
 
-    var symbol: String {
-        switch self {
-        case .assigned: "person.crop.circle"
-        case .reported: "square.and.pencil"
-        case .recent: "clock"
-        case .watching: "eye"
-        }
-    }
+    /// nil: every signed-in account, with a site badge on each row.
+    var account: UUID?
+    /// A project key and a Jira favourite filter: both belong to one account, so they clear when the account changes.
+    var project: String?
+    var jiraFilter: Filter?
+    var scope: Scope = .all
+    /// Every list starts on Open unless the Hide Done setting is off; the chip changes it per list.
+    var status: Status = (UserDefaults.standard.object(forKey: "hideDone") as? Bool ?? true) ? .open : .any
+    var assignee: Assignee = .any
+    var reporter: Reporter = .any
+    var type: String?
+    var updated: Updated = .any
+    var sort = Sort()
+    /// The search box: free text, an issue key, or raw JQL.
+    var text = ""
 
-    var whereClause: String {
-        switch self {
-        case .assigned: "assignee = currentUser()"
-        case .reported: "reporter = currentUser()"
-        case .recent: "issuekey IN issueHistory()"
-        case .watching: "watcher = currentUser()"
-        }
-    }
-
-    var orderClause: String {
-        switch self {
-        case .reported: "created DESC"
-        case .recent: "lastViewed DESC"
-        default: "updated DESC"
-        }
-    }
-}
-
-enum Source: Hashable {
-    case all(Smart)
-    /// Issues starred in Conductor, across accounts.
-    case starred
-    case smart(Smart, UUID)
-    case project(Project, UUID)
-    case filter(Filter, UUID)
-
-    var title: String {
-        switch self {
-        case .all(let s): s.title
-        case .starred: "Starred"
-        case .smart(let s, _): s.title
-        case .project(let p, _): p.name
-        case .filter(let f, _): f.name
-        }
-    }
-
-    /// Account the list belongs to; nil for unified lists.
-    var accountID: UUID? {
-        switch self {
-        case .all, .starred: nil
-        case .smart(_, let id), .project(_, let id), .filter(_, let id): id
-        }
-    }
-
-    var isUnified: Bool { accountID == nil }
-
-    /// Stable string for scene restoration and settings.
-    var id: String {
-        switch self {
-        case .all(let s): "all:\(s.rawValue)"
-        case .starred: "local:starred"
-        case .smart(let s, let id): "\(id):\(s.rawValue)"
-        case .project(let p, let id): "\(id):project:\(p.key)"
-        case .filter(let f, let id): "\(id):filter:\(f.id)"
-        }
-    }
-
-    private func whereClause(starredKeys: [String]) -> String {
-        switch self {
-        case .all(let s), .smart(let s, _): s.whereClause
-        case .starred: "issuekey IN (\(starredKeys.map { "\"\($0)\"" }.joined(separator: ", ")))"
-        case .project(let p, _): "project = \"\(p.key)\"" // keys like IN or AND are JQL reserved words, hence the quotes
-        case .filter(let f, _): "filter = \(f.id)"
-        }
-    }
-
-    private var orderClause: String {
-        switch self {
-        case .all(let s), .smart(let s, _): s.orderClause
-        default: "updated DESC"
-        }
-    }
+    var isActive: Bool { self != ListFilters() }
+    var isRawJQL: Bool { Self.looksLikeJQL(text) }
 
     static func looksLikeJQL(_ q: String) -> Bool {
         q.range(of: #"(?i)(=|~|\bin\b|\bis\b|order by)"#, options: .regularExpression) != nil
     }
 
-    /// JQL for this source on one account, with the search box contents and filter chips applied.
-    /// `starredKeys` are that account's starred issues, for `.starred`.
-    func jql(search: String, filters: ListFilters = ListFilters(), starredKeys: [String] = []) -> String {
-        let q = search.trimmingCharacters(in: .whitespacesAndNewlines)
+    /// JQL for one account. `starredKeys` are that account's starred issues, for the Starred scope.
+    func jql(starredKeys: [String] = []) -> String {
+        let q = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if Self.looksLikeJQL(q) { return q }
         if q.range(of: #"^[A-Za-z][A-Za-z0-9_]+-\d+$"#, options: .regularExpression) != nil { return "key = \"\(q.uppercased())\"" }
-        var clauses = [whereClause(starredKeys: starredKeys)] + filters.clauses
-        if !q.isEmpty {
-            let escaped = q.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
-            clauses.append("text ~ \"\(escaped)\"")
-        }
-        return clauses.joined(separator: " AND ") + " ORDER BY " + orderClause
-    }
-}
-
-/// Quick filters shown as chips above the issue list.
-struct ListFilters: Equatable {
-    enum Status: String, CaseIterable { case any = "Any status", open = "Open", todo = "To Do", inProgress = "In Progress", done = "Done" }
-    enum Assignee: String, CaseIterable { case any = "Anyone", me = "Me", unassigned = "Unassigned" }
-    enum Updated: String, CaseIterable { case any = "Any time", today = "Today", week = "This week", month = "This month" }
-
-    /// Every list starts on Open unless the Hide Done setting is off; the chip changes it per list.
-    var status: Status = (UserDefaults.standard.object(forKey: "hideDone") as? Bool ?? true) ? .open : .any
-    var assignee: Assignee = .any
-    var type: String?
-    var updated: Updated = .any
-
-    var isActive: Bool { self != ListFilters() }
-
-    var clauses: [String] {
         var c: [String] = []
+        if let f = jiraFilter { c.append("filter = \(f.id)") }
+        // Keys like IN or AND are JQL reserved words, hence the quotes.
+        if let project { c.append("project = \"\(project)\"") }
+        switch scope {
+        case .all: break
+        case .starred: c.append("issuekey IN (\(starredKeys.map { "\"\($0)\"" }.joined(separator: ", ")))")
+        case .recent: c.append("issuekey IN issueHistory()")
+        case .watching: c.append("watcher = currentUser()")
+        }
         switch status {
         case .any: break
         case .open: c.append("statusCategory != Done")
@@ -140,6 +92,7 @@ struct ListFilters: Equatable {
         case .me: c.append("assignee = currentUser()")
         case .unassigned: c.append("assignee IS EMPTY")
         }
+        if reporter == .me { c.append("reporter = currentUser()") }
         if let type { c.append("issuetype = \"\(type)\"") }
         switch updated {
         case .any: break
@@ -147,33 +100,79 @@ struct ListFilters: Equatable {
         case .week: c.append("updated >= startOfWeek()")
         case .month: c.append("updated >= startOfMonth()")
         }
-        return c
+        if !q.isEmpty {
+            let escaped = q.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
+            c.append("text ~ \"\(escaped)\"")
+        }
+        return (c.isEmpty ? "" : c.joined(separator: " AND ") + " ") + "ORDER BY " + sort.clause
     }
+}
+
+/// The built-in sidebar entries. Unified across accounts, or per account.
+enum Smart: String, CaseIterable, Codable {
+    case starred, assigned, reported, recent, watching
+
+    var title: String {
+        switch self {
+        case .starred: "Starred"
+        case .assigned: "Assigned to Me"
+        case .reported: "Reported by Me"
+        case .recent: "Recently Viewed"
+        case .watching: "Watching"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .starred: "star"
+        case .assigned: "person.crop.circle"
+        case .reported: "square.and.pencil"
+        case .recent: "clock"
+        case .watching: "eye"
+        }
+    }
+
+    func filters(account: UUID?) -> ListFilters {
+        var f = ListFilters()
+        f.account = account
+        switch self {
+        case .starred: f.scope = .starred; f.status = .any   // a star is a bookmark: Done ones stay listed
+        case .assigned: f.assignee = .me
+        case .reported: f.reporter = .me; f.sort.field = .created
+        case .recent: f.scope = .recent; f.status = .any; f.sort.field = .viewed
+        case .watching: f.scope = .watching
+        }
+        return f
+    }
+}
+
+/// A sidebar entry: a name for one `ListFilters`.
+struct Preset: Identifiable, Hashable {
+    let id: String
+    let name: String
+    let symbol: String
+    let filters: ListFilters
+    /// Saved by the user from the list, so it can be renamed and deleted; built-in ones can only be hidden.
+    var custom = false
 }
 
 struct SidebarView: View {
     @Environment(Session.self) private var session
     @Environment(\.openWindow) private var openWindow
-    @Binding var selection: Source?
+    @Environment(\.appearsActive) private var active
+    @Binding var selection: ListFilters?
     @State private var showAddAccount = false
     @State private var collapsed: Set<UUID> = []
     @State private var expandedAllProjects: Set<UUID> = []
     @State private var renaming: AccountState?
+    @State private var renamingPreset: Preset?
     @State private var newTitle = ""
 
     var body: some View {
         List(selection: $selection) {
-            if session.states.count > 1 || !session.stars.isEmpty {
-                Section(session.states.count > 1 ? "All Accounts" : "Conductor") {
-                    if !session.stars.isEmpty {
-                        Label { Text("Starred") } icon: { Image(systemName: "star.fill").foregroundStyle(.yellow) }.tag(Source.starred)
-                    }
-                    if session.states.count > 1 {
-                        // Recently Viewed stays per account: Jira's history can't be merged across sites.
-                        ForEach(Smart.allCases.filter { $0 != .recent }, id: \.self) { s in
-                            Label(s.title, systemImage: s.symbol).tag(Source.all(s))
-                        }
-                    }
+            if session.states.count > 1 {
+                Section("All Accounts") {
+                    ForEach(session.presets(account: nil)) { presetRow($0, color: nil) }
                 }
             }
             ForEach(session.states) { st in
@@ -242,6 +241,11 @@ struct SidebarView: View {
         } message: {
             Text("Shown as the section title in the sidebar.")
         }
+        .alert("Rename Filter", isPresented: Binding(get: { renamingPreset != nil }, set: { if !$0 { renamingPreset = nil } })) {
+            TextField("Name", text: $newTitle)
+            Button("Rename") { if let p = renamingPreset { session.renamePreset(p.id, to: newTitle) }; renamingPreset = nil }
+            Button("Cancel", role: .cancel) { renamingPreset = nil }
+        }
         #if DEBUG
         .task {
             guard ProcessInfo.processInfo.environment["CONDUCTOR_SHOW"] == "addAccount" else { return }
@@ -253,12 +257,7 @@ struct SidebarView: View {
 
     @ViewBuilder
     private func accountContent(_ st: AccountState) -> some View {
-        ForEach(Smart.allCases, id: \.self) { s in
-            tinted(s.title, symbol: s.symbol, color: st.color).tag(Source.smart(s, st.id))
-        }
-        ForEach(st.filters) { f in
-            tinted(f.name, symbol: "line.3.horizontal.decrease.circle", color: st.color).tag(Source.filter(f, st.id))
-        }
+        ForEach(session.presets(account: st)) { presetRow($0, color: st.color) }
         ForEach(st.starredProjects) { projectRow($0, st) }
         DisclosureGroup(isExpanded: Binding(
             get: { expandedAllProjects.contains(st.id) },
@@ -270,9 +269,26 @@ struct SidebarView: View {
         }
     }
 
-    /// A sidebar label whose icon carries the account colour; the text stays as it is.
-    private func tinted(_ title: String, symbol: String, color: Color) -> some View {
-        Label { Text(title) } icon: { Image(systemName: symbol).foregroundStyle(color) }
+    private func presetRow(_ p: Preset, color: Color?) -> some View {
+        tinted(p.name, symbol: p.symbol, color: color)
+            .tag(p.filters)
+            .contextMenu {
+                if p.custom {
+                    Button("Rename…", systemImage: "pencil") { newTitle = p.name; renamingPreset = p }
+                    Button("Delete", systemImage: "trash", role: .destructive) { session.removePreset(p.id) }
+                } else {
+                    Button("Hide", systemImage: "eye.slash") { session.hidePreset(p.id) }
+                }
+            }
+    }
+
+    /// A sidebar label whose icon carries the account colour; unified entries take the accent from the system.
+    /// Every icon goes grey with the window, as the system's own do.
+    private func tinted(_ title: String, symbol: String, color: Color?) -> some View {
+        Label { Text(title) } icon: {
+            if let color { Image(systemName: symbol).foregroundStyle(active ? color : .secondary) }
+            else { Image(systemName: symbol) }
+        }
     }
 
     private func expandedBinding(_ st: AccountState) -> Binding<Bool> {
@@ -281,20 +297,24 @@ struct SidebarView: View {
 
     private func projectRow(_ p: Project, _ st: AccountState) -> some View {
         let starred = st.starred.contains(p.key)
+        var filters = ListFilters()
+        filters.account = st.id
+        filters.project = p.key
         return Label {
             Text(p.name)
         } icon: {
             RemoteImage(url: p.avatar, placeholder: "folder")
                 .frame(width: 18, height: 18)
                 .clipShape(.rect(cornerRadius: 4))
+                .grayscale(active ? 0 : 1).opacity(active ? 1 : 0.5)
         }
-        .tag(Source.project(p, st.id))
+        .tag(filters)
         .onTapGesture(count: 2) { openWindow(id: "board", value: BoardTarget(accountID: st.id, projectKey: p.key)) }
         .contextMenu {
             Button(starred ? "Unstar" : "Star", systemImage: starred ? "star.slash" : "star") { st.toggleStar(p) }
             Button("Open Board", systemImage: "rectangle.split.3x1") { openWindow(id: "board", value: BoardTarget(accountID: st.id, projectKey: p.key)) }
             Button("Open Board on Web", systemImage: "safari") { NSWorkspace.shared.open(st.client.boardURL(project: p.key)) }
-            Button("New Issue in \(p.name)…", systemImage: "plus") { selection = .project(p, st.id); session.createIssueRequested = true }
+            Button("New Issue in \(p.name)…", systemImage: "plus") { selection = filters; session.createIssueRequested = true }
         }
     }
 }

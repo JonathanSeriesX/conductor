@@ -3,31 +3,59 @@ import XCTest
 
 final class JQLTests: XCTestCase {
     let account = UUID()
-    let project = Project(id: "1", key: "IN", name: "Infrastructure", projectTypeKey: nil, avatarUrls: nil, favourite: nil)
+    /// Chips all off, whatever the Hide Done setting says.
+    var blank: ListFilters { var f = ListFilters(); f.status = .any; return f }
 
     func testProjectKeysAreQuoted() {
         // IN is a JQL reserved word; unquoted it fails server-side.
-        XCTAssertEqual(Source.project(project, account).jql(search: "", filters: ListFilters(status: .any)), "project = \"IN\" ORDER BY updated DESC")
+        var f = blank
+        f.account = account
+        f.project = "IN"
+        XCTAssertEqual(f.jql(), "project = \"IN\" ORDER BY updated DESC")
     }
 
     func testFreeTextBecomesTextSearch() {
-        XCTAssertEqual(Source.smart(.assigned, account).jql(search: "billing \"engine\""),
-                       "assignee = currentUser() AND statusCategory != Done AND text ~ \"billing \\\"engine\\\"\" ORDER BY updated DESC")
+        var f = Smart.assigned.filters(account: account)
+        f.status = .open
+        f.text = "billing \"engine\""
+        XCTAssertEqual(f.jql(), "statusCategory != Done AND assignee = currentUser() AND text ~ \"billing \\\"engine\\\"\" ORDER BY updated DESC")
     }
 
     func testIssueKeyIsLookedUpDirectly() {
-        XCTAssertEqual(Source.all(.recent).jql(search: "es-2284"), "key = \"ES-2284\"")
+        var f = blank
+        f.text = "es-2284"
+        XCTAssertEqual(f.jql(), "key = \"ES-2284\"")
     }
 
     func testRawJQLPassesThrough() {
-        XCTAssertEqual(Source.all(.recent).jql(search: "status = Done order by created"), "status = Done order by created")
+        var f = blank
+        f.text = "status = Done order by created"
+        XCTAssertEqual(f.jql(), "status = Done order by created")
     }
 
-    func testSourceIdsRoundTripShape() {
-        XCTAssertEqual(Source.all(.watching).id, "all:watching")
-        XCTAssertEqual(Source.project(project, account).id, "\(account):project:IN")
-        XCTAssertTrue(Source.all(.assigned).isUnified)
-        XCTAssertEqual(Source.filter(Filter(id: "7", name: "x", jql: ""), account).accountID, account)
+    func testPresetsCarryTheirOwnOrderAndRoundTripThroughJSON() throws {
+        let recent = Smart.recent.filters(account: account)
+        XCTAssertEqual(recent.jql(), "issuekey IN issueHistory() ORDER BY lastViewed DESC")
+        XCTAssertEqual(Smart.reported.filters(account: nil).sort.field, .created)
+        var f = Smart.starred.filters(account: account)
+        f.jiraFilter = Filter(id: "7", name: "x", jql: "")
+        f.type = "Bug"
+        f.sort = .init(field: .priority, descending: false)
+        XCTAssertEqual(try JSONDecoder().decode(ListFilters.self, from: JSONEncoder().encode(f)), f)
+        XCTAssertEqual(f.jql(starredKeys: ["ES-1", "ES-2"]), "filter = 7 AND issuekey IN (\"ES-1\", \"ES-2\") AND issuetype = \"Bug\" ORDER BY priority ASC")
+    }
+
+    func testMergeOrderMatchesTheClause() throws {
+        let decoder = JiraClient(account: Account(site: URL(string: "https://x.atlassian.net")!, email: "e", token: "t")).decoder
+        func issue(_ key: String, priority: String, updated: String) throws -> Issue {
+            try decoder.decode(Issue.self, from: Data(#"{"id":"1","key":"\#(key)","fields":{"summary":"s","updated":"\#(updated)","priority":{"id":"\#(priority)","name":"p"},"status":{"id":"1","name":"To Do","statusCategory":{"key":"new","name":"To Do"}},"issuetype":{"id":"1","name":"Task"}}}"#.utf8))
+        }
+        let a = try issue("ES-9", priority: "3", updated: "2026-10-05T09:00:00.000Z")
+        let b = try issue("ES-10", priority: "1", updated: "2026-10-06T09:00:00.000Z")
+        XCTAssertTrue(ListFilters.Sort(field: .updated, descending: true).areInOrder(b, a))
+        XCTAssertTrue(ListFilters.Sort(field: .updated, descending: false).areInOrder(a, b))
+        XCTAssertTrue(ListFilters.Sort(field: .priority, descending: true).areInOrder(b, a), "DESC is the highest priority (lowest id) first, as in JQL")
+        XCTAssertTrue(ListFilters.Sort(field: .key, descending: false).areInOrder(a, b), "keys compare numerically")
     }
 }
 
@@ -225,19 +253,23 @@ final class MarkdownTests: XCTestCase {
 
 final class FilterAndDurationTests: XCTestCase {
     func testChipsExtendTheQuery() {
-        var f = ListFilters()
+        var f = Smart.recent.filters(account: nil)
         f.status = .inProgress
         f.assignee = .me
         f.type = "Bug"
         f.updated = .week
-        XCTAssertEqual(Source.all(.recent).jql(search: "", filters: f),
-                       "issuekey IN issueHistory() AND statusCategory = \"In Progress\" AND assignee = currentUser() AND issuetype = \"Bug\" AND updated >= startOfWeek() ORDER BY lastViewed DESC")
-        XCTAssertEqual(Source.all(.recent).jql(search: "status = Done", filters: f), "status = Done", "raw JQL ignores chips")
-        f = ListFilters()
+        XCTAssertEqual(f.jql(), "issuekey IN issueHistory() AND statusCategory = \"In Progress\" AND assignee = currentUser() AND issuetype = \"Bug\" AND updated >= startOfWeek() ORDER BY lastViewed DESC")
+        f.text = "status = Done"
+        XCTAssertEqual(f.jql(), "status = Done", "raw JQL ignores chips")
+        f = Smart.assigned.filters(account: nil)
         f.status = .open
-        XCTAssertEqual(Source.all(.assigned).jql(search: "", filters: f), "assignee = currentUser() AND statusCategory != Done ORDER BY updated DESC")
+        XCTAssertEqual(f.jql(), "statusCategory != Done AND assignee = currentUser() ORDER BY updated DESC")
         f.status = .any
-        XCTAssertEqual(Source.all(.assigned).jql(search: "", filters: f), "assignee = currentUser() ORDER BY updated DESC", "Done is a filter, not baked into the list")
+        XCTAssertEqual(f.jql(), "assignee = currentUser() ORDER BY updated DESC", "Done is a filter, not baked into the list")
+        var everything = ListFilters()
+        everything.status = .any
+        everything.sort.descending = false
+        XCTAssertEqual(everything.jql(), "ORDER BY updated ASC", "no chips at all is the whole site")
     }
 
     func testBoardURL() {

@@ -19,12 +19,12 @@ struct ConductorApp: App {
                     Notifier.shared.start(session)
                     UpdateChecker.shared.checkIfDue()
                 }
-                .frame(minWidth: 900, minHeight: 560)
+                .frame(minWidth: 760, minHeight: 560)
         }
         .windowToolbarStyle(.unified)
         // Always present a window at launch, even when restored state has none (e.g. after a test-host run).
         .defaultLaunchBehavior(.presented)
-        .defaultSize(width: 1280, height: 820)
+        .defaultSize(width: 1100, height: 820)
         .handlesExternalEvents(matching: ["*"])
         .commands {
             CommandGroup(replacing: .newItem) {
@@ -62,6 +62,7 @@ struct ConductorApp: App {
     }
 }
 
+/// Sidebar and the one list. Issues open in windows of their own.
 struct RootView: View {
     #if DEBUG
     @MainActor static var debugHooksRan = false
@@ -70,15 +71,14 @@ struct RootView: View {
     @Environment(\.openWindow) private var openWindow
     @Environment(\.openSettings) private var openSettings
     @AppStorage("defaultSource") private var defaultSource = "assigned"
-    @SceneStorage("source") private var storedSource = ""
-    @SceneStorage("issue") private var storedIssue = ""
-    @State private var source: Source?
-    @State private var selected: IssueTarget?
+    @SceneStorage("filters") private var storedFilters = ""
+    @State private var filters = ListFilters()
     @State private var restored = false
 
     private var currentProject: (Project, AccountState)? {
-        if case .project(let p, let id) = source, let st = session.state(id) { return (p, st) }
-        return nil
+        guard let id = filters.account, let st = session.state(id), let key = filters.project,
+              let p = st.projects.first(where: { $0.key == key }) else { return nil }
+        return (p, st)
     }
 
     var body: some View {
@@ -87,34 +87,12 @@ struct RootView: View {
                 ZStack { Backdrop(); ProgressView() }
             } else if session.isSignedIn {
                 NavigationSplitView {
-                    SidebarView(selection: $source)
-                } content: {
-                    if let source {
-                        IssueListView(source: source, selection: $selected)
-                            // Wide enough for every filter chip; at the default window size the issue page gets about half.
-                            .navigationSplitViewColumnWidth(min: 360, ideal: 420)
-                    }
+                    SidebarView(selection: Binding(get: { filters }, set: { if let f = $0 { filters = f } }))
                 } detail: {
-                    if let selected, let st = session.state(selected.accountID) {
-                        IssueDetailView(target: selected, open: { self.selected = $0 })
-                            .environment(\.jira, st)
-                            .id(selected)
-                            // Esc closes the issue, unless a text field wants it (search, comment draft).
-                            .background(WindowEventMonitor(mask: .keyDown) { e in
-                                guard e.keyCode == 53, !(e.window?.firstResponder is NSText) else { return e }
-                                self.selected = nil
-                                return nil
-                            })
-                    } else {
-                        Image(systemName: "ticket").font(.system(size: 56)).foregroundStyle(.quaternary)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                            .background(Backdrop())
-                            .toolbar(id: "issue") { NewIssueToolbarItem() }
-                            .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
-                    }
+                    IssueListView(filters: $filters)
                 }
                 .sheet(isPresented: Bindable(session).createIssueRequested) {
-                    CreateIssueView(defaultProject: currentProject) { selected = $0 }
+                    CreateIssueView(defaultProject: currentProject) { openWindow(id: "issue", value: $0) }
                 }
             } else {
                 LoginView()
@@ -126,17 +104,13 @@ struct RootView: View {
         .onAppear { restoreOnce() }
         .onChange(of: session.states.count) { restoreOnce() }
         .onChange(of: session.isRestoring) { restoreOnce() }
-        .onChange(of: source) { _, new in if let new { storedSource = new.id } }
-        .onChange(of: selected) { _, new in
-            storedIssue = new.map { "\($0.accountID.uuidString)|\($0.key)" } ?? ""
-            if let new { session.recordView(new) }
+        .onChange(of: filters) { _, new in
+            storedFilters = (try? JSONEncoder().encode(new)).flatMap { String(data: $0, encoding: .utf8) } ?? ""
         }
         .onChange(of: session.navigationRequest) { _, req in
-            if let req { source = req; session.navigationRequest = nil }
+            if let req { filters = req; session.navigationRequest = nil }
         }
-        .onChange(of: session.pendingOpen) { _, target in
-            if let target { selected = target; session.pendingOpen = nil; NSApp.activate() }
-        }
+        .onChange(of: session.pendingOpen) { _, target in if let target { open(target) } }
         .onOpenURL { session.open(url: $0) }
         .onContinueUserActivity(CSSearchableItemActionType) { activity in
             if let id = activity.userInfo?[CSSearchableItemActivityIdentifier] as? String { session.open(spotlightID: id) }
@@ -150,7 +124,7 @@ struct RootView: View {
             Self.debugHooksRan = true
             while !session.isSignedIn { try? await Task.sleep(for: .milliseconds(200)) }
             try? await Task.sleep(for: .seconds(1))
-            if let key = env["CONDUCTOR_OPEN"], let st = session.states.first { selected = IssueTarget(accountID: st.id, key: key) }
+            if let key = env["CONDUCTOR_OPEN"], let st = session.states.first { openWindow(id: "issue", value: IssueTarget(accountID: st.id, key: key)) }
             if env["CONDUCTOR_SHOW"] == "create" { session.createIssueRequested = true }
             if env["CONDUCTOR_SHOW"] == "settings" { openSettings() }
             if let show = env["CONDUCTOR_SHOW"], show.hasPrefix("board:"), let st = session.states.first {
@@ -160,22 +134,29 @@ struct RootView: View {
         #endif
     }
 
-    /// Puts the window back where it was, once the catalog can resolve project and filter ids.
+    /// Requests from Spotlight, notifications and links land in an issue window.
+    private func open(_ target: IssueTarget) {
+        openWindow(id: "issue", value: target)
+        session.pendingOpen = nil
+        NSApp.activate()
+    }
+
+    /// Puts the window back on the list it showed, once the accounts are known.
     private func restoreOnce() {
         guard !session.isRestoring, session.isSignedIn else { return }
-        if source == nil || !restored {
+        if !restored {
             restored = true
-            source = session.source(for: storedSource) ?? Smart(rawValue: defaultSource).flatMap(session.source) ?? session.source(for: .assigned)
-            let parts = storedIssue.split(separator: "|", maxSplits: 1).map(String.init)
-            if selected == nil, parts.count == 2, let id = UUID(uuidString: parts[0]), session.state(id) != nil {
-                selected = IssueTarget(accountID: id, key: parts[1])
+            if let data = storedFilters.data(using: .utf8), let f = try? JSONDecoder().decode(ListFilters.self, from: data),
+               f.account.map({ session.state($0) != nil }) ?? true {
+                filters = f
+            } else if let f = session.filters(for: Smart(rawValue: defaultSource) ?? .assigned) {
+                filters = f
             }
         }
         // Requests made before this window existed, e.g. from Spotlight or a notification after the window was closed.
-        if let req = session.navigationRequest { source = req; session.navigationRequest = nil }
-        if let t = session.pendingOpen { selected = t; session.pendingOpen = nil }
-        // An account that signed out takes its list and issue with it.
-        if let s = source, let id = s.accountID, session.state(id) == nil { source = session.source(for: .assigned) }
-        if let sel = selected, session.state(sel.accountID) == nil { selected = nil }
+        if let req = session.navigationRequest { filters = req; session.navigationRequest = nil }
+        if let t = session.pendingOpen { open(t) }
+        // An account that signed out takes its list with it.
+        if let id = filters.account, session.state(id) == nil, let f = session.filters(for: .assigned) { filters = f }
     }
 }
