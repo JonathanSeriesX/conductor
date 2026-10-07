@@ -144,7 +144,15 @@ struct GlassCard<Content: View>: View {
         }
         .padding(18)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .glassEffect(.regular, in: .rect(cornerRadius: 20))
+        .frosted(cornerRadius: 20)
+    }
+}
+
+extension View {
+    /// The sidebar-style frosted surface with a hairline: calmer than lensing glass for content that is read.
+    func frosted(cornerRadius r: CGFloat) -> some View {
+        background(.regularMaterial, in: .rect(cornerRadius: r))
+            .overlay(RoundedRectangle(cornerRadius: r).strokeBorder(.quaternary, lineWidth: 1))
     }
 }
 

@@ -253,28 +253,7 @@ struct IssueListView: View {
 
     @ViewBuilder
     private func rowMenu(_ row: ListRow) -> some View {
-        let key = row.issue.key
-        let url = row.state.client.browseURL(key)
-        let watching = row.issue.fields.watches?.isWatching == true
-        let me = row.state.me?.accountId
-        Button("Open in New Window", systemImage: "macwindow.badge.plus") { openWindow(id: "issue", value: row.target) }
-        Button("Open in Browser", systemImage: "safari") { NSWorkspace.shared.open(url) }
-        Divider()
-        Button("Copy Link", systemImage: "link") { copyToPasteboard(url.absoluteString) }
-        Button("Copy Key", systemImage: "number") { copyToPasteboard(key) }
-        Button("Copy as Markdown", systemImage: "text.quote") { copyToPasteboard(row.state.client.markdownLink(key, summary: row.issue.fields.summary)) }
-        ShareLink(item: url)
-        Divider()
-        let starred = session.isStarred(row.target)
-        Button(starred ? "Unstar" : "Star", systemImage: starred ? "star.slash" : "star") { session.toggleStar(row.target, summary: row.issue.fields.summary) }
-        Button(watching ? "Stop Watching This Issue" : "Watch This Issue", systemImage: watching ? "eye.slash" : "eye") {
-            act { try await row.state.client.watch(key, !watching, me: me) }
-        }
-        if let me, row.issue.fields.assignee?.accountId != me {
-            Button("Assign to Me", systemImage: "person.crop.circle.badge.checkmark") {
-                act { try await row.state.client.assign(key, to: me) }
-            }
-        }
+        IssueMenu(issue: row.issue, state: row.state, write: act)
     }
 
     /// Runs a write, then reloads the list and the open issue so both show the result.
@@ -400,6 +379,42 @@ struct IssueRow: View {
             }
         }
         .padding(.vertical, 4)
+    }
+}
+
+/// The right-click menu for an issue anywhere: list rows and board cards share it.
+struct IssueMenu: View {
+    let issue: Issue
+    let state: AccountState
+    /// Runs a write and refreshes whatever the owner shows.
+    var write: (@escaping () async throws -> Void) -> Void
+    @Environment(Session.self) private var session
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        let key = issue.key
+        let target = IssueTarget(accountID: state.id, key: key)
+        let url = state.client.browseURL(key)
+        let watching = issue.fields.watches?.isWatching == true
+        let me = state.me?.accountId
+        Button("Open in New Window", systemImage: "macwindow.badge.plus") { openWindow(id: "issue", value: target) }
+        Button("Open in Browser", systemImage: "safari") { NSWorkspace.shared.open(url) }
+        Divider()
+        Button("Copy Link", systemImage: "link") { copyToPasteboard(url.absoluteString) }
+        Button("Copy Key", systemImage: "number") { copyToPasteboard(key) }
+        Button("Copy as Markdown", systemImage: "text.quote") { copyToPasteboard(state.client.markdownLink(key, summary: issue.fields.summary)) }
+        ShareLink(item: url)
+        Divider()
+        let starred = session.isStarred(target)
+        Button(starred ? "Unstar" : "Star", systemImage: starred ? "star.slash" : "star") { session.toggleStar(target, summary: issue.fields.summary) }
+        Button(watching ? "Stop Watching This Issue" : "Watch This Issue", systemImage: watching ? "eye.slash" : "eye") {
+            write { try await state.client.watch(key, !watching, me: me) }
+        }
+        if let me, issue.fields.assignee?.accountId != me {
+            Button("Assign to Me", systemImage: "person.crop.circle.badge.checkmark") {
+                write { try await state.client.assign(key, to: me) }
+            }
+        }
     }
 }
 

@@ -286,6 +286,7 @@ struct SidebarView: View {
                 .clipShape(.rect(cornerRadius: 4))
         }
         .tag(Source.project(p, st.id))
+        .onTapGesture(count: 2) { openWindow(id: "board", value: BoardTarget(accountID: st.id, projectKey: p.key)) }
         .contextMenu {
             Button(starred ? "Unstar" : "Star", systemImage: starred ? "star.slash" : "star") { st.toggleStar(p) }
             Button("Open Board", systemImage: "rectangle.split.3x1") { openWindow(id: "board", value: BoardTarget(accountID: st.id, projectKey: p.key)) }

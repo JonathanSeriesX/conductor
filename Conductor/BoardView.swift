@@ -14,6 +14,28 @@ final class BoardStore {
     var error: String?
     var truncated = false
     private var generation = 0
+    private var state: AccountState?
+    private var projectKey = ""
+
+    /// Everything a board window needs to draw, saved per project so it opens from disk and refreshes behind.
+    struct Snapshot: Codable {
+        var boards: [Board]; var board: Board?; var config: BoardConfiguration?
+        var sprints: [Sprint]; var sprint: Sprint?; var quickFilters: [QuickFilter]; var issues: [Issue]
+    }
+
+    private func saveSnapshot() {
+        guard let state, !projectKey.isEmpty else { return }
+        let snap = Snapshot(boards: boards, board: board, config: config, sprints: sprints, sprint: sprint, quickFilters: quickFilters, issues: issues)
+        DiskCache.saveAsync(snap, account: state.account, name: "board-\(projectKey)")
+    }
+
+    /// Warms a starred project's board after launch, and the full text of its cards assigned to me.
+    static func prefetch(_ project: String, state: AccountState) async {
+        let store = BoardStore()
+        await store.load(state, project: project)
+        let mine = store.issues.filter { $0.fields.assignee?.accountId == state.me?.accountId }
+        IssueListStore.prefetchDetails(mine.map { ListRow(issue: $0, state: state) })
+    }
 
     var columns: [BoardConfiguration.Column] { config?.columnConfig.columns ?? [] }
 
@@ -22,7 +44,15 @@ final class BoardStore {
         return (list ?? issues).filter { ids.contains($0.fields.status.id) }
     }
 
-    func load(_ client: JiraClient, project: String) async {
+    func load(_ state: AccountState, project: String) async {
+        self.state = state
+        projectKey = project
+        let client = state.client
+        if issues.isEmpty, let snap: Snapshot = await DiskCache.loadAsync(account: state.account, name: "board-\(project)") {
+            // Last run's board at once; the network pass below replaces it piece by piece.
+            boards = snap.boards; board = snap.board; config = snap.config
+            sprints = snap.sprints; sprint = snap.sprint; quickFilters = snap.quickFilters; issues = snap.issues
+        }
         isLoading = true
         defer { isLoading = false }
         do {
@@ -65,7 +95,7 @@ final class BoardStore {
             if page.issues.isEmpty || all.count >= page.total { break }
             if all.count >= 2000 { truncated = true; break } // ponytail: 20 pages; past that a board wants server-side filtering
         }
-        if gen == generation { issues = all }
+        if gen == generation { issues = all; saveSnapshot() }
     }
 
     func toggle(_ filter: QuickFilter, client: JiraClient) async {
@@ -127,7 +157,7 @@ struct BoardView: View {
             if swimlanes == .none {
                 HStack(alignment: .top, spacing: 12) {
                     ForEach(store.columns) { column in
-                        BoardColumn(column: column, issues: store.issues(in: column), onDrop: drop(column))
+                        BoardColumn(column: column, issues: store.issues(in: column), onDrop: drop(column), onWrite: reload)
                     }
                 }
                 .padding(16)
@@ -160,13 +190,13 @@ struct BoardView: View {
                 // Menus pull down under the button; a pop-up picker centres its chosen row on the pointer and
                 // can run off the top of the screen.
                 Menu {
-                    Picker("", selection: Binding(get: { store.board }, set: { b in
-                        store.board = b
-                        if let c = state?.client { Task { await store.loadBoard(c) } }
-                    })) {
-                        ForEach(store.boards) { b in Text(b.name).tag(Optional(b)) }
+                    ForEach(store.boards) { b in
+                        Toggle(b.name, isOn: Binding(get: { store.board == b }, set: { on in
+                            guard on else { return }
+                            store.board = b
+                            if let c = state?.client { Task { await store.loadBoard(c) } }
+                        }))
                     }
-                    .pickerStyle(.inline)
                 } label: { Text(store.board?.name ?? "Board").lineLimit(1) }
                 .frame(maxWidth: 220)
                 .disabled(store.boards.count < 2)
@@ -174,23 +204,22 @@ struct BoardView: View {
             ToolbarItem(id: "sprintPicker") {
                 if !store.sprints.isEmpty {
                     Menu {
-                        Picker("", selection: Binding(get: { store.sprint }, set: { sp in
-                            store.sprint = sp
-                            if let c = state?.client { Task { await store.loadIssues(c) } }
-                        })) {
-                            ForEach(store.sprints) { s in Text(s.name + (s.state == "active" ? " · active" : "")).tag(Optional(s)) }
+                        ForEach(store.sprints) { s in
+                            Toggle(s.name + (s.state == "active" ? " · active" : ""), isOn: Binding(get: { store.sprint == s }, set: { on in
+                                guard on else { return }
+                                store.sprint = s
+                                if let c = state?.client { Task { await store.loadIssues(c) } }
+                            }))
                         }
-                        .pickerStyle(.inline)
                     } label: { Text(store.sprint.map { $0.name + ($0.state == "active" ? " · active" : "") } ?? "Sprint").lineLimit(1) }
                     .frame(maxWidth: 260)
                 }
             }
             ToolbarItem(id: "swimlanes") {
                 Menu {
-                    Picker("", selection: $swimlanes) {
-                        ForEach(Swimlanes.allCases, id: \.self) { Text($0.rawValue) }
+                    ForEach(Swimlanes.allCases, id: \.self) { s in
+                        Toggle(s.rawValue, isOn: Binding(get: { swimlanes == s }, set: { if $0 { swimlanes = s } }))
                     }
-                    .pickerStyle(.inline)
                 } label: { Text(swimlanes.rawValue) }
                 .help("Group cards into swimlanes")
             }
@@ -202,7 +231,7 @@ struct BoardView: View {
         }
         // Re-runs once sign-in completes after a restored launch.
         .task(id: "\(projectKey)|\(state?.id.uuidString ?? "")") {
-            if let c = state?.client { await store.load(c, project: projectKey) }
+            if let state { await store.load(state, project: projectKey) }
         }
         .errorAlert($store.error)
         .frame(minWidth: 700, minHeight: 400)
@@ -221,7 +250,7 @@ struct BoardView: View {
                     Text("\(lane.title)  ·  \(lane.issues.count)").font(.headline).lineLimit(1)
                     HStack(alignment: .top, spacing: 12) {
                         ForEach(store.columns) { column in
-                            BoardColumn(column: column, issues: store.issues(in: column, from: lane.issues), showsHeader: false, onDrop: drop(column))
+                            BoardColumn(column: column, issues: store.issues(in: column, from: lane.issues), showsHeader: false, onDrop: drop(column), onWrite: reload)
                         }
                     }
                 }
@@ -251,6 +280,8 @@ struct BoardView: View {
             }
         }
     }
+
+    private func reload() { if let c = state?.client { Task { await store.loadIssues(c) } } }
 
     private func drop(_ column: BoardConfiguration.Column) -> (String) -> Void {
         { key in if let c = state?.client { Task { await store.move(key, to: column, client: c) } } }
@@ -291,8 +322,11 @@ struct BoardColumn: View {
     /// Off inside swimlanes, where the board shows headers once and scrolls as a whole.
     var showsHeader = true
     var onDrop: (String) -> Void
+    /// Reloads the board after a menu action changed an issue.
+    var onWrite: () -> Void = {}
     @Environment(Session.self) private var session
     @Environment(\.jira) private var jira
+    @Environment(\.openWindow) private var openWindow
     @State private var targeted = false
 
     var body: some View {
@@ -308,7 +342,7 @@ struct BoardColumn: View {
         .frame(width: 280)
         .frame(maxHeight: showsHeader ? .infinity : nil, alignment: .top)
         .frame(minHeight: showsHeader ? nil : 60, alignment: .top)
-        .glassEffect(.regular, in: .rect(cornerRadius: 16))
+        .frosted(cornerRadius: 16)
         .overlay {
             RoundedRectangle(cornerRadius: 16).strokeBorder(Color.accentColor, lineWidth: targeted ? 2 : 0)
         }
@@ -324,11 +358,11 @@ struct BoardColumn: View {
             ForEach(issues) { issue in
                 BoardCard(issue: issue)
                     .draggable(issue.key)
-                    .onTapGesture(count: 2) { open(issue.key) }
+                    .onTapGesture(count: 2) { if let jira { openWindow(id: "issue", value: IssueTarget(accountID: jira.id, key: issue.key)) } }
                     .contextMenu {
-                        Button("Open in Conductor", systemImage: "arrow.up.forward.app") { open(issue.key) }
-                        Button("Open in Browser", systemImage: "safari") {
-                            if let u = jira?.client.browseURL(issue.key) { NSWorkspace.shared.open(u) }
+                        if let jira {
+                            Button("Open in Main Window", systemImage: "arrow.up.forward.app") { open(issue.key) }
+                            IssueMenu(issue: issue, state: jira) { op in Task { try? await op(); onWrite() } }
                         }
                     }
             }
