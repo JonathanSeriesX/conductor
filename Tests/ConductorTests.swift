@@ -7,7 +7,7 @@ final class JQLTests: XCTestCase {
 
     func testProjectKeysAreQuoted() {
         // IN is a JQL reserved word; unquoted it fails server-side.
-        XCTAssertEqual(Source.project(project, account).jql(search: ""), "project = \"IN\" ORDER BY updated DESC")
+        XCTAssertEqual(Source.project(project, account).jql(search: "", filters: ListFilters(status: .any)), "project = \"IN\" ORDER BY updated DESC")
     }
 
     func testFreeTextBecomesTextSearch() {

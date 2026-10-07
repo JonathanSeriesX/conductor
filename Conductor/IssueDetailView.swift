@@ -103,6 +103,7 @@ struct IssueDetailView: View {
     @State private var showRemind = false
     @State private var isDropTargeted = false
     @FocusState private var summaryFocused: Bool
+    @FocusState private var descriptionFocused: Bool
     @State private var commentRequest = 0
 
     var body: some View {
@@ -208,8 +209,8 @@ struct IssueDetailView: View {
                 RemoteImage(url: issue.fields.issuetype.iconUrl).frame(width: 16, height: 16)
                 Text(issue.key).font(.body.monospaced()).foregroundStyle(.secondary).textSelection(.enabled)
             }
-            if let draft = Binding($summaryDraft) {
-                TextField("Summary", text: draft, axis: .vertical)
+            if summaryDraft != nil {
+                TextField("Summary", text: Binding($summaryDraft, or: ""), axis: .vertical)
                     .font(.system(.largeTitle, design: .rounded, weight: .semibold))
                     .textFieldStyle(.plain)
                     .lineLimit(1...4)
@@ -247,8 +248,9 @@ struct IssueDetailView: View {
                         .buttonStyle(.plain).foregroundStyle(.secondary).help("Edit description")
                 }
             }
-            if let draft = Binding($descriptionDraft) {
-                Composer(text: draft, mentions: $descriptionMentions, placeholder: "Description", minHeight: 140, maxHeight: 420, uploadImage: uploadPasted)
+            if descriptionDraft != nil {
+                Composer(text: Binding($descriptionDraft, or: ""), mentions: $descriptionMentions, placeholder: "Description", minHeight: 140, maxHeight: 420, uploadImage: uploadPasted, focus: $descriptionFocused)
+                    .onAppear { descriptionFocused = true }
                 if issue.fields.description?.hasLossyNodes == true {
                     Label("This description has tables, images or panels that the editor can't keep. Saving replaces it with what you see here.", systemImage: "exclamationmark.triangle")
                         .font(.caption).foregroundStyle(.orange)
