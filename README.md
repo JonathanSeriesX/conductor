@@ -6,15 +6,15 @@ Jira's own Mac app was discontinued. Conductor is what it should have become: ev
 
 ## Highlights
 
-- **All your Jira sites in one window.** Personal and work accounts stay signed in together. An All Accounts section unifies Assigned to Me, Reported by Me and Watching across sites, each row tagged with the account's colour. Every account also has its own section with its lists, favourite filters, starred projects and all projects.
+- **All your Jira sites in one window.** Personal and work accounts stay signed in together. An All Accounts section unifies Starred, Assigned to Me, Reported by Me and Watching across sites, each row tagged with the account's colour. Every account also has its own section with the same lists, favourite filters, starred projects and all projects. Every sidebar entry is a preset of the one list: pick one, narrow it with the chips, and save the result as a sidebar filter of your own.
 - **Instant.** Everything you have seen is cached on disk. Launch, lists and issues appear at once and refresh in the background.
 - **A real issue page.** Description, attachments, subtasks, child issues, linked issues, work log and comments. Edit the summary, description, priority, labels, sprint, assignee and status inline. Comments and descriptions are written in Markdown with @mention suggestions.
 - **Attachments the Mac way.** Drop files onto the issue, paste a screenshot, Quick Look anything with a click.
 - **Boards.** Each project's board in its own window, with sprint selection and drag between columns to transition.
-- **Search that understands you.** Type words, an issue key, raw JQL with field and value suggestions, or paste a Jira link. Filter chips for status, assignee, type and recency. Save any search as a Jira filter.
+- **Search that understands you.** Type words, an issue key, raw JQL with field and value suggestions, or paste a Jira link. Chips for account, project, scope (starred, recently viewed, watching), status, assignee, reporter, type and recency, and a sort order. Save any combination as a sidebar filter.
 - **Notifications.** Assignments, status changes and new comments on issues you are involved in, on every account, with a dock badge.
 - **Spotlight.** Every issue you have seen is indexed. Search "ES-123" or a summary from anywhere and land in Conductor.
-- **Mac details.** ⌘N new issue, ⌘F find, ⌘1 to ⌘4 for your lists, ⌘R reload, `conductor://issue/KEY` links, window restoration, five glass backgrounds including a plain one for light and dark mode.
+- **Mac details.** ⌘N new issue, ⌘F find, ⌘1 to ⌘5 for your lists, ⌘R reload, `conductor://issue/KEY` links, window restoration, five glass backgrounds including a plain one for light and dark mode.
 
 ## Requirements
 
@@ -39,7 +39,9 @@ Right-click an account's section title to rename it, pick its colour or sign out
 |---|---|
 | ⌘N | New issue |
 | ⌘F | Find issues |
-| ⌘1 ⌘2 ⌘3 ⌘4 | Assigned to Me, Reported by Me, Recently Viewed, Watching |
+| ⌘1 ⌘2 ⌘3 ⌘4 ⌘5 | Assigned to Me, Reported by Me, Recently Viewed, Watching, Starred |
+| ⌘S | Save the current chips and search as a sidebar filter |
+| Click a row | Open the issue in its own window |
 | ⌘R | Reload the list |
 | ⌘⇧R | Refresh the issue |
 | ⌘⇧C | Copy the issue link |
