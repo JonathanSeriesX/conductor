@@ -8,6 +8,7 @@ struct IssueActions {
         case assign, assignToMe, watch, remind
         case transition(String)
         case editSummary, editDescription, comment, attach, link, logWork, subtask, refresh
+        case changeStatus, changePriority, editLabels
     }
     let key: String
     let watching: Bool
@@ -62,6 +63,9 @@ enum ShortcutScheme: String, CaseIterable {
             case .issue(.assignToMe): String(localized: "Assign to Me")
             case .issue(.comment): String(localized: "Add Comment")
             case .issue(.watch): String(localized: "Watch This Issue")
+            case .issue(.changeStatus): String(localized: "Change Status")
+            case .issue(.changePriority): String(localized: "Priority")
+            case .issue(.editLabels): String(localized: "Labels")
             case .issue(let a): String(describing: a)
             }
         }
@@ -74,9 +78,13 @@ enum ShortcutScheme: String, CaseIterable {
         case .jira:
             [
                 ("c", .newIssue), ("/", .search), ("e", .issue(.editSummary)), ("a", .issue(.assign)),
-                ("i", .issue(.assignToMe)), ("m", .issue(.comment)), ("w", .issue(.watch)),
+                ("i", .issue(.assignToMe)), ("m", .issue(.comment)), ("w", .issue(.watch)), ("l", .issue(.editLabels)),
             ]
-        case .linear: [("c", .newIssue), ("/", .search), ("a", .issue(.assign)), ("i", .issue(.assignToMe))]
+        case .linear:
+            [
+                ("c", .newIssue), ("/", .search), ("a", .issue(.assign)), ("i", .issue(.assignToMe)),
+                ("s", .issue(.changeStatus)), ("p", .issue(.changePriority)), ("l", .issue(.editLabels)),
+            ]
         }
     }
 
@@ -197,10 +205,12 @@ struct AppCommands: Commands {
 /// An issue in a window of its own, so two can sit side by side. Links inside it navigate in place.
 /// An issue with its own back trail: the content of an issue window and of the main window's preview column.
 struct IssueWindow: View {
-    @State var target: IssueTarget
+    /// The window's value, or the main window's selection: a change from outside starts a fresh trail.
+    @Binding var target: IssueTarget
     var embedded = false
     /// Issues this window showed before the current one, so a jump to a subtask or link can come back.
     @State private var trail: [IssueTarget] = []
+    @State private var navigating = false
     @Environment(Session.self) private var session
     @Environment(\.dismiss) private var dismiss
     @FocusedValue(\.issueActions) private var issueActions
@@ -212,12 +222,17 @@ struct IssueWindow: View {
                     target: target,
                     open: {
                         trail.append(target)
+                        navigating = true
                         target = $0
                     },
-                    back: trail.isEmpty ? nil : { target = trail.removeLast() }, embedded: embedded
+                    back: trail.isEmpty
+                        ? nil
+                        : {
+                            navigating = true
+                            target = trail.removeLast()
+                        }, embedded: embedded
                 )
                 .environment(\.jira, st)
-                .id(target)
             } else if session.isRestoring {
                 ZStack {
                     Backdrop()
@@ -237,6 +252,10 @@ struct IssueWindow: View {
             }
         }
         .writingToolsBehavior(.disabled)
+        .onChange(of: target) {
+            if !navigating { trail = [] }  // another row was picked: that is a new start, not a step
+            navigating = false
+        }
         .background(WindowCascader())
         // The main window's monitor covers the preview column; a window of its own needs one.
         .background(

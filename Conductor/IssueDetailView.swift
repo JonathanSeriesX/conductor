@@ -207,6 +207,8 @@ struct IssueDetailView: View {
     @State private var showRemind = false
     @State private var showParent = false
     @State private var showWatchers = false
+    @State private var showStatus = false
+    @State private var showPriority = false
     @State private var isDropTargeted = false
     /// A destructive action waiting for the user's confirmation: what it is and what it does.
     @State private var pendingDelete: (title: String, verb: String, perform: () -> Void)?
@@ -237,6 +239,19 @@ struct IssueDetailView: View {
         .toolbar(id: "issue") { toolbar }
         .focusedSceneValue(\.issueActions, actions)
         .task(id: "\(key)|\(session.reloadTick)") { if let jira { await store.load(jira, key: key) } }
+        // The same view serves one issue after another (a fresh view would take the toolbar with it for a frame).
+        .onChange(of: target) {
+            store = IssueDetailStore()
+            summaryDraft = nil
+            descriptionDraft = nil
+            descriptionCaret = nil
+            editingComment = nil
+            caretPending = false
+            for show in [
+                $showAssign, $showLabels, $showLink, $showLogWork, $showDueDate, $showRemind, $showParent,
+                $showWatchers, $showStatus, $showPriority,
+            ] { show.wrappedValue = false }
+        }
         .errorAlert($store.error)
         .quickLookPreview($store.previewURL)
         .dropDestination(for: URL.self) { urls, _ in
@@ -286,7 +301,7 @@ struct IssueDetailView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    header(issue)
+                    header(issue).id("top")
                     GlassGroup(spacing: 16) {
                         if embedded {
                             // The preview column is narrow: the fields go under the body, the first four above the comments.
@@ -330,6 +345,7 @@ struct IssueDetailView: View {
             .onChange(of: commentRequest) {
                 withAnimation { proxy.scrollTo("comments", anchor: .bottom) }
             }
+            .onChange(of: target) { proxy.scrollTo("top", anchor: .top) }
             #if DEBUG
                 .task {
                     guard ProcessInfo.processInfo.environment["CONDUCTOR_SCROLL"] == "comments" else { return }
@@ -542,6 +558,13 @@ struct IssueDetailView: View {
             }
             .menuStyle(.button).buttonStyle(.plain).fixedSize()
             .disabled(store.transitions.isEmpty)
+            // The keyboard's way in (Linear's S): a menu cannot be opened from code, a popover can.
+            .popover(isPresented: $showStatus, arrowEdge: embedded ? .bottom : .leading) {
+                PickList(items: store.transitions.map { ($0.id, $0.name, $0.to.id == issue.fields.status.id) }) { id in
+                    showStatus = false
+                    run { try await $0.transition(key, to: id) }
+                }
+            }
         }
     }
 
@@ -558,6 +581,13 @@ struct IssueDetailView: View {
                     priorityLabel(issue.fields.priority)
                 }
                 .menuStyle(.button).buttonStyle(.plain).fixedSize()
+                .popover(isPresented: $showPriority, arrowEdge: embedded ? .bottom : .leading) {
+                    PickList(items: store.priorities.map { ($0.id, $0.name, $0.id == issue.fields.priority?.id) }) {
+                        id in
+                        showPriority = false
+                        run { try await $0.editIssue(key, fields: ["priority": .object(["id": .string(id)])]) }
+                    }
+                }
             } else {
                 priorityLabel(issue.fields.priority)
             }
@@ -576,7 +606,7 @@ struct IssueDetailView: View {
                 }
             }
             .buttonStyle(.plain)
-            .popover(isPresented: $showAssign, arrowEdge: .leading) {
+            .popover(isPresented: $showAssign, arrowEdge: embedded ? .bottom : .leading) {
                 PeoplePicker(scope: .issue(key), current: issue.fields.assignee) { user in
                     showAssign = false
                     run { try await $0.assign(key, to: user?.accountId) }
@@ -1183,6 +1213,9 @@ struct IssueDetailView: View {
         case .assignToMe:
             let me = jira.me?.accountId
             run { try await $0.assign(key, to: me) }
+        case .changeStatus: showStatus = true
+        case .changePriority: showPriority = true
+        case .editLabels: showLabels = true
         case .watch:
             let on = store.issue?.fields.watches?.isWatching != true
             let me = jira.me?.accountId
@@ -1610,6 +1643,35 @@ struct LabelsEditor: View {
         guard !l.isEmpty else { return }
         if !labels.contains(l) { labels.append(l) }
         draft = ""
+    }
+}
+
+/// A popover of choices with the current one ticked, for what a key opens.
+/// ponytail: Tab moves between rows; arrow keys and a type-to-find would be the next step.
+struct PickList: View {
+    let items: [(id: String, title: String, selected: Bool)]
+    let pick: (String) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(items, id: \.id) { item in
+                Button {
+                    pick(item.id)
+                } label: {
+                    HStack(spacing: 8) {
+                        Text(item.title)
+                        Spacer()
+                        if item.selected { Image(systemName: "checkmark").foregroundStyle(.secondary) }
+                    }
+                    .padding(.horizontal, 8).padding(.vertical, 6)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(.rect)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(6)
+        .frame(minWidth: 200)
     }
 }
 

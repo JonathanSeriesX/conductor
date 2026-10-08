@@ -61,7 +61,9 @@ struct ConductorApp: App {
         }
 
         WindowGroup("Issue", id: "issue", for: IssueTarget.self) { $target in
-            if let target { IssueWindow(target: target).environment(session).frame(minWidth: 640, minHeight: 480) }
+            if let t = target {
+                IssueWindow(target: Binding($target, or: t)).environment(session).frame(minWidth: 640, minHeight: 480)
+            }
         }
         .defaultSize(width: 980, height: 820)
 
@@ -119,8 +121,9 @@ struct RootView: View {
                         // on a 13" MacBook Air, after the sidebar.
                         .navigationSplitViewColumnWidth(min: 420, ideal: 460)
                 } detail: {
-                    if let selection {
-                        IssueWindow(target: selection, embedded: true).id(selection)
+                    if let sel = selection {
+                        // Nil-safe: SwiftUI reads the binding once more after Escape emptied the selection.
+                        IssueWindow(target: Binding($selection, or: sel), embedded: true)
                     } else {
                         ContentUnavailableView("No Issue Selected", systemImage: "doc.text")
                             .frame(maxWidth: .infinity, maxHeight: .infinity).background(Backdrop())
