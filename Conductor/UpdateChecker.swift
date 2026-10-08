@@ -32,10 +32,10 @@ final class UpdateChecker {
                     if UserDefaults.standard.string(forKey: "skippedVersion") == latest, !interactive { return }
                     offer(latest, url: r.html_url, notes: r.body)
                 } else if interactive {
-                    alert("You're up to date", "Conductor \(current) is the latest version.")
+                    alert(String(localized: "You're up to date"), String(localized: "Conductor \(current) is the latest version."))
                 }
             } catch {
-                if interactive { alert("Couldn't check for updates", "GitHub didn't answer: \(error.localizedDescription)") }
+                if interactive { alert(String(localized: "Couldn't check for updates"), String(localized: "GitHub didn't answer: \(error.localizedDescription)")) }
             }
         }
     }
@@ -53,11 +53,11 @@ final class UpdateChecker {
 
     private func offer(_ version: String, url: String, notes: String?) {
         let a = NSAlert()
-        a.messageText = "Conductor \(version) is available"
-        a.informativeText = (notes?.isEmpty == false ? notes! : "You have \(current).").prefix(600).description
-        a.addButton(withTitle: "Download")
-        a.addButton(withTitle: "Later")
-        a.addButton(withTitle: "Skip This Version")
+        a.messageText = String(localized: "Conductor \(version) is available")
+        a.informativeText = (notes?.isEmpty == false ? notes! : String(localized: "You have \(current).")).prefix(600).description
+        a.addButton(withTitle: String(localized: "Download"))
+        a.addButton(withTitle: String(localized: "Later"))
+        a.addButton(withTitle: String(localized: "Skip This Version"))
         switch a.runModal() {
         case .alertFirstButtonReturn: if let u = URL(string: url) { NSWorkspace.shared.open(u) }
         case .alertThirdButtonReturn: UserDefaults.standard.set(version, forKey: "skippedVersion")

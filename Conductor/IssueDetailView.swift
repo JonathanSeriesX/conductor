@@ -216,7 +216,7 @@ struct IssueDetailView: View {
             CreateIssueView(defaultProject: store.issue?.fields.project.flatMap { p in jira.map { (p, $0) } }, parentKey: key) { open($0) }
         }
         .confirmationDialog(pendingDelete?.title ?? "", isPresented: Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } }), titleVisibility: .visible) {
-            Button(pendingDelete?.verb ?? "Delete", role: .destructive) { pendingDelete?.perform(); pendingDelete = nil }
+            Button(pendingDelete?.verb ?? String(localized: "Delete"), role: .destructive) { pendingDelete?.perform(); pendingDelete = nil }
             Button("Cancel", role: .cancel) { pendingDelete = nil }
         } message: {
             Text("This can't be undone.")
@@ -224,7 +224,7 @@ struct IssueDetailView: View {
     }
 
     /// Asks first, then runs the write. Jira has no undo for these.
-    private func confirmDelete(_ title: String, verb: String = "Delete", _ perform: @escaping () -> Void) { pendingDelete = (title, verb, perform) }
+    private func confirmDelete(_ title: String, verb: String = String(localized: "Delete"), _ perform: @escaping () -> Void) { pendingDelete = (title, verb, perform) }
 
     // MARK: Layout
 
@@ -375,7 +375,7 @@ struct IssueDetailView: View {
                     Button { showAssign = true } label: {
                         HStack(spacing: 6) {
                             Avatar(user: issue.fields.assignee, size: 20).accessibilityHidden(true)   // the text beside it says the same
-                            Text(issue.fields.assignee?.displayName ?? "Unassigned").foregroundStyle(issue.fields.assignee == nil ? .secondary : .primary)
+                            Text(issue.fields.assignee?.displayName ?? String(localized: "Unassigned")).foregroundStyle(issue.fields.assignee == nil ? .secondary : .primary)
                         }
                     }
                     .buttonStyle(.plain)
@@ -439,7 +439,7 @@ struct IssueDetailView: View {
                             .buttonStyle(.plain)
                             .help("Open \(p.key); ⌘-click for a new window")
                             .contextMenu {
-                                Button("Open", systemImage: "arrow.right") { open(IssueTarget(accountID: target.accountID, key: p.key)) }
+                                Button("Open", systemImage: "arrow.forward") { open(IssueTarget(accountID: target.accountID, key: p.key)) }
                                 Button("Open in New Window", systemImage: "macwindow.badge.plus") { openWindow(p.key) }
                                 if store.canEdit("parent") {
                                     Divider()
@@ -473,19 +473,19 @@ struct IssueDetailView: View {
                                 }
                             }
                         } label: {
-                            Text(issue.activeSprint?.name ?? "None").foregroundStyle(issue.activeSprint == nil ? .secondary : .primary)
+                            Text(issue.activeSprint?.name ?? String(localized: "None")).foregroundStyle(issue.activeSprint == nil ? .secondary : .primary)
                         }
                         .menuStyle(.button).buttonStyle(.plain).fixedSize()
                     }
                 } else if jira?.client.sprintField != nil, issue.fields.project?.projectTypeKey == "software" || issue.activeSprint != nil {
-                    field("Sprint") { Text(issue.activeSprint?.name ?? "None").foregroundStyle(issue.activeSprint == nil ? .secondary : .primary) }
+                    field("Sprint") { Text(issue.activeSprint?.name ?? String(localized: "None")).foregroundStyle(issue.activeSprint == nil ? .secondary : .primary) }
                 }
                 let due = issue.fields.duedate.flatMap(DueDate.parse)
                 if due != nil || store.canEdit("duedate") || store.editMeta == nil {
                     field("Due") {
                         Button { showDueDate = true } label: {
                             let overdue = due.map { $0 < Calendar.current.startOfDay(for: .now) } == true && issue.fields.status.statusCategory.key != "done"
-                            Text(due?.formatted(date: .abbreviated, time: .omitted) ?? "None")
+                            Text(due?.formatted(date: .abbreviated, time: .omitted) ?? String(localized: "None"))
                                 .foregroundStyle(due == nil ? AnyShapeStyle(.secondary) : overdue ? AnyShapeStyle(.red) : AnyShapeStyle(.primary))
                         }
                         .buttonStyle(.plain)
@@ -506,12 +506,12 @@ struct IssueDetailView: View {
                                 Button(n.formatted()) { run { try await $0.editIssue(key, fields: [pf: .number(n)]) } }
                             }
                         } label: {
-                            Text(issue.points?.formatted() ?? "None").foregroundStyle(issue.points == nil ? .secondary : .primary)
+                            Text(issue.points?.formatted() ?? String(localized: "None")).foregroundStyle(issue.points == nil ? .secondary : .primary)
                         }
                         .menuStyle(.button).buttonStyle(.plain).fixedSize()
                     }
                 } else if issue.points != nil || !(jira?.client.pointsFields.isEmpty ?? true) {
-                    field("Story Points") { Text(issue.points?.formatted() ?? "None").foregroundStyle(issue.points == nil ? .secondary : .primary) }
+                    field("Story Points") { Text(issue.points?.formatted() ?? String(localized: "None")).foregroundStyle(issue.points == nil ? .secondary : .primary) }
                 }
                 multiValue("Components", field: "components", current: issue.fields.components ?? [])
                 multiValue("Fix Versions", field: "fixVersions", current: issue.fields.fixVersions ?? [])
@@ -563,10 +563,10 @@ struct IssueDetailView: View {
 
     /// Components and fix versions: a menu of checkable values when editable, else just the names.
     @ViewBuilder
-    private func multiValue(_ name: String, field id: String, current: [NamedRef]) -> some View {
+    private func multiValue(_ name: LocalizedStringKey, field id: String, current: [NamedRef]) -> some View {
         let options = store.options(id)
         let selected = Set(current.map(\.id))
-        let label = Text(current.isEmpty ? "None" : current.map(\.name).joined(separator: ", "))
+        let label = Text(current.isEmpty ? String(localized: "None") : current.map(\.name).formatted(.list(type: .and, width: .narrow)))
             .foregroundStyle(current.isEmpty ? .secondary : .primary)
         if !options.isEmpty {
             field(name) {
@@ -591,9 +591,9 @@ struct IssueDetailView: View {
         }
     }
 
-    private func field<V: View>(_ name: String, @ViewBuilder _ value: () -> V) -> some View {
+    private func field<V: View>(_ name: LocalizedStringKey, @ViewBuilder _ value: () -> V) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(name.uppercased()).font(.caption2.weight(.semibold)).foregroundStyle(.tertiary)
+            Text(name).textCase(.uppercase).font(.caption2.weight(.semibold)).foregroundStyle(.tertiary)
             value()
         }
     }
@@ -611,7 +611,7 @@ struct IssueDetailView: View {
                         }
                         Button("Save As…", systemImage: "square.and.arrow.down") { saveAs(a) }
                         Divider()
-                        Button("Delete", systemImage: "trash", role: .destructive) { confirmDelete("Delete “\(a.filename)”?") { run { try await $0.deleteAttachment(id: a.id) } } }
+                        Button("Delete", systemImage: "trash", role: .destructive) { confirmDelete(String(localized: "Delete “\(a.filename)”?")) { run { try await $0.deleteAttachment(id: a.id) } } }
                     }
             }
         }
@@ -674,7 +674,7 @@ struct IssueDetailView: View {
                             }
                             .buttonStyle(.plain)
                             .contextMenu {
-                                Button("Remove Link", systemImage: "link.badge.minus", role: .destructive) { confirmDelete("Remove the link to \(o.key)?", verb: "Remove") { run { try await $0.deleteLink(id: link.id) } } }
+                                Button("Remove Link", systemImage: "link.badge.minus", role: .destructive) { confirmDelete(String(localized: "Remove the link to \(o.key)?"), verb: String(localized: "Remove")) { run { try await $0.deleteLink(id: link.id) } } }
                             }
                         }
                     }
@@ -690,7 +690,7 @@ struct IssueDetailView: View {
                     Avatar(user: w.author, size: 20)
                     VStack(alignment: .leading, spacing: 2) {
                         HStack(spacing: 6) {
-                            Text(w.author?.displayName ?? "Unknown").font(.callout.weight(.semibold))
+                            Text(w.author?.displayName ?? String(localized: "Unknown")).font(.callout.weight(.semibold))
                             Text("logged \(w.timeSpent)").font(.callout)
                             Text(w.started.formatted(date: .abbreviated, time: .omitted)).font(.caption).foregroundStyle(.secondary)
                         }
@@ -698,7 +698,7 @@ struct IssueDetailView: View {
                     }
                     Spacer()
                     if w.author?.accountId == jira?.me?.accountId {
-                        Button { confirmDelete("Delete this work log?") { run { try await $0.deleteWorklog(key, id: w.id) } } } label: { Label("Delete", systemImage: "trash").labelStyle(.iconOnly) }
+                        Button { confirmDelete(String(localized: "Delete this work log?")) { run { try await $0.deleteWorklog(key, id: w.id) } } } label: { Label("Delete", systemImage: "trash").labelStyle(.iconOnly) }
                             .buttonStyle(.plain).foregroundStyle(.tertiary).help("Delete work log")
                     }
                 }
@@ -716,7 +716,7 @@ struct IssueDetailView: View {
                     Avatar(user: c.author, size: 26)
                     VStack(alignment: .leading, spacing: 6) {
                         HStack(spacing: 6) {
-                            Text(c.author?.displayName ?? "Unknown").font(.callout.weight(.semibold))
+                            Text(c.author?.displayName ?? String(localized: "Unknown")).font(.callout.weight(.semibold))
                             Text(c.created.formatted(.relative(presentation: .named))).font(.caption).foregroundStyle(.secondary).help(c.created.formatted())
                             if c.updated.timeIntervalSince(c.created) > 60 { Text("· edited").font(.caption).foregroundStyle(.tertiary) }
                             Spacer()
@@ -724,7 +724,7 @@ struct IssueDetailView: View {
                                 // Plain buttons, not a menu: editing your own comment is a one-click thing.
                                 Button { beginCommentEdit(c) } label: { Label("Edit", systemImage: "pencil").labelStyle(.iconOnly) }
                                     .buttonStyle(.plain).foregroundStyle(.tertiary).help("Edit comment")
-                                Button { confirmDelete("Delete this comment?") { run { try await $0.deleteComment(key, id: c.id) } } } label: { Label("Delete", systemImage: "trash").labelStyle(.iconOnly) }
+                                Button { confirmDelete(String(localized: "Delete this comment?")) { run { try await $0.deleteComment(key, id: c.id) } } } label: { Label("Delete", systemImage: "trash").labelStyle(.iconOnly) }
                                     .buttonStyle(.plain).foregroundStyle(.tertiary).help("Delete comment")
                             }
                         }
@@ -756,7 +756,7 @@ struct IssueDetailView: View {
     @ToolbarContentBuilder private var toolbar: some CustomizableToolbarContent {
         ToolbarItem(id: "back", placement: .navigation) {
             if let back {
-                Button(action: back) { Label("Back", systemImage: "chevron.left") }
+                Button(action: back) { Label("Back", systemImage: "chevron.backward") }
                     .help("Back to the previous issue (⌘[)")
                     .keyboardShortcut("[", modifiers: .command)
             }
@@ -765,7 +765,7 @@ struct IssueDetailView: View {
             // The list row's first line as the title: type icon, then the key in the same grey monospaced face.
             HStack(spacing: 8) {
                 RemoteImage(url: store.issue?.fields.issuetype.iconUrl, placeholder: "circle").frame(width: 16, height: 16)
-                    .accessibilityLabel(store.issue?.fields.issuetype.name ?? "Issue type")
+                    .accessibilityLabel(store.issue?.fields.issuetype.name ?? String(localized: "Issue type"))
                 Text(key).font(.body.monospaced()).foregroundStyle(.secondary)
             }
             .padding(.leading, 4)
@@ -907,7 +907,7 @@ struct IssueDetailView: View {
 
     private func saveSummary() {
         guard let draft = summaryDraft?.trimmingCharacters(in: .whitespacesAndNewlines), !draft.isEmpty else { return }
-        guard draft.count <= 255 else { store.error = "A summary can be 255 characters at most; this one is \(draft.count)."; return }
+        guard draft.count <= 255 else { store.error = String(localized: "A summary can be 255 characters at most; this one is \(draft.count)."); return }
         summaryDraft = nil
         guard draft != store.issue?.fields.summary else { return }
         Task { if !(await run { try await $0.editIssue(key, fields: ["summary": .string(draft)]) }.value) { summaryDraft = draft } }
@@ -1125,7 +1125,8 @@ struct ReminderView: View {
         let tomorrow9 = cal.date(bySettingHour: 9, minute: 0, second: 0, of: cal.date(byAdding: .day, value: 1, to: .now)!)!
         let monday9 = cal.nextDate(after: .now, matching: DateComponents(hour: 9, minute: 0, weekday: 2), matchingPolicy: .nextTime)!
         let at = { (d: Date) in d.formatted(date: .omitted, time: .shortened) }
-        return [("In 1 Hour", .now.addingTimeInterval(3600)), ("Tomorrow at \(at(tomorrow9))", tomorrow9), ("Next Monday at \(at(monday9))", monday9)]
+        return [(String(localized: "In 1 Hour"), .now.addingTimeInterval(3600)), (String(localized: "Tomorrow at \(at(tomorrow9))"), tomorrow9),
+                (String(localized: "Next Monday at \(at(monday9))"), monday9)]
     }
 
     var body: some View {

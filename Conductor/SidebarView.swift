@@ -2,15 +2,69 @@ import SwiftUI
 
 /// The one query behind the list. Every sidebar entry is a preset of it; the chips edit it in place.
 struct ListFilters: Hashable, Codable {
-    enum Scope: String, CaseIterable, Codable { case all = "Everything", recent = "Recently viewed", watching = "Watching" }
-    enum Status: String, CaseIterable, Codable { case any = "Any status", open = "Open", todo = "To Do", inProgress = "In Progress", done = "Done" }
-    enum Assignee: String, CaseIterable, Codable { case any = "Any assignee", me = "Assigned to me", unassigned = "Unassigned" }
-    enum Reporter: String, CaseIterable, Codable { case any = "Any reporter", me = "Reported by me" }
-    enum Updated: String, CaseIterable, Codable { case any = "Any time", today = "Today", week = "This week", month = "This month" }
+    // Raw values are saved with the filters (and Status's go into JQL), so they stay English; `title` is what the chips show.
+    enum Scope: String, CaseIterable, Codable {
+        case all = "Everything", recent = "Recently viewed", watching = "Watching"
+        var title: String {
+            switch self {
+            case .all: String(localized: "Everything")
+            case .recent: String(localized: "Recently viewed")
+            case .watching: String(localized: "Watching")
+            }
+        }
+    }
+    enum Status: String, CaseIterable, Codable {
+        case any = "Any status", open = "Open", todo = "To Do", inProgress = "In Progress", done = "Done"
+        var title: String {
+            switch self {
+            case .any: String(localized: "Any status")
+            // Its own key: "Open" alone is the verb on menus.
+            case .open: String(localized: "status.open", defaultValue: "Open", comment: "Status filter chip: issues not done yet")
+            case .todo: String(localized: "To Do", comment: "Jira status category")
+            case .inProgress: String(localized: "In Progress", comment: "Jira status category")
+            case .done: String(localized: "Done", comment: "Jira status category")
+            }
+        }
+    }
+    enum Assignee: String, CaseIterable, Codable {
+        case any = "Any assignee", me = "Assigned to me", unassigned = "Unassigned"
+        var title: String {
+            switch self {
+            case .any: String(localized: "Any assignee")
+            case .me: String(localized: "Assigned to me")
+            case .unassigned: String(localized: "Unassigned")
+            }
+        }
+    }
+    enum Reporter: String, CaseIterable, Codable {
+        case any = "Any reporter", me = "Reported by me"
+        var title: String { self == .any ? String(localized: "Any reporter") : String(localized: "Reported by me") }
+    }
+    enum Updated: String, CaseIterable, Codable {
+        case any = "Any time", today = "Today", week = "This week", month = "This month"
+        var title: String {
+            switch self {
+            case .any: String(localized: "Any time", comment: "Updated filter chip")
+            case .today: String(localized: "Today", comment: "Updated filter chip")
+            case .week: String(localized: "This week", comment: "Updated filter chip")
+            case .month: String(localized: "This month", comment: "Updated filter chip")
+            }
+        }
+    }
 
     struct Sort: Hashable, Codable {
         enum Field: String, CaseIterable, Codable {
             case updated = "Updated", created = "Created", viewed = "Last viewed", due = "Due date", priority = "Priority", key = "Key"
+            var title: String {
+                switch self {
+                case .updated: String(localized: "Updated")
+                case .created: String(localized: "Created")
+                case .viewed: String(localized: "Last viewed")
+                case .due: String(localized: "Due date")
+                case .priority: String(localized: "Priority")
+                case .key: String(localized: "Key", comment: "Sort by issue key")
+                }
+            }
             var jql: String {
                 switch self {
                 case .updated: "updated"
@@ -124,10 +178,10 @@ enum Smart: String, CaseIterable, Codable {
 
     var title: String {
         switch self {
-        case .assigned: "Assigned to Me"
-        case .reported: "Reported by Me"
-        case .recent: "Recently Viewed"
-        case .watching: "Watching"
+        case .assigned: String(localized: "Assigned to Me")
+        case .reported: String(localized: "Reported by Me")
+        case .recent: String(localized: "Recently Viewed")
+        case .watching: String(localized: "Watching")
         }
     }
 
@@ -199,18 +253,18 @@ struct SidebarView: View {
                             Menu("Colour") {
                                 ForEach(Palette.names, id: \.self) { name in
                                     Toggle(isOn: Binding(get: { st.colorName == name }, set: { if $0 { st.setColor(name) } })) {
-                                        Label { Text(name.capitalized) } icon: { Image(nsImage: Palette.swatch(name)) }
+                                        Label { Text(Palette.title(name)) } icon: { Image(nsImage: Palette.swatch(name)) }
                                     }
                                 }
                             }
                             Button("Refresh", systemImage: "arrow.clockwise") { Task { try? await st.load() } }
                             Divider()
-                            Button("Sign Out of \(st.title)…", systemImage: "rectangle.portrait.and.arrow.right", role: .destructive) { signingOut = st }
+                            Button("Sign Out of \(st.title)…", systemImage: "rectangle.portrait.and.arrow.forward", role: .destructive) { signingOut = st }
                         }
                 }
             }
             ForEach(session.accounts.filter { session.unreachable[$0.id] != nil }, id: \.id) { account in
-                Section(account.site.host() ?? "Account") {
+                Section(account.site.host() ?? String(localized: "Account")) {
                     Label("Couldn't connect", systemImage: "wifi.exclamationmark").foregroundStyle(.secondary)
                         .help(session.unreachable[account.id] ?? "")
                     Button("Retry") { Task { await session.retry(account) } }
@@ -239,7 +293,7 @@ struct SidebarView: View {
                     VStack(alignment: .leading, spacing: 4) {
                         ProgressView(value: warming.map { $0.warmProgress ?? 0 }.reduce(0, +) / Double(warming.count))
                             .progressViewStyle(.linear).controlSize(.small)
-                        Text(warming.count == 1 ? warming[0].warmLabel : "Downloading issues for \(warming.count) accounts…")
+                        Text(warming.count == 1 ? warming[0].warmLabel : String(localized: "Downloading issues for \(warming.count) accounts…"))
                             .font(.caption).foregroundStyle(.secondary).lineLimit(1)
                     }
                 }
@@ -294,7 +348,7 @@ struct SidebarView: View {
         )) {
             ForEach(st.projects) { projectRow($0, st) }
         } label: {
-            tinted("All Projects", symbol: "folder", color: st.color)
+            tinted(String(localized: "All Projects"), symbol: "folder", color: st.color)
         }
     }
 

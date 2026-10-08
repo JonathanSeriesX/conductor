@@ -37,7 +37,7 @@ struct JiraError: LocalizedError, Sendable {
     let status: Int
     let messages: [String]
     var errorDescription: String? {
-        messages.isEmpty ? "Jira returned HTTP \(status)" : messages.joined(separator: "\n")
+        messages.isEmpty ? String(localized: "Jira returned HTTP \(status)") : messages.joined(separator: "\n")
     }
     private struct Body: Decodable { let errorMessages: [String]?; let errors: [String: String]? }
     init(status: Int, data: Data) {
@@ -45,7 +45,7 @@ struct JiraError: LocalizedError, Sendable {
         let b = try? JSONDecoder().decode(Body.self, from: data)
         var m = b?.errorMessages ?? []
         m += (b?.errors ?? [:]).map { "\($0.key): \($0.value)" }
-        if m.isEmpty, status == 401 { m = ["Invalid email or API token."] }
+        if m.isEmpty, status == 401 { m = [String(localized: "Invalid email or API token.")] }
         messages = m
     }
 }

@@ -118,7 +118,7 @@ final class BoardStore {
         do {
             let transitions = try await client.transitions(key)
             guard let t = transitions.first(where: { targets.contains($0.to.id) }) else {
-                error = "No transition from \(issue.fields.status.name) to \(column.name) is allowed for \(key)."
+                error = String(localized: "No transition from \(issue.fields.status.name) to \(column.name) is allowed for \(key).")
                 return
             }
             try await client.transition(key, to: t.id)
@@ -129,6 +129,14 @@ final class BoardStore {
 
 enum Swimlanes: String, CaseIterable {
     case none = "No Swimlanes", assignee = "Assignee", parent = "Parent"
+
+    var title: String {
+        switch self {
+        case .none: String(localized: "No Swimlanes")
+        case .assignee: String(localized: "Assignee")
+        case .parent: String(localized: "Parent")
+        }
+    }
 
     struct Lane: Identifiable { let id: String; let title: String; let issues: [Issue] }
 
@@ -146,7 +154,7 @@ enum Swimlanes: String, CaseIterable {
             groups[id, default: []].append(i)
         }
         var lanes = order.map { Lane(id: $0, title: titles[$0]!, issues: groups[$0]!) }
-        if !rest.isEmpty { lanes.append(Lane(id: "none", title: self == .assignee ? "Unassigned" : "No parent", issues: rest)) }
+        if !rest.isEmpty { lanes.append(Lane(id: "none", title: self == .assignee ? String(localized: "Unassigned") : String(localized: "No parent"), issues: rest)) }
         return lanes
     }
 }
@@ -216,7 +224,7 @@ struct BoardView: View {
                             if let c = state?.client { Task { await store.loadBoard(c) } }
                         }))
                     }
-                } label: { Text(store.board?.name ?? "Board").lineLimit(1) }
+                } label: { Text(store.board?.name ?? String(localized: "Board")).lineLimit(1) }
                 .frame(maxWidth: 220)
                 .disabled(store.boards.count < 2)
             }
@@ -224,22 +232,22 @@ struct BoardView: View {
                 if !store.sprints.isEmpty {
                     Menu {
                         ForEach(store.sprints) { s in
-                            Toggle(s.name + (s.state == "active" ? " · active" : ""), isOn: Binding(get: { store.sprint == s }, set: { on in
+                            Toggle(sprintTitle(s), isOn: Binding(get: { store.sprint == s }, set: { on in
                                 guard on else { return }
                                 store.sprint = s
                                 if let c = state?.client { Task { await store.loadIssues(c) } }
                             }))
                         }
-                    } label: { Text(store.sprint.map { $0.name + ($0.state == "active" ? " · active" : "") } ?? "Sprint").lineLimit(1) }
+                    } label: { Text(store.sprint.map(sprintTitle) ?? String(localized: "Sprint")).lineLimit(1) }
                     .frame(maxWidth: 260)
                 }
             }
             ToolbarItem(id: "swimlanes") {
                 Menu {
                     ForEach(Swimlanes.allCases, id: \.self) { s in
-                        Toggle(s.rawValue, isOn: Binding(get: { swimlanes == s }, set: { if $0 { swimlanes = s } }))
+                        Toggle(s.title, isOn: Binding(get: { swimlanes == s }, set: { if $0 { swimlanes = s } }))
                     }
-                } label: { Text(swimlanes.rawValue) }
+                } label: { Text(swimlanes.title) }
                 .help("Group cards into swimlanes")
             }
             ToolbarItem(id: "openInBrowser") {
@@ -299,6 +307,8 @@ struct BoardView: View {
         }
     }
 
+    private func sprintTitle(_ s: Sprint) -> String { s.state == "active" ? String(localized: "\(s.name) · active") : s.name }
+
     private func reload() { if let c = state?.client { Task { await store.loadIssues(c) } } }
 
     private func drop(_ column: BoardConfiguration.Column) -> (String) -> Void {
@@ -314,7 +324,7 @@ struct BoardView: View {
 
     private var subtitle: String {
         var s = issues(cardCount)
-        if store.truncated { s += " (first 2000)" }
+        if store.truncated { s = String(localized: "\(s) (first 2000)") }
         if let sp = store.sprint { s = sp.name + " · " + s }
         return s
     }
@@ -334,7 +344,7 @@ struct BoardColumnHeader: View {
                 .foregroundStyle(over ? Color.white : .secondary)
                 .padding(.horizontal, 6).padding(.vertical, 1)
                 .background(over ? AnyShapeStyle(.red) : AnyShapeStyle(.quaternary.opacity(0.6)), in: .capsule)
-                .help(column.max.map { "WIP limit \($0)" + (over ? ", exceeded" : "") } ?? "")
+                .help(column.max.map { over ? String(localized: "WIP limit \($0), exceeded") : String(localized: "WIP limit \($0)") } ?? "")
             Spacer()
         }
         .padding(.horizontal, 4)

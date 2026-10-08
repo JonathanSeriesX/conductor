@@ -106,7 +106,7 @@ struct AppCommands: Commands {
         }
     }
 
-    private func item(_ title: String, _ action: IssueActions.Action, _ key: KeyEquivalent? = nil, _ modifiers: EventModifiers = .command) -> some View {
+    private func item(_ title: LocalizedStringKey, _ action: IssueActions.Action, _ key: KeyEquivalent? = nil, _ modifiers: EventModifiers = .command) -> some View {
         Button(title) { issue?.perform(action) }
             .keyboardShortcut(key.map { KeyboardShortcut($0, modifiers: modifiers) })
             .disabled(issue == nil)

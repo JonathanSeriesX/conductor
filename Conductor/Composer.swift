@@ -6,7 +6,7 @@ import SwiftUI
 struct Composer: View {
     @Binding var text: String
     @Binding var mentions: [String: String]
-    var placeholder = "Write something…"
+    var placeholder: LocalizedStringKey = "Write something…"
     var minHeight: CGFloat = 60
     var maxHeight: CGFloat = 260
     /// Uploads pasted image data as an attachment and returns its URL.
@@ -101,7 +101,7 @@ struct Composer: View {
         .font(.callout)
     }
 
-    private func tool(_ symbol: String, _ help: String, key: KeyEquivalent? = nil, _ action: @escaping () -> Void) -> some View {
+    private func tool(_ symbol: String, _ help: LocalizedStringKey, key: KeyEquivalent? = nil, _ action: @escaping () -> Void) -> some View {
         // A Label, so VoiceOver reads "Quote" rather than the symbol's own name ("Lyrics").
         Button(action: action) { Label(help, systemImage: symbol).labelStyle(.iconOnly).frame(width: 24, height: 20).contentShape(.rect) }
             .buttonStyle(.plain)
@@ -221,7 +221,7 @@ struct Composer: View {
             do {
                 let url = try await upload(image.data, image.name)
                 wrap("[\(image.name)](\(url.absoluteString))", "")
-            } catch { self.error = "Couldn't upload the image: \(error.localizedDescription)" }
+            } catch { self.error = String(localized: "Couldn't upload the image: \(error.localizedDescription)") }
         }
     }
 
@@ -260,7 +260,7 @@ enum PastedImage {
         let f = DateFormatter()   // local time; POSIX so a forced 12-hour clock cannot rewrite the pattern
         f.locale = Locale(identifier: "en_US_POSIX")
         f.dateFormat = "yyyy-MM-dd HH.mm.ss"
-        return (png, "Pasted image \(f.string(from: .now)).png")
+        return (png, String(localized: "Pasted image \(f.string(from: .now)).png"))
     }
 }
 
