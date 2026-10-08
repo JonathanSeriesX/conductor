@@ -233,6 +233,16 @@ struct SidebarView: View {
                             .help("Try to reconnect now. Conductor also retries on its own every 20 seconds.")
                     }
                 }
+                let warming = session.states.filter { $0.warmProgress != nil }
+                if !warming.isEmpty {
+                    // One bar for every account: the first download of an account, or a catch-up after launch.
+                    VStack(alignment: .leading, spacing: 4) {
+                        ProgressView(value: warming.map { $0.warmProgress ?? 0 }.reduce(0, +) / Double(warming.count))
+                            .progressViewStyle(.linear).controlSize(.small)
+                        Text(warming.count == 1 ? warming[0].warmLabel : "Downloading issues for \(warming.count) accounts…")
+                            .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                }
                 Button { showAddAccount = true } label: { Label("Add Account", systemImage: "plus") }
                     .buttonStyle(.plain)
                     .foregroundStyle(.secondary)

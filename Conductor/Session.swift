@@ -26,6 +26,8 @@ final class AccountState: Identifiable {
     /// Transitions per "project|type|status", so a row's context menu can offer them without a round trip.
     /// ponytail: a workflow can differ per issue inside one project (conditions, screens); a wrong guess just errors.
     var transitionsByWorkflow: [String: [Transition]] = [:]
+    /// Edit screens per workflow key: what an issue of that project, type and status lets you change.
+    @ObservationIgnored var editMetaByWorkflow: [String: EditMeta] = [:]
     @ObservationIgnored private var warming: Set<String> = []
 
     static func workflowKey(_ i: Issue) -> String { "\(i.fields.project?.key ?? "")|\(i.fields.issuetype.id)|\(i.fields.status.id)" }
@@ -39,12 +41,94 @@ final class AccountState: Identifiable {
         }
         guard !todo.isEmpty else { return }
         Task { @MainActor in
-            for i in todo {
-                let k = Self.workflowKey(i)
-                if let t = try? await client.transitions(i.key) { transitionsByWorkflow[k] = t }
-                warming.remove(k)
-            }
+            for i in todo { await warmWorkflow(of: i) }
         }
+    }
+
+    /// Transitions and the edit screen of one issue, kept for every issue sharing its workflow.
+    private func warmWorkflow(of i: Issue) async {
+        let k = Self.workflowKey(i)
+        defer { warming.remove(k) }
+        if let t = try? await client.transitions(i.key) { transitionsByWorkflow[k] = t }
+        if let m = try? await client.editMeta(i.key) { editMetaByWorkflow[k] = m }
+        DiskCache.saveAsync(transitionsByWorkflow, account: account, name: "workflows-transitions")
+        DiskCache.saveAsync(editMetaByWorkflow, account: account, name: "workflows-editmeta")
+    }
+
+    // MARK: Warm pass
+
+    /// Everything an issue page needs for what you are likely to open, fetched once and kept up to date:
+    /// open issues assigned to or reported by you and every open issue of a starred project, with full
+    /// details, their workflows, sprints, link types, children of epics, and every icon and avatar they use.
+    /// Only issues updated since the last pass are downloaded again.
+    func warm() async {
+        guard warmProgress == nil else { return }
+        warmProgress = 0
+        defer { warmProgress = nil; warmLabel = "" }
+        var scopes = ["(assignee = currentUser() OR reporter = currentUser()) AND statusCategory != Done"]
+        if !starred.isEmpty { scopes.append("project in (\(starred.map { "\"\($0)\"" }.joined(separator: ", "))) AND statusCategory != Done") }
+        let jql = "(" + scopes.joined(separator: ") OR (") + ") ORDER BY updated DESC"
+        // ponytail: a count request for the bar; the page loop below does the work and tolerates the count being off.
+        let total = max(1, (try? await client.approximateCount(jql: jql)) ?? 100)
+        var seen = 0
+        var token: String?
+        var issues: [Issue] = []
+        repeat {
+            guard let page = try? await client.search(jql: jql, nextPageToken: token) else { break }
+            // Rows unchanged since the last pass already have their details on disk.
+            let stale = page.issues.filter { prefetched[$0.key] != $0.fields.updated }
+            if !stale.isEmpty, let full = try? await client.search(jql: "issuekey in (" + stale.map { "\"\($0.key)\"" }.joined(separator: ",") + ")", fields: client.detailFields) {
+                for i in full.issues {
+                    DiskCache.saveAsync(i, account: account, name: "issue-\(i.key)")
+                    peek[i.key] = i
+                    prefetched[i.key] = i.fields.updated
+                }
+                issues += full.issues
+            }
+            for i in page.issues where !stale.contains(where: { $0.key == i.key }) { issues.append(i) }
+            seen += page.issues.count
+            warmLabel = "Downloading issues… \(min(seen, total)) of \(total)"
+            warmProgress = min(0.7, 0.7 * Double(seen) / Double(total))
+            token = page.isLast == true ? nil : page.nextPageToken
+        } while token != nil
+        DiskCache.saveAsync(prefetched, account: account, name: "prefetched")
+        Spotlight.index(issues, host: host)
+
+        // Workflows: one representative issue per project, type and status.
+        var byWorkflow: [String: Issue] = [:]
+        for i in issues where transitionsByWorkflow[Self.workflowKey(i)] == nil || editMetaByWorkflow[Self.workflowKey(i)] == nil { byWorkflow[Self.workflowKey(i)] = i }
+        warmLabel = "Reading workflows…"
+        for (n, i) in byWorkflow.values.enumerated() {
+            await warmWorkflow(of: i)
+            warmProgress = 0.7 + 0.15 * Double(n + 1) / Double(byWorkflow.count)
+        }
+
+        // Children of epics, one query per page rather than one per epic.
+        let epics = issues.filter { ($0.fields.issuetype.hierarchyLevel ?? 0) >= 1 }.map(\.key)
+        if !epics.isEmpty, let kids = try? await client.search(jql: "parent in (" + epics.map { "\"\($0)\"" }.joined(separator: ",") + ") ORDER BY created ASC") {
+            let grouped = Dictionary(grouping: kids.issues.filter { !$0.fields.issuetype.isSubtask }, by: { $0.fields.parent?.key ?? "" })
+            for key in epics { DiskCache.saveAsync(grouped[key] ?? [], account: account, name: "children-\(key)") }
+        }
+        _ = await linkTypes()
+        for project in Set(issues.compactMap { $0.fields.project?.key }).union(starred) where client.sprintField != nil { _ = await sprints(project: project) }
+        warmProgress = 0.9
+
+        // Icons and avatars, into the disk and memory caches, so no row or page ever draws a placeholder first.
+        warmLabel = "Fetching icons…"
+        var urls = Set<URL>()
+        for i in issues {
+            urls.formUnion([i.fields.issuetype.iconUrl, i.fields.priority?.iconUrl, i.fields.assignee?.avatar, i.fields.reporter?.avatar,
+                            i.fields.parent?.fields.issuetype?.iconUrl, i.fields.project?.avatar].compactMap { $0 })
+            for s in i.fields.subtasks ?? [] { if let u = s.fields.issuetype?.iconUrl { urls.insert(u) } }
+        }
+        for p in projects { if let u = p.avatar { urls.insert(u) } }
+        if let u = me?.avatar { urls.insert(u) }
+        for url in urls where !DiskCache.hasImage(for: url) {
+            guard let data = try? await client.data(for: url) else { continue }
+            DiskCache.saveImage(data, for: url)
+            if let img = await DiskCache.decodeImage(data, maxPixels: 256) { ImageCache.shared.setObject(img, forKey: url as NSURL) }
+        }
+        warmProgress = 1
     }
     private var customTitle: String
     /// Name of a `Palette` colour; chosen by the user or dealt from the palette by sidebar position.
@@ -66,7 +150,12 @@ final class AccountState: Identifiable {
     }
     var starredProjects: [Project] { projects.filter { starred.contains($0.key) } }
     /// `updated` of each issue whose full details were prefetched to disk, so unchanged ones are skipped.
+    /// Persisted, so the next launch downloads only what changed.
     var prefetched: [String: Date] = [:]
+    /// 0…1 while the warm pass runs, nil when idle. The sidebar draws it.
+    var warmProgress: Double?
+    var warmLabel = ""
+
 
     init(account: Account) {
         self.account = account
@@ -89,6 +178,9 @@ final class AccountState: Identifiable {
         filters = DiskCache.load(account: account, name: "filters") ?? []
         issueTypeNames = DiskCache.load(account: account, name: "issueTypes") ?? []
         jqlFields = DiskCache.load(account: account, name: "jqlFields") ?? []
+        prefetched = DiskCache.load(account: account, name: "prefetched") ?? [:]
+        transitionsByWorkflow = DiskCache.load(account: account, name: "workflows-transitions") ?? [:]
+        editMetaByWorkflow = DiskCache.load(account: account, name: "workflows-editmeta") ?? [:]
         starred = Set(projects.filter { $0.favourite == true }.map(\.key))
         return me != nil
     }
@@ -108,7 +200,11 @@ final class AccountState: Identifiable {
         }
         await catalog
         error = nil
-        await prefetchLists()
+        // The account is usable now; the lists, boards and the warm pass fill the cache behind it.
+        Task { @MainActor in
+            await prefetchLists()
+            await warm()
+        }
     }
 
     func refreshCatalog() async {
@@ -146,8 +242,9 @@ final class AccountState: Identifiable {
 
     func linkTypes() async -> [LinkType] {
         if let linkTypesCache { return linkTypesCache }
+        if let disk: [LinkType] = await DiskCache.loadAsync(account: account, name: "linkTypes") { linkTypesCache = disk; return disk }
         let fresh = (try? await client.linkTypes()) ?? []
-        if !fresh.isEmpty { linkTypesCache = fresh }
+        if !fresh.isEmpty { linkTypesCache = fresh; DiskCache.saveAsync(fresh, account: account, name: "linkTypes") }
         return fresh
     }
 
@@ -251,11 +348,15 @@ final class Session {
             }
             pending.append((account, st, task))
         }
-        isRestoring = false // whatever is cached is on screen now; the rest arrives as it verifies
+        // Whatever is cached is on screen now; the rest arrives as it verifies. With accounts but no cache
+        // (a first launch, or after Clear Cache) the window keeps its spinner until the first one answers,
+        // rather than showing the sign-in form to someone who is signed in.
+        if !states.isEmpty || stored.isEmpty { isRestoring = false }
         for (account, st, task) in pending {
             let failure = await task.value
             if failure == nil {
                 attach(st)
+                isRestoring = false
             } else if let e = failure as? JiraError, e.status == 401 {
                 // Never forget an account on its own: a captive portal or proxy can answer 401 for every site.
                 unreachable[account.id] = "Sign-in was rejected. Check the API token, then retry."

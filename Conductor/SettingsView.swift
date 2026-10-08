@@ -7,6 +7,7 @@ struct SettingsView: View {
     @AppStorage("pollMinutes") private var pollMinutes = 3
     @AppStorage("checkForUpdates") private var checkForUpdates = true
     @Environment(Session.self) private var session
+    @State private var cacheSize: Int64 = 0
 
     var body: some View {
         Form {
@@ -38,7 +39,12 @@ struct SettingsView: View {
             }
             Section("Search") {
                 Button("Clear Recent Searches") { session.clearRecentSearches() }
-                Button("Clear Cache and Spotlight Index") { DiskCache.clear() }
+                HStack {
+                    Button("Clear Cache and Spotlight Index") { DiskCache.clear(); cacheSize = 0 }
+                    Spacer()
+                    Text(ByteCountFormatter.string(fromByteCount: cacheSize, countStyle: .file)).foregroundStyle(.secondary)
+                }
+                .task { cacheSize = await DiskCache.size() }
                 Text("Issues you open or list are indexed for Spotlight and kept on disk so the app opens instantly.")
                     .font(.caption).foregroundStyle(.secondary)
             }

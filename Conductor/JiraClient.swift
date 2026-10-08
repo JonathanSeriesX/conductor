@@ -159,6 +159,14 @@ struct JiraClient: Sendable {
 
     func favouriteFilters() async throws -> [Filter] { try await get("filter/favourite") }
 
+    /// How many issues a query matches, give or take; enough for a progress bar.
+    func approximateCount(jql: String) async throws -> Int {
+        struct Body: Encodable { let jql: String }
+        struct Count: Decodable { let count: Int }
+        let c: Count = try await send("search/approximate-count", method: "POST", body: Body(jql: jql))
+        return c.count
+    }
+
     func search(jql: String, nextPageToken: String? = nil, fields: String = JiraClient.listFields) async throws -> SearchPage {
         var q = ["jql": jql, "maxResults": "50", "fields": fields]
         if let nextPageToken { q["nextPageToken"] = nextPageToken }
