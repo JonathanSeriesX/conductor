@@ -65,6 +65,22 @@ enum DiskCache {
         return await Task.detached(priority: .userInitiated) { try? Data(contentsOf: file) }.value
     }
 
+    /// Reads on the calling thread: a few kilobytes for an icon, so a view can draw it in its first frame.
+    static func imageDataNow(for url: URL) -> Data? { try? Data(contentsOf: imageRoot.appending(path: hash(url.absoluteString))) }
+    static func hasImage(for url: URL) -> Bool { FileManager.default.fileExists(atPath: imageRoot.appending(path: hash(url.absoluteString)).path) }
+
+    /// Bytes on disk for issues, lists and images together.
+    static func size() async -> Int64 {
+        await Task.detached(priority: .utility) { () -> Int64 in
+            var total: Int64 = 0
+            for dir in [root, imageRoot] {
+                guard let e = FileManager.default.enumerator(at: dir, includingPropertiesForKeys: [.fileSizeKey]) else { continue }
+                for f in e.allObjects.compactMap({ $0 as? URL }) { total += Int64((try? f.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) }
+            }
+            return total
+        }.value
+    }
+
     static func saveImage(_ data: Data, for url: URL) {
         let file = imageRoot.appending(path: hash(url.absoluteString))
         Task.detached(priority: .utility) { try? data.write(to: file, options: .atomic) }

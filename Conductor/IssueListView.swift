@@ -92,6 +92,7 @@ final class IssueListStore {
                     st.peek[issue.key] = issue
                     st.prefetched[issue.key] = issue.fields.updated
                 }
+                DiskCache.saveAsync(st.prefetched, account: st.account, name: "prefetched")
             }
         }
     }

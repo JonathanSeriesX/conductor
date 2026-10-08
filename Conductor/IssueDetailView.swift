@@ -57,7 +57,9 @@ final class IssueDetailStore {
             issue = await DiskCache.loadAsync(account: state.account, name: "issue-\(key)") ?? state.peek[key]
             // Everything the right column is built from, so no row appears or wakes up a second later.
             if let m: EditMeta = await DiskCache.loadAsync(account: state.account, name: "editmeta-\(key)") { editMeta = m }
+            else if let i = issue, let m = state.editMetaByWorkflow[AccountState.workflowKey(i)] { editMeta = m }
             if let t: [Transition] = await DiskCache.loadAsync(account: state.account, name: "transitions-\(key)") { transitions = t }
+            else if let i = issue, let t = state.transitionsByWorkflow[AccountState.workflowKey(i)] { transitions = t }
             if full, let kids: [Issue] = await DiskCache.loadAsync(account: state.account, name: "children-\(key)") { children = kids }
             if full, canEdit(client.sprintField), let project = issue?.fields.project?.key { sprints = await state.sprints(project: project) }
         }
