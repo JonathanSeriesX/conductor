@@ -10,7 +10,8 @@ final class BoardStore {
     var quickFilters: [QuickFilter] = []
     var activeFilters: Set<Int> = []
     var issues: [Issue] = []
-    var isLoading = false
+    /// True from the start, so a window with no saved board shows a spinner rather than "No boards" first.
+    var isLoading = true
     var error: String?
     var truncated = false
     private var generation = 0
@@ -48,14 +49,25 @@ final class BoardStore {
         }
     }
 
+    /// Last run's board, read on the spot rather than after a hop to another thread: a board window calls this
+    /// as it appears, so its first frame has the columns and cards instead of a blank window.
+    func restore(_ state: AccountState, project: String) {
+        guard issues.isEmpty, let snap: Snapshot = DiskCache.load(account: state.account, name: "board-\(project)") else { return }
+        apply(snap)
+    }
+
+    private func apply(_ snap: Snapshot) {
+        boards = snap.boards; board = snap.board; config = snap.config
+        sprints = snap.sprints; sprint = snap.sprint; quickFilters = snap.quickFilters; issues = snap.issues
+    }
+
     func load(_ state: AccountState, project: String) async {
         self.state = state
         projectKey = project
         let client = state.client
         if issues.isEmpty, let snap: Snapshot = await DiskCache.loadAsync(account: state.account, name: "board-\(project)") {
             // Last run's board at once; the network pass below replaces it piece by piece.
-            boards = snap.boards; board = snap.board; config = snap.config
-            sprints = snap.sprints; sprint = snap.sprint; quickFilters = snap.quickFilters; issues = snap.issues
+            apply(snap)
         }
         isLoading = true
         defer { isLoading = false }
@@ -260,6 +272,7 @@ struct BoardView: View {
                     .help("Refresh (⌘R)")
             }
         }
+        .onAppear { if let state { store.restore(state, project: projectKey) } }
         // Re-runs once sign-in completes after a restored launch.
         .task(id: "\(projectKey)|\(state?.id.uuidString ?? "")") {
             if let state { await store.load(state, project: projectKey) }

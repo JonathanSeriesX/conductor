@@ -1,4 +1,5 @@
 import SwiftUI
+import Synchronization
 
 /// An issue plus the account it lives in. Keys alone are ambiguous once several sites are signed in.
 struct IssueTarget: Hashable, Codable, Sendable {
@@ -21,6 +22,9 @@ final class AccountState: Identifiable {
     var error: String?
     /// Rows the lists have seen, so an issue page can open with what the row already knows.
     @ObservationIgnored var peek: [String: Issue] = [:]
+    /// First pages of lists by cache name ("list-<hash of JQL>"): the recent ones from disk at launch, then every
+    /// one fetched, so a list opens with rows in its first frame instead of after a disk read.
+    @ObservationIgnored var lists: [String: [Issue]] = [:]
     @ObservationIgnored private var linkTypesCache: [LinkType]?
     @ObservationIgnored private var sprintsByProject: [String: [Sprint]] = [:]
     /// Transitions per "project|type|status", so a row's context menu can offer them without a round trip.
@@ -155,6 +159,9 @@ final class AccountState: Identifiable {
     /// 0…1 while the warm pass runs, nil when idle. The sidebar draws it.
     var warmProgress: Double?
     var warmLabel = ""
+    /// The sidebar shows the bar only for an account's first download. The catch-up on later launches takes a
+    /// few seconds and changes nothing on screen, so it must not grow and shrink the sidebar under every launch.
+    private(set) var warmIsFirst = false
 
 
     init(account: Account) {
@@ -169,19 +176,25 @@ final class AccountState: Identifiable {
         UserDefaults.standard.set(name, forKey: "accountColor.\(id)")
     }
 
-    /// Everything the last session knew, read from disk. True when enough is there to show the account at once.
-    func loadCached() -> Bool {
-        me = DiskCache.load(account: account, name: "me")
-        client.sprintField = DiskCache.load(account: account, name: "sprintField")
-        client.pointsFields = DiskCache.load(account: account, name: "pointsFields") ?? []
-        projects = DiskCache.load(account: account, name: "projects") ?? []
-        filters = DiskCache.load(account: account, name: "filters") ?? []
-        issueTypeNames = DiskCache.load(account: account, name: "issueTypes") ?? []
-        jqlFields = DiskCache.load(account: account, name: "jqlFields") ?? []
-        prefetched = DiskCache.load(account: account, name: "prefetched") ?? [:]
-        transitionsByWorkflow = DiskCache.load(account: account, name: "workflows-transitions") ?? [:]
-        editMetaByWorkflow = DiskCache.load(account: account, name: "workflows-editmeta") ?? [:]
+    /// Puts what the last session knew in place. True when enough is there to show the account at once.
+    func apply(_ c: CachedAccount) -> Bool {
+        me = c.me
+        client.sprintField = c.sprintField
+        client.pointsFields = c.pointsFields
+        projects = c.projects
+        filters = c.filters
+        issueTypeNames = c.issueTypeNames
+        jqlFields = c.jqlFields
+        prefetched = c.prefetched
+        transitionsByWorkflow = c.transitions
+        lists = c.lists
         starred = Set(projects.filter { $0.favourite == true }.map(\.key))
+        // Edit screens are the biggest file by far (a megabyte on a busy site) and only an issue page reads them.
+        let account = account
+        Task { @MainActor in
+            let disk: [String: EditMeta] = await DiskCache.loadAsync(account: account, name: "workflows-editmeta") ?? [:]
+            editMetaByWorkflow = disk.merging(editMetaByWorkflow) { _, fresh in fresh }
+        }
         return me != nil
     }
 
@@ -200,7 +213,9 @@ final class AccountState: Identifiable {
         }
         await catalog
         error = nil
-        // The account is usable now; the lists, boards and the warm pass fill the cache behind it.
+        // The account is usable now; the lists, boards and the warm pass fill the cache behind it. Judged before the
+        // lists start, since they prefetch details of their own.
+        warmIsFirst = prefetched.isEmpty
         Task { @MainActor in
             await prefetchLists()
             await warm()
@@ -312,9 +327,9 @@ final class Session {
 
     // MARK: Lifecycle
 
-    func restore() async {
-        watchConnectivity()
-        defer { isRestoring = false }
+    /// Accounts and their caches are read before the first frame, so the window opens showing the last session's
+    /// sidebar and list rather than a spinner; the network checks them afterwards in `restore`.
+    init() {
         history = (try? JSONDecoder().decode([IssueTarget].self, from: UserDefaults.standard.data(forKey: "history") ?? Data())) ?? []
         stored = Keychain.load()
         #if DEBUG
@@ -334,26 +349,41 @@ final class Session {
             Keychain.save(stored)
         }
         #endif
-        await connectAll(persist: true)
+        // One thread per account: each reads a dozen small files and its recent lists.
+        let accounts = stored
+        let cached = Mutex([CachedAccount?](repeating: nil, count: accounts.count))
+        DispatchQueue.concurrentPerform(iterations: accounts.count) { i in
+            let c = CachedAccount(accounts[i])
+            cached.withLock { $0[i] = c }
+        }
+        for (account, c) in zip(accounts, cached.withLock { $0 }) {
+            let st = AccountState(account: account)
+            if let c, st.apply(c) { attach(st) }
+            connecting.append(st)
+        }
+        // With accounts but no cache (a first launch, or after Clear Cache) the window keeps its spinner until the
+        // first one answers, rather than showing the sign-in form to someone who is signed in.
+        isRestoring = states.isEmpty && !stored.isEmpty
     }
 
-    /// Shows every account from its cache at once, then verifies each token and refreshes in the background.
-    private func connectAll(persist: Bool) async {
-        var pending: [(Account, AccountState, Task<(any Error)?, Never>)] = []
-        for account in stored {
-            let st = AccountState(account: account)
-            if st.loadCached() { attach(st) }
-            let task = Task<(any Error)?, Never> { @MainActor in
+    /// States made at launch, waiting for their first network check.
+    private var connecting: [AccountState] = []
+
+    /// Verifies every account and refreshes it in the background. Once per process: every main window asks.
+    func restore() async {
+        guard !didRestore else { return }
+        didRestore = true
+        watchConnectivity()
+        defer { isRestoring = false }
+        let pending = connecting.map { st in
+            (st, Task<(any Error)?, Never> { @MainActor in
                 do { try await st.load(); return nil } catch { return error }
-            }
-            pending.append((account, st, task))
+            })
         }
-        // Whatever is cached is on screen now; the rest arrives as it verifies. With accounts but no cache
-        // (a first launch, or after Clear Cache) the window keeps its spinner until the first one answers,
-        // rather than showing the sign-in form to someone who is signed in.
-        if !states.isEmpty || stored.isEmpty { isRestoring = false }
-        for (account, st, task) in pending {
+        connecting = []
+        for (st, task) in pending {
             let failure = await task.value
+            let account = st.account
             if failure == nil {
                 attach(st)
                 isRestoring = false
@@ -369,6 +399,7 @@ final class Session {
         // Restore never writes the Keychain: a read that failed (a rebuilt dev binary is a different app to the
         // Keychain) would otherwise save an empty list and wipe every account. Add and remove save for themselves.
     }
+    private var didRestore = false
 
     /// Adds a state to the live list, keeping the stored order and dealing a colour the first time.
     private func attach(_ st: AccountState) {
@@ -557,6 +588,33 @@ final class Session {
         if let i = parts.firstIndex(of: "browse"), i + 1 < parts.count { return parts[i + 1].uppercased() }
         if let v = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "selectedIssue" })?.value { return v.uppercased() }
         return nil
+    }
+}
+
+/// What the last session left on disk for one account, read on any thread; `AccountState.apply` puts it in place.
+struct CachedAccount: Sendable {
+    var me: JiraUser?
+    var sprintField: String?
+    var pointsFields: [String]
+    var projects: [Project]
+    var filters: [Filter]
+    var issueTypeNames: [String]
+    var jqlFields: [JQLAutocomplete.Field]
+    var prefetched: [String: Date]
+    var transitions: [String: [Transition]]
+    var lists: [String: [Issue]]
+
+    init(_ account: Account) {
+        me = DiskCache.load(account: account, name: "me")
+        sprintField = DiskCache.load(account: account, name: "sprintField")
+        pointsFields = DiskCache.load(account: account, name: "pointsFields") ?? []
+        projects = DiskCache.load(account: account, name: "projects") ?? []
+        filters = DiskCache.load(account: account, name: "filters") ?? []
+        issueTypeNames = DiskCache.load(account: account, name: "issueTypes") ?? []
+        jqlFields = DiskCache.load(account: account, name: "jqlFields") ?? []
+        prefetched = DiskCache.load(account: account, name: "prefetched") ?? [:]
+        transitions = DiskCache.load(account: account, name: "workflows-transitions") ?? [:]
+        lists = DiskCache.recentLists(account: account)
     }
 }
 

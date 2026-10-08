@@ -54,7 +54,8 @@ struct DisplayRow: Identifiable {
 final class IssueListStore {
     var rows: [ListRow] = []
     var nextToken: String?
-    var isLoading = false
+    /// True from the start: a new list is always about to load, and must not flash "No issues" first.
+    var isLoading = true
     var error: String?
     /// The filters restrict nothing, which Jira refuses; the list explains instead of asking.
     var unbounded = false
@@ -62,7 +63,8 @@ final class IssueListStore {
     var queryError: String?
     private var generation = 0
     private var single: (AccountState, String, Bool)?
-    private var loadedKey = ""
+    /// The query whose rows (cached or fresh) are on screen.
+    private var shownKey = ""
     private var sort = ListFilters.Sort()
 
     /// One page of a query for one account. With `cache` on, the page is saved to disk, indexed for
@@ -74,7 +76,11 @@ final class IssueListStore {
         }
         state.warmTransitions(page.issues)
         if cache {
-            if nextPageToken == nil { DiskCache.saveAsync(page.issues, account: state.account, name: "list-" + DiskCache.hash(jql)) }
+            if nextPageToken == nil {
+                let name = "list-" + DiskCache.hash(jql)
+                state.lists[name] = page.issues
+                DiskCache.saveAsync(page.issues, account: state.account, name: name)
+            }
             Spotlight.index(page.issues, host: state.host)
         }
         return page
@@ -108,30 +114,24 @@ final class IssueListStore {
         sort = f.sort
         unbounded = !f.isBounded
         queryError = nil
-        if unbounded { rows = []; return }
+        if unbounded { rows = []; shownKey = ""; isLoading = false; return }
         let states = f.account.map { id in session.states.filter { $0.id == id } } ?? session.states
         let queries: [(AccountState, String)] = states.map { ($0, f.jql) }
         // Typed searches are not cached: they change with every keystroke and would litter the disk.
         let cacheable = f.text.isEmpty
         let queryKey = queries.map { "\($0.0.id)|\($0.1)" }.joined()
-        let isNewQuery = loadedKey != queryKey
-        loadedKey = queryKey
+        // Each account's rows stay put (from cache on a new query, else what is shown) until its own fresh
+        // page lands, so the list never collapses to the fastest site and then grows back.
+        var byAccount: [UUID: [ListRow]] = Dictionary(grouping: rows, by: \.state.id)
+        if shownKey != queryKey {
+            byAccount = cacheable ? await Self.cachedRows(queries) : [:]
+            guard gen == generation else { return }
+            show(merged(byAccount))
+            // Only now: a load superseded before its rows reached the screen must not let the next one skip them.
+            shownKey = queryKey
+        }
+        isLoading = true
         if f.account == nil {
-            // Each account's rows stay put (from cache on a new query, else what is shown) until its own fresh
-            // page lands, so the list never collapses to the fastest site and then grows back.
-            var byAccount: [UUID: [ListRow]] = Dictionary(grouping: rows, by: \.state.id)
-            if isNewQuery {
-                byAccount = [:]
-                if cacheable {
-                    for (st, jql) in queries {
-                        let cached: [Issue] = await DiskCache.loadAsync(account: st.account, name: "list-" + DiskCache.hash(jql)) ?? []
-                        byAccount[st.id] = cached.map { ListRow(issue: $0, state: st) }
-                    }
-                }
-                guard gen == generation else { return }
-                rows = merged(byAccount)
-            }
-            isLoading = true
             let tasks = queries.map { st, jql in
                 (st.id, Task<[ListRow]?, Never> { @MainActor in
                     guard let page = try? await Self.fetch(jql: jql, state: st, cache: cacheable) else { return nil }
@@ -142,24 +142,47 @@ final class IssueListStore {
                 let fresh = await t.value
                 guard gen == generation else { return }
                 if let fresh { byAccount[id] = fresh }   // a failed site keeps what it had
-                rows = merged(byAccount)
+                show(merged(byAccount))
             }
             isLoading = false
             if cacheable { Self.prefetchDetails(rows) }
         } else {
-            guard let (st, jql) = queries.first else { rows = []; return }
+            guard let (st, jql) = queries.first else { rows = []; isLoading = false; return }
             single = (st, jql, cacheable)
-            if isNewQuery {
-                let cached: [Issue] = cacheable ? (await DiskCache.loadAsync(account: st.account, name: "list-" + DiskCache.hash(jql)) ?? []) : []
-                guard gen == generation else { return }
-                rows = cached.map { ListRow(issue: $0, state: st) }
-            }
             await fetchPage(gen: gen, replacing: true)
         }
     }
 
+    /// Last known first pages: from memory when this session has them (no suspension, so a list opened from the
+    /// sidebar draws its rows in the same frame), else from disk, every account at once.
+    private static func cachedRows(_ queries: [(AccountState, String)]) async -> [UUID: [ListRow]] {
+        var out: [UUID: [ListRow]] = [:]
+        var missing: [(AccountState, String)] = []
+        for (st, jql) in queries {
+            if let hit = st.lists["list-" + DiskCache.hash(jql)] { out[st.id] = hit.map { ListRow(issue: $0, state: st) } }
+            else { missing.append((st, jql)) }
+        }
+        guard !missing.isEmpty else { return out }
+        let reads = missing.map { st, jql in
+            let name = "list-" + DiskCache.hash(jql)
+            return (st, name, Task.detached(priority: .userInitiated) { [account = st.account] in DiskCache.load([Issue].self, account: account, name: name) })
+        }
+        for (st, name, read) in reads {
+            guard let issues = await read.value else { continue }
+            st.lists[name] = issues
+            out[st.id] = issues.map { ListRow(issue: $0, state: st) }
+        }
+        return out
+    }
+
+    /// Replaces the rows unless nothing changed: a refresh that brings the same page back must not redraw the list.
+    private func show(_ new: [ListRow]) {
+        guard new.count != rows.count || zip(new, rows).contains(where: { $0.id != $1.id || $0.issue != $1.issue }) else { return }
+        rows = new
+    }
+
     private func merged(_ byAccount: [UUID: [ListRow]]) -> [ListRow] {
-        byAccount.values.flatMap { $0 }.sorted { sort.areInOrder($0.issue, $1.issue) }
+        byAccount.count == 1 ? byAccount.values.first! : byAccount.values.flatMap { $0 }.sorted { sort.areInOrder($0.issue, $1.issue) }
     }
 
     func loadMore() async {
@@ -175,7 +198,7 @@ final class IssueListStore {
             let page = try await Self.fetch(jql: jql, state: st, nextPageToken: nextToken, cache: cacheable)
             guard gen == generation else { return }
             let fresh = page.issues.map { ListRow(issue: $0, state: st) }
-            rows = replacing ? fresh : rows + fresh
+            if replacing { show(fresh) } else { rows += fresh }
             nextToken = page.isLast == true ? nil : page.nextPageToken
             if replacing, cacheable { Self.prefetchDetails(rows) }
         } catch {
@@ -218,14 +241,15 @@ struct IssueListView: View {
     }
 
     var body: some View {
+        let shown = displayRows
         List(selection: $selection) {
-            ForEach(displayRows) { d in
+            ForEach(shown) { d in
                 let row = d.row
                 IssueRow(issue: row.issue, site: isUnified && session.states.count > 1 ? (row.state.title, row.state.color) : nil,
                          depth: d.depth, folded: d.children.count, expanded: expanded.contains(d.id),
                          toggle: d.children.isEmpty ? nil : { withAnimation(.snappy(duration: 0.25)) { expanded.formSymmetricDifference([d.id]) } })
                     .tag(row.target)
-                    .onAppear { if d.id == displayRows.last?.id { Task { await store.loadMore() } } }
+                    .onAppear { if d.id == shown.last?.id { Task { await store.loadMore() } } }
                     // Drag a row into Slack, a browser or a note as its Jira link.
                     .itemProvider {
                         let p = NSItemProvider(object: row.state.client.browseURL(row.issue.key) as NSURL)
@@ -233,7 +257,9 @@ struct IssueListView: View {
                         return p
                     }
             }
-            if store.isLoading {
+            // Only while there is nothing to show or the next page is coming: a refresh behind rows that are
+            // already on screen must not add and remove a row at the end of the list.
+            if store.isLoading, store.rows.isEmpty || store.nextToken != nil {
                 HStack { Spacer(); ProgressView().controlSize(.small); Spacer() }
                     .listRowSeparator(.hidden)
             }
@@ -325,10 +351,10 @@ struct IssueListView: View {
             // ponytail: a fixed 3-minute reload; a per-list "updated since" poll would be lighter if it ever matters.
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(180))
-                refreshTick += 1
+                refresh()
             }
         }
-        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in refreshTick += 1 }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in refresh() }
         .onChange(of: filters) { old, new in
             if new.text.isEmpty, old.text.isEmpty, old != new { searchFocused = false }
         }
@@ -337,6 +363,10 @@ struct IssueListView: View {
         }
         .errorAlert($store.error)
     }
+
+    /// A load already in flight is as fresh as a new one would be; restarting it (the app activating at launch
+    /// did) would only throw its answer away.
+    private func refresh() { if !store.isLoading { refreshTick += 1 } }
 
     /// → unfolds the selected parent's subtasks, ← folds them, as in an outline (the other way round right to left).
     private func fold(open: Bool) -> KeyPress.Result {

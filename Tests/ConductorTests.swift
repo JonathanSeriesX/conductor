@@ -367,3 +367,18 @@ final class LocalizationTests: XCTestCase {
         XCTAssertEqual(Set(Bundle.main.localizations).intersection(Self.languages + ["en"]), Set(Self.languages + ["en"]))
     }
 }
+
+final class CacheTests: XCTestCase {
+    /// The list store looks rows up in memory by `list-<hash of JQL>`; launch fills that memory from disk by file name.
+    func testRecentListsComeBackUnderTheNameTheyWereSavedAs() throws {
+        let account = Account(site: URL(string: "https://cache-test.test")!, email: "t@cache.test", token: "")
+        let issue = try JSONDecoder().decode(Issue.self, from: Data(#"{"id":"1","key":"T-1","fields":{"summary":"s","status":{"id":"1","name":"To Do","statusCategory":{"key":"new","name":"To Do"}},"issuetype":{"id":"1","name":"Task"}}}"#.utf8))
+        let name = "list-" + DiskCache.hash("assignee = currentUser() ORDER BY updated DESC")
+        DiskCache.save([issue], account: account, name: name)
+        defer {
+            let root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            try? FileManager.default.removeItem(at: root.appending(path: "Conductor/cache/cache-test.test|t@cache.test"))
+        }
+        XCTAssertEqual(DiskCache.recentLists(account: account)[name]?.map(\.key), ["T-1"])
+    }
+}
