@@ -271,10 +271,12 @@ struct IssueListView: View {
     /// Ticks when the app comes to the front or every few minutes, so the list never sits stale for long.
     @State private var refreshTick = 0
     private var loadKey: String { "\(filters)|\(session.reloadTick)|\(session.listTick)|\(refreshTick)" }
-    /// What the clear button goes back to: the chips reset, the account and the search stay.
+    /// What the clear button goes back to: the chips reset; the account, the project (the list itself) and the
+    /// search stay.
     private var cleared: ListFilters {
         var f = ListFilters()
         f.account = filters.account
+        f.project = filters.project
         f.text = filters.text
         return f
     }
@@ -380,8 +382,14 @@ struct IssueListView: View {
         .searchable(text: $filters.text, placement: .toolbar, prompt: "Search, JQL, or paste a Jira link")
         .searchFocused($searchFocused)
         .searchSuggestions {
-            ForEach(suggestions, id: \.completion) { s in
-                Text(s.display).searchCompletion(s.completion)
+            // With nothing typed the list is the recent searches, and says so. Nothing at all (not even an
+            // empty section) when there is nothing to offer, or an empty panel hangs under the field.
+            if !suggestions.isEmpty {
+                if filters.text.isEmpty {
+                    Section("Recent Searches") { suggestionRows }
+                } else {
+                    suggestionRows
+                }
             }
         }
         .onSubmit(of: .search) {
@@ -477,7 +485,32 @@ struct IssueListView: View {
                 session.focusSearchRequested = false
             }
         }
+        // A click on a row selects it but leaves the keyboard where it was (the search field, or nowhere);
+        // as in Mail, the list takes it. A row picked with the arrows already has it.
+        .onChange(of: selection) { _, new in
+            guard new != nil else { return }
+            searchFocused = false  // or SwiftUI hands the keyboard straight back to the search field
+            NSApp.keyWindow?.focusList()
+        }
+        // ↓ in the search field goes on to the results, as in Spotlight, unless completions are showing.
+        .background(
+            WindowEventMonitor(mask: .keyDown) { e in
+                // Arrows carry the function and numeric-pad flags, so only the real modifiers count.
+                guard e.keyCode == 125, e.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty,
+                    let tv = e.window?.firstResponder as? NSTextView, tv.isFieldEditor, tv.delegate is NSSearchField,
+                    suggestions.isEmpty, !shown.isEmpty
+                else { return e }
+                if selection == nil { selection = shown.first?.row.target }
+                searchFocused = false
+                NSApp.keyWindow?.focusList()
+                return nil
+            }
+        )
         .errorAlert($store.error)
+    }
+
+    private var suggestionRows: some View {
+        ForEach(suggestions, id: \.completion) { s in Text(s.display).searchCompletion(s.completion) }
     }
 
     /// A load already in flight is as fresh as a new one would be; restarting it (the app activating at launch
@@ -508,9 +541,10 @@ struct IssueListView: View {
         return BoardTarget(accountID: id, projectKey: key)
     }
 
+    /// Counts the rows on screen: a subtask folded under its parent is not one of them.
     private var subtitle: String {
         guard !store.rows.isEmpty else { return "" }
-        return issues(store.rows.count, more: store.nextToken != nil)
+        return issues(displayRows.count, more: store.nextToken != nil)
     }
 
     // MARK: Row actions
@@ -751,11 +785,17 @@ struct IssueRow: View {
     var folded = 0
     var expanded = false
     var toggle: (() -> Void)?
+    /// `.increased` on the selected row: the accent is the background, so the greys go white and the icons
+    /// get a light backing, like the priority icon.
+    @Environment(\.backgroundProminence) private var prominence
 
     var body: some View {
+        let selected = prominence == .increased
+        let dim: Color = selected ? .white.opacity(0.85) : .secondary
         HStack(alignment: .top, spacing: 10) {
             RemoteImage(url: issue.fields.issuetype.iconUrl, placeholder: "circle")
                 .frame(width: 16, height: 16)
+                .padding(2).background(selected ? .white.opacity(0.9) : .clear, in: .rect(cornerRadius: 5)).padding(-2)
                 .padding(.top, 2)
                 .help(issue.fields.issuetype.name)
             VStack(alignment: .leading, spacing: 5) {
@@ -766,13 +806,13 @@ struct IssueRow: View {
                     } icon: {
                         Image(systemName: "arrow.turn.down.right").flipsForRightToLeftLayoutDirection(true)
                     }
-                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    .font(.caption).foregroundStyle(dim).lineLimit(1)
                 }
                 Text(issue.fields.summary).lineLimit(2).strikethrough(issue.isDone).foregroundStyle(
-                    issue.isDone ? .secondary : .primary)
+                    issue.isDone ? dim : selected ? .white : .primary)
                 HStack(spacing: 8) {
                     // Key and status never wrap or truncate; the count is the first to give, down to "1/3".
-                    Text(issue.key).font(.caption.monospaced()).foregroundStyle(.secondary).fixedSize()
+                    Text(issue.key).font(.caption.monospaced()).foregroundStyle(dim).fixedSize()
                     if let site { SiteBadge(name: site.name, color: site.color) }
                     StatusPill(status: issue.fields.status).fixedSize()
                     if let p = issue.subtaskProgress {
@@ -784,7 +824,7 @@ struct IssueRow: View {
                                 Image(systemName: "checklist")
                             }
                         }
-                        .font(.caption).foregroundStyle(p.done == p.total ? .green : .secondary).lineLimit(1)
+                        .font(.caption).foregroundStyle(p.done == p.total && !selected ? .green : dim).lineLimit(1)
                         .layoutPriority(1)
                     }
                     if let toggle {
@@ -794,7 +834,7 @@ struct IssueRow: View {
                                 systemImage: expanded ? "chevron.down" : "chevron.forward"
                             )
                             .labelStyle(.iconOnly)
-                            .font(.caption.weight(.semibold)).foregroundStyle(.secondary).frame(width: 18, height: 18)
+                            .font(.caption.weight(.semibold)).foregroundStyle(dim).frame(width: 18, height: 18)
                             .contentShape(.rect)
                         }
                         .buttonStyle(.plain)
@@ -830,14 +870,15 @@ struct IssueMenu: View {
         let url = state.client.browseURL(key)
         let watching = issue.fields.watches?.isWatching == true
         let me = state.me?.accountId
-        Button("Open in New Window", systemImage: "macwindow.badge.plus") { openWindow(id: "issue", value: target) }
+        // The Issue menu's order.
         Button("Open in Browser", systemImage: "safari") { NSWorkspace.shared.open(url) }
+        Button("Open in New Window", systemImage: "macwindow.badge.plus") { openWindow(id: "issue", value: target) }
         Divider()
         Button("Copy Link", systemImage: "link") { copyToPasteboard(url.absoluteString) }
-        Button("Copy Key", systemImage: "number") { copyToPasteboard(key) }
         Button("Copy as Markdown", systemImage: "text.quote") {
             copyToPasteboard(state.client.markdownLink(key, summary: issue.fields.summary))
         }
+        Button("Copy Key", systemImage: "number") { copyToPasteboard(key) }
         ShareLink(item: url)
         Divider()
         Button(watching ? "Stop Watching This Issue" : "Watch This Issue", systemImage: watching ? "eye.slash" : "eye")

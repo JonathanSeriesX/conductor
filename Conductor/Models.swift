@@ -97,13 +97,13 @@ struct NamedRef: Codable, Hashable, Sendable, Identifiable {
 
 struct IssueRef: Codable, Hashable, Sendable, Identifiable {
     struct Fields: Codable, Hashable, Sendable {
-        let summary: String
+        var summary: String
         let status: Status?
         let issuetype: IssueType?
     }
     let id: String
     let key: String
-    let fields: Fields
+    var fields: Fields
 }
 
 extension Issue {
@@ -118,9 +118,9 @@ extension Issue {
 
 struct Issue: Codable, Hashable, Sendable, Identifiable {
     struct Fields: Codable, Hashable, Sendable {
-        let summary: String
-        let description: ADFNode?
-        let status: Status
+        var summary: String
+        var description: ADFNode?
+        var status: Status
         let assignee: JiraUser?
         let reporter: JiraUser?
         let priority: Priority?
@@ -144,7 +144,7 @@ struct Issue: Codable, Hashable, Sendable, Identifiable {
 
     let id: String
     let key: String
-    let fields: Fields
+    var fields: Fields
     let sprints: [Sprint]?
     /// Story points from whichever of the site's points fields this issue has.
     let points: Double?

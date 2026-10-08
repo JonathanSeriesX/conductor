@@ -5,6 +5,13 @@ struct ProjectChoice: Hashable {
     let accountID: UUID
 }
 
+/// What a New Issue window opens with: the list's project, or an issue's project and key for a subtask.
+struct CreateRequest: Hashable, Codable {
+    var accountID: UUID?
+    var projectKey: String?
+    var parentKey: String?
+}
+
 @MainActor @Observable
 final class CreateIssueModel {
     var choice: ProjectChoice?
@@ -24,7 +31,7 @@ final class CreateIssueModel {
     var isWorking = false
     var isLoadingMeta = false
 
-    /// Fields this sheet knows how to fill.
+    /// Fields this window knows how to fill.
     private static let handled: Set<String> = [
         "project", "issuetype", "summary", "description", "assignee", "priority", "labels", "parent", "reporter",
     ]
@@ -37,13 +44,15 @@ final class CreateIssueModel {
     }
     func has(_ id: String) -> Bool { fields.contains { $0.fieldId == id } }
     var parentRequired: Bool { type?.isSubtask == true || fields.first { $0.fieldId == "parent" }?.required == true }
-    /// Required fields on this site that the sheet cannot fill; creation would be rejected.
+    /// Required fields on this site that the window cannot fill; creation would be rejected.
     var unsupportedRequired: [String] {
         fields.filter { $0.required && !Self.handled.contains($0.fieldId) }.map(\.name)
     }
+    /// Jira's limit, checked here so a long summary never goes out to come back as an error.
+    var summaryTooLong: Bool { summary.count > 255 }
 
     var canSubmit: Bool {
-        project != nil && type != nil && !summary.trimmingCharacters(in: .whitespaces).isEmpty
+        project != nil && type != nil && !summary.trimmingCharacters(in: .whitespaces).isEmpty && !summaryTooLong
             && unsupportedRequired.isEmpty
             && (!parentRequired || !parentKey.trimmingCharacters(in: .whitespaces).isEmpty)
             && !isWorking && !isLoadingMeta
@@ -94,17 +103,31 @@ final class CreateIssueModel {
 }
 
 struct CreateIssueView: View {
-    var defaultProject: (Project, AccountState)?
-    var parentKey: String?
-    var onCreated: (IssueTarget) -> Void
+    let request: CreateRequest
     @Environment(Session.self) private var session
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.openWindow) private var openWindow
     @State private var m = CreateIssueModel()
     @State private var showAssign = false
+    @State private var showParent = false
     @State private var labelDraft = ""
+    /// Every label on the site, for suggestions under the field.
+    @State private var allLabels: [String] = []
     @FocusState private var summaryFocused: Bool
     @State private var confirmDiscard = false
+    private var parentKey: String? { request.parentKey }
     private var hasDraft: Bool { !m.summary.isEmpty || !m.text.isEmpty }
+    private var labelMatches: [String] {
+        let q = labelDraft.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !q.isEmpty else { return [] }
+        return allLabels.filter { $0.lowercased().contains(q) && !m.labels.contains($0) }.prefix(6).map { $0 }
+    }
+    /// One line in the footer: the summary limit before the request, else what Jira answered. It takes no
+    /// room of its own, so the window keeps its height.
+    private var footerError: String? {
+        m.summaryTooLong
+            ? String(localized: "A summary can be 255 characters at most; this one is \(m.summary.count).") : m.error
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -148,6 +171,13 @@ struct CreateIssueView: View {
                 .lineLimit(1...3)
                 .padding(10)
                 .background(.quaternary.opacity(0.4), in: .rect(cornerRadius: 10))
+                // The same ring the description gets, so the focus is always visible.
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10)
+                        .strokeBorder(Color.accentColor.opacity(summaryFocused ? 0.5 : 0), lineWidth: 3)
+                        .padding(-1.5)
+                )
+                .animation(.easeOut(duration: 0.1), value: summaryFocused)
 
             if m.has("description") {
                 Composer(text: $m.text, mentions: $m.mentions, placeholder: "Description", minHeight: 120)
@@ -175,6 +205,8 @@ struct CreateIssueView: View {
                             .environment(\.jira, m.state)
                         }
                     }
+                    // Room for a name, so the columns after it stay put when "Unassigned" becomes one.
+                    .frame(minWidth: 180, alignment: .leading)
                 }
                 if m.has("priority"), !m.priorities.isEmpty {
                     labeled("Priority") {
@@ -187,9 +219,21 @@ struct CreateIssueView: View {
                 }
                 if m.has("parent") || m.parentRequired {
                     labeled(m.parentRequired ? "Parent (required)" : "Parent / Epic") {
-                        TextField("KEY-123", text: $m.parentKey)
-                            .textFieldStyle(.roundedBorder).frame(width: 120)
-                            .disabled(parentKey != nil)
+                        Button {
+                            showParent = true
+                        } label: {
+                            Text(m.parentKey.isEmpty ? String(localized: "None") : m.parentKey)
+                                .foregroundStyle(m.parentKey.isEmpty ? .secondary : .primary)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(parentKey != nil)
+                        .popover(isPresented: $showParent, arrowEdge: .bottom) {
+                            ParentPicker(current: m.parentKey.isEmpty ? nil : m.parentKey, jql: parentJQL) { new in
+                                showParent = false
+                                m.parentKey = new ?? ""
+                            }
+                            .environment(\.jira, m.state)
+                        }
                     }
                 }
             }
@@ -203,6 +247,21 @@ struct CreateIssueView: View {
                             .padding(.horizontal, 8).padding(.vertical, 3)
                             .background(.quaternary.opacity(0.3), in: .capsule)
                             .onSubmit { addLabel() }
+                            // ⌫ in the empty field takes the last chip back, as in Mail's address field.
+                            .onKeyPress(.delete) {
+                                guard labelDraft.isEmpty, !m.labels.isEmpty else { return .ignored }
+                                m.labels.removeLast()
+                                return .handled
+                            }
+                    }
+                    ForEach(labelMatches, id: \.self) { l in
+                        Button {
+                            m.labels.append(l)
+                            labelDraft = ""
+                        } label: {
+                            Text(l).font(.callout).frame(maxWidth: .infinity, alignment: .leading).contentShape(.rect)
+                        }
+                        .buttonStyle(.plain).padding(.horizontal, 6).padding(.vertical, 2)
                     }
                 }
             }
@@ -214,9 +273,12 @@ struct CreateIssueView: View {
                 )
                 .font(.callout).foregroundStyle(.orange)
             }
-            if let e = m.error { Text(e).font(.callout).foregroundStyle(.red) }
 
             HStack {
+                if let e = footerError {
+                    Text(e).font(.callout).foregroundStyle(.red).lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 Spacer()
                 Button("Cancel") { if hasDraft { confirmDiscard = true } else { dismiss() } }.glassButton()
                     .keyboardShortcut(.cancelAction)
@@ -234,7 +296,9 @@ struct CreateIssueView: View {
         }
         .padding(22)
         .frame(width: 640)
-        .interactiveDismissDisabled(hasDraft)
+        .background(Backdrop())
+        .writingToolsBehavior(.disabled)  // macOS 27 pins a Siri button beside every text view otherwise
+        .navigationTitle(parentKey == nil ? "New Issue" : "New Subtask of \(parentKey!)")
         .confirmationDialog("Discard this issue?", isPresented: $confirmDiscard, titleVisibility: .visible) {
             Button("Discard", role: .destructive) { dismiss() }
             Button("Keep Editing", role: .cancel) {}
@@ -242,10 +306,11 @@ struct CreateIssueView: View {
         .task {
             DispatchQueue.main.async { summaryFocused = true }
             let last = UserDefaults.standard.string(forKey: "lastCreateProject")
-            // The list's project, else the one used last time, else a starred one, else the first. An issue's
-            // own project record lacks fields the picker's entries have, so the catalog's copy stands in.
-            if let (p, st) = defaultProject {
-                m.choice = ProjectChoice(project: st.projects.first { $0.key == p.key } ?? p, accountID: st.id)
+            // The request's project, else the one used last time, else a starred one, else the first.
+            if let id = request.accountID, let st = session.state(id),
+                let p = st.projects.first(where: { $0.key == request.projectKey })
+            {
+                m.choice = ProjectChoice(project: p, accountID: st.id)
             } else if let last, let st = session.states.first(where: { last.hasPrefix("\($0.id)|") }),
                 let p = st.projects.first(where: { "\(st.id)|\($0.key)" == last })
             {
@@ -266,9 +331,19 @@ struct CreateIssueView: View {
             if let c = m.state?.client { Task { await m.loadTypes(c) } }
         }
         .onChange(of: m.type) { if let c = m.state?.client { Task { await m.loadFields(c) } } }
+        .task(id: m.state?.id) { allLabels = (try? await m.state?.client.labels()) ?? [] }
+        // A fixed field loses its error.
+        .onChange(of: m.summary) { m.error = nil }
+        .onChange(of: m.parentKey) { m.error = nil }
     }
 
     private func syncState() { m.state = m.choice.flatMap { session.state($0.accountID) } }
+
+    /// Parents one level up in the same project: standard issues for a subtask, epics for the rest.
+    private var parentJQL: String {
+        let level = m.type?.isSubtask == true ? 0 : (m.type?.hierarchyLevel ?? 0) + 1
+        return "project = \"\(m.project?.key ?? "")\" AND hierarchyLevel = \(level) ORDER BY updated DESC"
+    }
 
     private func labeled<V: View>(_ title: LocalizedStringKey, @ViewBuilder _ content: () -> V) -> some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -295,9 +370,9 @@ struct CreateIssueView: View {
             do {
                 let created = try await c.createIssue(fields: try m.payload())
                 UserDefaults.standard.set("\(st.id)|\(m.project?.key ?? "")", forKey: "lastCreateProject")
-                session.listTick += 1
+                session.reloadTick += 1  // the lists, and the parent's subtasks
                 dismiss()
-                onCreated(IssueTarget(accountID: st.id, key: created.key))
+                openWindow(id: "issue", value: IssueTarget(accountID: st.id, key: created.key))
             } catch { m.error = error.localizedDescription }
         }
     }

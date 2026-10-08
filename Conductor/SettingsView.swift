@@ -1,14 +1,23 @@
 import SwiftUI
 
+/// Tabs, as System Settings and Mail have them, so no pane is taller than the screen.
 struct SettingsView: View {
+    var body: some View {
+        TabView {
+            Tab("General", systemImage: "gearshape") { GeneralSettings() }
+            Tab("Accounts", systemImage: "person.crop.circle") { AccountSettings() }
+            Tab("Notifications", systemImage: "bell") { NotificationSettings() }
+            Tab("Advanced", systemImage: "slider.horizontal.3") { AdvancedSettings() }
+        }
+        .frame(width: 460)
+    }
+}
+
+private struct GeneralSettings: View {
     @AppStorage("defaultSource") private var defaultSource = "assigned"
     @AppStorage("hideDone") private var hideDone = true
-    @AppStorage("notificationsEnabled") private var notifications = true
-    @AppStorage("pollMinutes") private var pollMinutes = 3
-    @AppStorage("checkForUpdates") private var checkForUpdates = true
     @AppStorage("shortcutScheme") private var shortcutScheme = ShortcutScheme.mac.rawValue
     @Environment(Session.self) private var session
-    @State private var cacheSize: Int64 = 0
 
     var body: some View {
         Form {
@@ -32,6 +41,57 @@ struct SettingsView: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
+        }
+        .formStyle(.grouped)
+    }
+}
+
+/// Who is signed in, with the sidebar's Sign Out and Add Account in one place.
+private struct AccountSettings: View {
+    @Environment(Session.self) private var session
+    @State private var signingOut: AccountState?
+
+    var body: some View {
+        Form {
+            Section("Accounts") {
+                ForEach(session.states) { st in
+                    HStack {
+                        Image(systemName: "circle.fill").foregroundStyle(st.color).imageScale(.small)
+                        VStack(alignment: .leading) {
+                            Text(st.title)
+                            Text(verbatim: "\(st.account.email) · \(st.host)").font(.caption).foregroundStyle(
+                                .secondary)
+                        }
+                        Spacer()
+                        Button("Sign Out…") { signingOut = st }
+                    }
+                }
+                Button("Add Account…") { session.addAccountRequested = true }
+            }
+        }
+        .formStyle(.grouped)
+        .confirmationDialog(
+            "Sign out of \(signingOut?.title ?? "")?",
+            isPresented: Binding(get: { signingOut != nil }, set: { if !$0 { signingOut = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button("Sign Out", role: .destructive) {
+                if let st = signingOut { session.remove(st.account) }
+                signingOut = nil
+            }
+            Button("Cancel", role: .cancel) { signingOut = nil }
+        } message: {
+            Text("The token is removed from the Keychain. Cached issues stay until the cache is cleared.")
+        }
+    }
+}
+
+private struct NotificationSettings: View {
+    @AppStorage("notificationsEnabled") private var notifications = true
+    @AppStorage("pollMinutes") private var pollMinutes = 3
+
+    var body: some View {
+        Form {
             Section("Notifications") {
                 Toggle("Notify about assignments, comments and status changes", isOn: $notifications)
                 Picker("Check every", selection: $pollMinutes) {
@@ -44,6 +104,18 @@ struct SettingsView: View {
                 Text("Covers issues you are assigned to, reported or are watching, on every account.")
                     .font(.caption).foregroundStyle(.secondary)
             }
+        }
+        .formStyle(.grouped)
+    }
+}
+
+private struct AdvancedSettings: View {
+    @AppStorage("checkForUpdates") private var checkForUpdates = true
+    @Environment(Session.self) private var session
+    @State private var cacheSize: Int64 = 0
+
+    var body: some View {
+        Form {
             Section("Updates") {
                 Toggle("Check for updates daily", isOn: $checkForUpdates)
                 HStack {
@@ -70,7 +142,5 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 460)
-        .fixedSize(horizontal: false, vertical: true)
     }
 }

@@ -155,10 +155,14 @@ struct AppCommands: Commands {
             item("Copy as Markdown", .copyMarkdown, "c", [.command, .option])
             item("Copy Key", .copyKey, "c", [.command, .control])
             Divider()
-            Menu("Change Status") {
-                ForEach(issue?.transitions ?? []) { t in Button(t.name) { issue?.perform(.transition(t.id)) } }
+            // AppKit keeps a submenu item enabled whatever .disabled says; with nothing to offer it is a plain item.
+            if let transitions = issue?.transitions, !transitions.isEmpty {
+                Menu("Change Status") {
+                    ForEach(transitions) { t in Button(t.name) { issue?.perform(.transition(t.id)) } }
+                }
+            } else {
+                Button("Change Status") {}.disabled(true)
             }
-            .disabled(issue?.transitions.isEmpty ?? true)
             item("Assign…", .assign, "a", [.command, .shift])
             item("Assign to Me", .assignToMe, "i", [.command, .shift]).disabled(issue?.assignedToMe == true)
             item(issue?.watching == true ? "Stop Watching This Issue" : "Watch This Issue", .watch)

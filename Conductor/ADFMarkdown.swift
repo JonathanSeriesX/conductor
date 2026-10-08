@@ -110,7 +110,8 @@ extension ADFNode {
             if let marker = listMarker(line) {
                 flush()
                 let (node, next) = parseList(
-                    lines, from: i, ordered: marker.ordered, indent: indent(of: line), mentions: mentions)
+                    lines, from: i, ordered: marker.ordered, task: marker.done != nil, indent: indent(of: line),
+                    mentions: mentions)
                 blocks.append(node)
                 i = next
                 continue
@@ -131,32 +132,51 @@ extension ADFNode {
         return out
     }
 
-    private static func listMarker(_ line: String) -> (ordered: Bool, text: String)? {
+    /// A bullet, a number, or a task ("- [ ]" open, "- [x]" done: `done` is nil for the other two).
+    private static func listMarker(_ line: String) -> (ordered: Bool, done: Bool?, text: String)? {
         let t = line.trimmingCharacters(in: .whitespaces)
-        if let m = t.firstMatch(of: /^[-*+]\s+(.*)$/) { return (false, String(m.1)) }
-        if let m = t.firstMatch(of: /^\d+[.)]\s+(.*)$/) { return (true, String(m.1)) }
+        if let m = t.firstMatch(of: /^[-*+]\s+\[([ xX])\]\s+(.*)$/) { return (false, m.1 != " ", String(m.2)) }
+        if let m = t.firstMatch(of: /^[-*+]\s+(.*)$/) { return (false, nil, String(m.1)) }
+        if let m = t.firstMatch(of: /^\d+[.)]\s+(.*)$/) { return (true, nil, String(m.1)) }
         return nil
     }
 
     private static func indent(of line: String) -> Int { line.prefix { $0 == " " || $0 == "\t" }.count }
 
+    /// Consecutive items of one kind at one indent. A task list's items hold inline text only (ADF allows
+    /// nothing else), so a list nested under a task starts a list of its own.
     private static func parseList(
-        _ lines: [String], from start: Int, ordered: Bool, indent level: Int, mentions: [String: String]
+        _ lines: [String], from start: Int, ordered: Bool, task: Bool, indent level: Int, mentions: [String: String]
     ) -> (ADFNode, Int) {
         var items: [ADFNode] = []
         var i = start
         while i < lines.count, let marker = listMarker(lines[i]), marker.ordered == ordered,
-            indent(of: lines[i]) == level
+            (marker.done != nil) == task, indent(of: lines[i]) == level
         {
-            var content = [ADFNode(type: "paragraph", content: inlineNodes(marker.text, mentions: mentions))]
+            let inline = inlineNodes(marker.text, mentions: mentions)
             i += 1
+            if task {
+                items.append(
+                    ADFNode(
+                        type: "taskItem",
+                        attrs: [
+                            "localId": .string(UUID().uuidString), "state": .string(marker.done! ? "DONE" : "TODO"),
+                        ],
+                        content: inline))
+                continue
+            }
+            var content = [ADFNode(type: "paragraph", content: inline)]
             if i < lines.count, let nested = listMarker(lines[i]), indent(of: lines[i]) > level {
                 let (child, next) = parseList(
-                    lines, from: i, ordered: nested.ordered, indent: indent(of: lines[i]), mentions: mentions)
+                    lines, from: i, ordered: nested.ordered, task: nested.done != nil, indent: indent(of: lines[i]),
+                    mentions: mentions)
                 content.append(child)
                 i = next
             }
             items.append(ADFNode(type: "listItem", content: content))
+        }
+        if task {
+            return (ADFNode(type: "taskList", attrs: ["localId": .string(UUID().uuidString)], content: items), i)
         }
         return (ADFNode(type: ordered ? "orderedList" : "bulletList", content: items), i)
     }
@@ -224,7 +244,7 @@ extension ADFNode {
     var hasLossyNodes: Bool {
         let lossy: Set<String> = [
             "media", "mediaSingle", "mediaGroup", "mediaInline", "panel", "expand", "nestedExpand", "layoutSection",
-            "taskList", "decisionList",
+            "decisionList",
         ]
         if lossy.contains(type) { return true }
         return (content ?? []).contains { $0.hasLossyNodes }
@@ -250,6 +270,10 @@ extension ADFNode {
                 lines += parts.dropFirst()
             }
             return lines.joined(separator: "\n")
+        case "taskList":
+            return (content ?? []).map {
+                indent + ($0.attr("state") == "DONE" ? "- [x] " : "- [ ] ") + $0.inlineMarkdown(&mentions)
+            }.joined(separator: "\n")
         case "codeBlock":
             let body = plainText.split(separator: "\n", omittingEmptySubsequences: false).map { indent + $0 }.joined(
                 separator: "\n")

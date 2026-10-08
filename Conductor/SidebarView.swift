@@ -278,7 +278,7 @@ struct SidebarView: View {
                             newTitle = st.title
                             renaming = st
                         }
-                        Menu("Colour") {
+                        Menu("Color") {
                             ForEach(Palette.names, id: \.self) { name in
                                 Toggle(
                                     isOn: Binding(get: { st.colorName == name }, set: { if $0 { st.setColor(name) } })
@@ -424,7 +424,8 @@ struct SidebarView: View {
                 set: { if $0 { expandedAllProjects.insert(st.id) } else { expandedAllProjects.remove(st.id) } }
             )
         ) {
-            ForEach(st.projects) { projectRow($0, st) }
+            // The starred ones sit above already; a second row for the same list would light up with the first.
+            ForEach(st.projects.filter { !st.starred.contains($0.key) }) { projectRow($0, st) }
         } label: {
             tinted(String(localized: "All Projects"), symbol: "folder", color: st.color)
         }
