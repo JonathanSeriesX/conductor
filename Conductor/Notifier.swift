@@ -63,12 +63,12 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
 
         if let page = try? await client.search(jql: "assignee CHANGED TO currentUser() AFTER -\(minutes)m AND NOT assignee CHANGED BY currentUser() AFTER -\(minutes)m ORDER BY updated DESC") {
             for i in page.issues where announced.insert("\(host)|\(i.key)|assigned|\(i.fields.updated?.timeIntervalSince1970 ?? 0)").inserted {
-                notify("Assigned to you", "\(i.key)  \(i.fields.summary)", host: host, key: i.key)
+                notify(String(localized: "Assigned to you"), "\(i.key)  \(i.fields.summary)", host: host, key: i.key)
             }
         }
         if let page = try? await client.search(jql: "\(involved) AND status CHANGED AFTER -\(minutes)m AND NOT status CHANGED BY currentUser() AFTER -\(minutes)m ORDER BY updated DESC") {
             for i in page.issues where announced.insert("\(host)|\(i.key)|status|\(i.fields.status.id)").inserted {
-                notify("\(i.key) is now \(i.fields.status.name)", i.fields.summary, host: host, key: i.key)
+                notify(String(localized: "\(i.key) is now \(i.fields.status.name)"), i.fields.summary, host: host, key: i.key)
             }
         }
         if let page = try? await client.search(jql: "\(involved) AND updated >= -\(minutes)m ORDER BY updated DESC", fields: "summary,comment") {
@@ -77,7 +77,7 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
                     let id = "\(host)|\(c.id)"
                     guard seenComments.insert(id).inserted else { continue }
                     let text = c.body.plainText.replacingOccurrences(of: "\n", with: " ")
-                    notify("\(c.author?.displayName ?? "Someone") commented on \(i.key)", String(text.prefix(140)), host: host, key: i.key)
+                    notify(String(localized: "\(c.author?.displayName ?? String(localized: "Someone")) commented on \(i.key)"), String(text.prefix(140)), host: host, key: i.key)
                 }
             }
         }
@@ -109,10 +109,10 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     static func remind(_ url: URL, key: String, summary: String, at date: Date) async throws {
         let center = UNUserNotificationCenter.current()
         guard try await center.requestAuthorization(options: [.alert, .sound]) else {
-            throw CocoaError(.userCancelled, userInfo: [NSLocalizedDescriptionKey: "Notifications are off for Conductor. Turn them on in System Settings › Notifications."])
+            throw CocoaError(.userCancelled, userInfo: [NSLocalizedDescriptionKey: String(localized: "Notifications are off for Conductor. Turn them on in System Settings › Notifications.")])
         }
         let content = UNMutableNotificationContent()
-        content.title = "Reminder: \(key)"
+        content.title = String(localized: "Reminder: \(key)")
         content.body = summary
         content.sound = .default
         content.userInfo = ["url": url.absoluteString]

@@ -87,7 +87,7 @@ final class AccountState: Identifiable {
             }
             for i in page.issues where !stale.contains(where: { $0.key == i.key }) { issues.append(i) }
             seen += page.issues.count
-            warmLabel = "Downloading issues… \(min(seen, total)) of \(total)"
+            warmLabel = String(localized: "Downloading issues… \(min(seen, total)) of \(total)")
             warmProgress = min(0.7, 0.7 * Double(seen) / Double(total))
             token = page.isLast == true ? nil : page.nextPageToken
         } while token != nil
@@ -97,7 +97,7 @@ final class AccountState: Identifiable {
         // Workflows: one representative issue per project, type and status.
         var byWorkflow: [String: Issue] = [:]
         for i in issues where transitionsByWorkflow[Self.workflowKey(i)] == nil || editMetaByWorkflow[Self.workflowKey(i)] == nil { byWorkflow[Self.workflowKey(i)] = i }
-        warmLabel = "Reading workflows…"
+        warmLabel = String(localized: "Reading workflows…")
         for (n, i) in byWorkflow.values.enumerated() {
             await warmWorkflow(of: i)
             warmProgress = 0.7 + 0.15 * Double(n + 1) / Double(byWorkflow.count)
@@ -114,7 +114,7 @@ final class AccountState: Identifiable {
         warmProgress = 0.9
 
         // Icons and avatars, into the disk and memory caches, so no row or page ever draws a placeholder first.
-        warmLabel = "Fetching icons…"
+        warmLabel = String(localized: "Fetching icons…")
         var urls = Set<URL>()
         for i in issues {
             urls.formUnion([i.fields.issuetype.iconUrl, i.fields.priority?.iconUrl, i.fields.assignee?.avatar, i.fields.reporter?.avatar,
@@ -359,11 +359,11 @@ final class Session {
                 isRestoring = false
             } else if let e = failure as? JiraError, e.status == 401 {
                 // Never forget an account on its own: a captive portal or proxy can answer 401 for every site.
-                unreachable[account.id] = "Sign-in was rejected. Check the API token, then retry."
+                unreachable[account.id] = String(localized: "Sign-in was rejected. Check the API token, then retry.")
             } else if states.contains(where: { $0.id == st.id }) {
                 st.error = failure?.localizedDescription
             } else {
-                unreachable[account.id] = failure?.localizedDescription ?? "Unknown error"
+                unreachable[account.id] = failure?.localizedDescription ?? String(localized: "Unknown error")
             }
         }
         // Restore never writes the Keychain: a read that failed (a rebuilt dev binary is a different app to the
@@ -466,7 +466,7 @@ final class Session {
     /// The sidebar entry these filters came from, for the window title.
     func title(for f: ListFilters) -> String {
         if let key = f.project, let st = f.account.flatMap(state) { return st.projects.first { $0.key == key }?.name ?? key }
-        return preset(matching: f)?.name ?? "Issues"
+        return preset(matching: f)?.name ?? String(localized: "Issues")
     }
 
     /// The sidebar entry these filters came from. The status chip is left out of the comparison: a preset is
@@ -576,6 +576,24 @@ enum Palette {
     /// Menu order; defaults are dealt from `dealOrder` so neighbouring accounts contrast.
     static let names = ["blue", "indigo", "purple", "pink", "red", "orange", "yellow", "green", "mint", "teal", "cyan", "brown", "gray"]
     private static let dealOrder = ["blue", "green", "orange", "purple", "pink", "teal", "red", "yellow", "indigo", "mint", "cyan", "brown", "gray"]
+
+    static func title(_ name: String) -> String {
+        switch name {
+        case "indigo": String(localized: "Indigo")
+        case "purple": String(localized: "Purple")
+        case "pink": String(localized: "Pink")
+        case "red": String(localized: "Red")
+        case "orange": String(localized: "Orange")
+        case "yellow": String(localized: "Yellow")
+        case "green": String(localized: "Green")
+        case "mint": String(localized: "Mint")
+        case "teal": String(localized: "Teal")
+        case "cyan": String(localized: "Cyan")
+        case "brown": String(localized: "Brown")
+        case "gray": String(localized: "Gray")
+        default: String(localized: "Blue")
+        }
+    }
 
     static func color(named name: String) -> Color {
         switch name {

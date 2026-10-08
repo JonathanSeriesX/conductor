@@ -231,7 +231,7 @@ struct ADFBlock: View {
                     if let a = attachments.first(where: { $0.filename == m.attr("alt") }), (a.mimeType ?? "").hasPrefix("image/") {
                         InlineImage(attachment: a)
                     } else {
-                        Label(m.attr("alt") ?? "Attached media", systemImage: "photo")
+                        Label(m.attr("alt") ?? String(localized: "Attached media"), systemImage: "photo")
                             .font(.callout).foregroundStyle(.secondary)
                             .padding(.horizontal, 10).padding(.vertical, 6)
                             .background(.quaternary.opacity(0.5), in: .capsule)
@@ -249,7 +249,7 @@ struct ADFBlock: View {
                 }
             }
         case "expand", "nestedExpand":
-            DisclosureGroup(node.attr("title") ?? "Details") {
+            DisclosureGroup(node.attr("title") ?? String(localized: "Details")) {
                 VStack(alignment: .leading, spacing: 8) { ADFBlocks(nodes: node.content ?? []) }.padding(.top, 6)
             }
         case "layoutSection":

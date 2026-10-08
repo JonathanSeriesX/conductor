@@ -18,7 +18,7 @@ struct SettingsView: View {
                 Toggle("Hide Done issues by default", isOn: $hideDone)
                 Text("New lists start on the Open status chip; switch any list to Any status or Done from the chip.").font(.caption).foregroundStyle(.secondary)
                 if !session.hiddenPresets.isEmpty {
-                    Button("Show \(session.hiddenPresets.count) Hidden Sidebar Item\(session.hiddenPresets.count == 1 ? "" : "s")") { session.showHiddenPresets() }
+                    Button("Show \(session.hiddenPresets.count) Hidden Sidebar Items") { session.showHiddenPresets() }
                 }
             }
             Section("Notifications") {

@@ -59,8 +59,8 @@ struct Avatar: View {
         }
         .frame(width: size, height: size)
         .clipShape(.circle)
-        .help(user?.displayName ?? "Unassigned")
-        .accessibilityLabel(user?.displayName ?? "Unassigned")
+        .help(user?.displayName ?? String(localized: "Unassigned"))
+        .accessibilityLabel(user?.displayName ?? String(localized: "Unassigned"))
     }
 }
 
@@ -107,7 +107,7 @@ struct PriorityIcon: View {
 }
 
 struct GlassCard<Content: View>: View {
-    var title: String?
+    var title: LocalizedStringKey?
     @ViewBuilder var content: Content
 
     var body: some View {
@@ -132,8 +132,8 @@ extension View {
     }
 }
 
-/// "1 issue", "2 issues": subtitles and counts read as English.
-func issues(_ n: Int, more: Bool = false) -> String { n == 1 && !more ? "1 issue" : "\(n)\(more ? "+" : "") issues" }
+/// "1 issue", "2 issues", "50+ issues" for subtitles; the plural forms live in the string catalog.
+func issues(_ n: Int, more: Bool = false) -> String { more ? String(localized: "\(n)+ issues") : String(localized: "\(n) issues") }
 
 extension View {
     func errorAlert(_ error: Binding<String?>) -> some View {

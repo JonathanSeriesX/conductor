@@ -334,3 +334,36 @@ final class BoardTests: XCTestCase {
         XCTAssertEqual(Swimlanes.none.lanes(issues).first?.issues.count, 4)
     }
 }
+
+final class LocalizationTests: XCTestCase {
+    static let languages = ["ar", "de", "es", "fr", "hi", "it", "ja", "pt-BR", "ru", "uk", "zh-Hans"]
+
+    /// Every string in the catalog is translated into every shipped language, keeping the English placeholders.
+    func testCatalogIsCompleteInEveryLanguage() throws {
+        let url = URL(filePath: #filePath).deletingLastPathComponent().appending(path: "../Conductor/Localizable.xcstrings")
+        let catalog = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        let strings = try XCTUnwrap(catalog["strings"] as? [String: [String: Any]])
+        func placeholders(_ s: String) -> [String] {
+            s.matches(of: /%(?:\d+\$)?(lld|@)/).map { String($0.1) }.sorted()
+        }
+        /// The value, or every plural form of it.
+        func forms(_ l: [String: Any]?) -> [String] {
+            if let unit = l?["stringUnit"] as? [String: Any] { return [unit["value"] as? String ?? ""] }
+            let plural = (l?["variations"] as? [String: Any])?["plural"] as? [String: [String: [String: Any]]] ?? [:]
+            return plural.values.compactMap { $0["stringUnit"]?["value"] as? String }
+        }
+        for (key, entry) in strings where entry["shouldTranslate"] as? Bool != false {
+            let localizations = entry["localizations"] as? [String: Any]
+            let english = forms(localizations?["en"] as? [String: Any]).first ?? key
+            for lang in Self.languages {
+                let values = forms(localizations?[lang] as? [String: Any])
+                XCTAssertFalse(values.isEmpty, "\(lang) has no translation for \"\(key)\"")
+                for v in values { XCTAssertEqual(placeholders(v), placeholders(english), "\(lang): \"\(key)\" → \"\(v)\"") }
+            }
+        }
+    }
+
+    func testAppShipsEveryLanguage() {
+        XCTAssertEqual(Set(Bundle.main.localizations).intersection(Self.languages + ["en"]), Set(Self.languages + ["en"]))
+    }
+}

@@ -144,7 +144,7 @@ struct CreateIssueView: View {
                         Button { showAssign = true } label: {
                             HStack(spacing: 6) {
                                 Avatar(user: m.assignee, size: 18)
-                                Text(m.assignee?.displayName ?? "Unassigned").foregroundStyle(m.assignee == nil ? .secondary : .primary)
+                                Text(m.assignee?.displayName ?? String(localized: "Unassigned")).foregroundStyle(m.assignee == nil ? .secondary : .primary)
                             }
                         }
                         .buttonStyle(.plain)
@@ -186,7 +186,7 @@ struct CreateIssueView: View {
             }
 
             if !m.unsupportedRequired.isEmpty {
-                Label("This type also requires \(m.unsupportedRequired.joined(separator: ", ")), which Conductor can't fill yet. Create it in the browser.", systemImage: "exclamationmark.triangle")
+                Label("This type also requires \(m.unsupportedRequired.formatted(.list(type: .and))), which Conductor can't fill yet. Create it in the browser.", systemImage: "exclamationmark.triangle")
                     .font(.callout).foregroundStyle(.orange)
             }
             if let e = m.error { Text(e).font(.callout).foregroundStyle(.red) }
@@ -234,9 +234,9 @@ struct CreateIssueView: View {
 
     private func syncState() { m.state = m.choice.flatMap { session.state($0.accountID) } }
 
-    private func labeled<V: View>(_ title: String, @ViewBuilder _ content: () -> V) -> some View {
+    private func labeled<V: View>(_ title: LocalizedStringKey, @ViewBuilder _ content: () -> V) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(title.uppercased()).font(.caption2.weight(.semibold)).foregroundStyle(.tertiary)
+            Text(title).textCase(.uppercase).font(.caption2.weight(.semibold)).foregroundStyle(.tertiary)
             content()
         }
     }
