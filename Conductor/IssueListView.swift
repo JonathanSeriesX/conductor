@@ -69,7 +69,9 @@ final class IssueListStore {
     /// Spotlight and remembered as a peek for the issue page. Shared by the list and the launch prefetch.
     static func fetch(jql: String, state: AccountState, nextPageToken: String? = nil, cache: Bool) async throws -> SearchPage {
         let page = try await state.client.search(jql: jql, nextPageToken: nextPageToken)
-        for issue in page.issues { state.peek[issue.key] = issue }
+        for issue in page.issues where !(state.peek[issue.key].map { $0.fields.updated == issue.fields.updated && $0.fields.comment != nil } ?? false) {
+            state.peek[issue.key] = issue   // keep a full copy of the same revision; a row has fewer fields
+        }
         state.warmTransitions(page.issues)
         if cache {
             if nextPageToken == nil { DiskCache.saveAsync(page.issues, account: state.account, name: "list-" + DiskCache.hash(jql)) }

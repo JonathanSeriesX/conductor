@@ -80,6 +80,7 @@ final class IssueDetailStore {
                     DiskCache.saveAsync(children, account: state.account, name: "children-\(key)")
                 }
                 if let list = await types { linkTypes = list }
+                prefetchRelated(state)
             }
         } catch {
             if (error as? JiraError)?.status == 404 { gone = true; issue = nil; return }
@@ -90,6 +91,27 @@ final class IssueDetailStore {
             sprints = await state.sprints(project: project)
         }
         if full, allLabels.isEmpty, canEdit("labels") { allLabels = (try? await client.labels()) ?? [] }
+    }
+
+    /// Full records for everything this page can open with a click: subtasks, children, the parent and linked
+    /// issues. One batched request, skipping what is already on disk.
+    private func prefetchRelated(_ state: AccountState) {
+        guard let issue else { return }
+        var keys = (issue.fields.subtasks ?? []).map(\.key) + children.map(\.key) + (issue.fields.issuelinks ?? []).compactMap { $0.other?.key }
+        if let p = issue.fields.parent?.key { keys.append(p) }
+        let missing = Set(keys).filter { state.prefetched[$0] == nil || state.peek[$0] == nil }
+        guard !missing.isEmpty else { return }
+        let client = state.client
+        let jql = "issuekey in (" + missing.map { "\"\($0)\"" }.joined(separator: ",") + ")"
+        Task { @MainActor in
+            guard let page = try? await client.search(jql: jql, fields: client.detailFields) else { return }
+            for i in page.issues {
+                DiskCache.saveAsync(i, account: state.account, name: "issue-\(i.key)")
+                state.peek[i.key] = i
+                state.prefetched[i.key] = i.fields.updated
+            }
+            DiskCache.saveAsync(state.prefetched, account: state.account, name: "prefetched")
+        }
     }
 
     /// Runs a write, then refreshes only what a write can change: the issue, its transitions and editmeta.
