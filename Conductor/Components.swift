@@ -1,5 +1,64 @@
 import SwiftUI
 
+// MARK: - Liquid Glass with a Sequoia fallback
+//
+// Every macOS 26 effect the app uses goes through one of these, so on 26 the app looks exactly as designed and
+// on macOS 15 it falls back to the standard control of the day. Nothing else in the app is version-specific.
+
+extension View {
+    /// `.glass` / `.glassProminent` on macOS 26; `.bordered` / `.borderedProminent` on Sequoia.
+    @ViewBuilder func glassButton(prominent: Bool = false) -> some View {
+        if #available(macOS 26, *) {
+            if prominent { buttonStyle(.glassProminent) } else { buttonStyle(.glass) }
+        } else if prominent {
+            buttonStyle(.borderedProminent)
+        } else {
+            buttonStyle(.bordered)
+        }
+    }
+
+    /// A glass pane on macOS 26; the regular material on Sequoia.
+    @ViewBuilder func glassPane(cornerRadius r: CGFloat) -> some View {
+        if #available(macOS 26, *) { glassEffect(.regular, in: .rect(cornerRadius: r)) }
+        else { background(.regularMaterial, in: .rect(cornerRadius: r)) }
+    }
+
+    /// Blurs what scrolls under a transparent toolbar. Sequoia's toolbar has an opaque background already.
+    @ViewBuilder func softScrollEdge() -> some View {
+        if #available(macOS 26, *) { scrollEdgeEffectStyle(.soft, for: .top) } else { self }
+    }
+
+    /// A bottom bar that the system blurs on macOS 26; on Sequoia an inset with the `.bar` backing, so rows
+    /// don't scroll through it.
+    @ViewBuilder func bottomBar<Bar: View>(@ViewBuilder _ bar: () -> Bar) -> some View {
+        if #available(macOS 26, *) { safeAreaBar(edge: .bottom, content: bar) }
+        else { safeAreaInset(edge: .bottom, spacing: 0) { bar().background(.bar) } }
+    }
+}
+
+extension CustomizableToolbarContent {
+    /// The issue title sits straight on the toolbar on macOS 26, with no capsule behind it and the buttons pushed
+    /// to the trailing end. Sequoia's toolbar draws no capsules and groups by placement on its own.
+    @ToolbarContentBuilder func glassTitle() -> some CustomizableToolbarContent {
+        if #available(macOS 26, *) {
+            sharedBackgroundVisibility(.hidden)
+            ToolbarSpacer(.flexible)
+        } else {
+            self
+        }
+    }
+}
+
+/// Lets neighbouring glass panes blend on macOS 26; plain content on Sequoia.
+struct GlassGroup<Content: View>: View {
+    var spacing: CGFloat
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        if #available(macOS 26, *) { GlassEffectContainer(spacing: spacing) { content } } else { content }
+    }
+}
+
 /// The window background, so glass panes sit on the system colour in light and dark mode.
 struct Backdrop: View {
     var body: some View { Color(nsColor: .windowBackgroundColor).ignoresSafeArea() }

@@ -59,6 +59,7 @@
 		7C7C95BB3217B54AB8E5C42D /* SidebarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarView.swift; sourceTree = "<group>"; };
 		7F99CD4B3FFF216DCD114CA3 /* CreateIssueView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CreateIssueView.swift; sourceTree = "<group>"; };
 		8DB7A3B9A271A00BF4756E4E /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
+		8E67EB49D18D1354B51EE0A1 /* Signed.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Signed.entitlements; sourceTree = "<group>"; };
 		90DA3B7AFF888764049D48F4 /* Cache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Cache.swift; sourceTree = "<group>"; };
 		9284E4A1F96E0B4D18D3D3EF /* UpdateChecker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UpdateChecker.swift; sourceTree = "<group>"; };
 		9F50480EA57B3B44DC187F40 /* Session.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Session.swift; sourceTree = "<group>"; };
@@ -67,7 +68,6 @@
 		C95F84CF49AB04DC4D7CAF67 /* ADF.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ADF.swift; sourceTree = "<group>"; };
 		DB81CE90DD0D0F8664E2BB2E /* LoginView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginView.swift; sourceTree = "<group>"; };
 		E4DEA254C7CFF930F6E6C347 /* IssueDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IssueDetailView.swift; sourceTree = "<group>"; };
-		EBA9E7A9793DF7345CB60C0E /* Debug.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Debug.entitlements; sourceTree = "<group>"; };
 		F4B50C638EC6F7F633F0C590 /* Commands.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Commands.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -95,7 +95,6 @@
 				31CFF25D2D75668F493102AB /* Conductor.entitlements */,
 				50FFC2675F34627ECB4EF79F /* ConductorApp.swift */,
 				7F99CD4B3FFF216DCD114CA3 /* CreateIssueView.swift */,
-				EBA9E7A9793DF7345CB60C0E /* Debug.entitlements */,
 				2FD033008CD2225DC1DA57D6 /* Info.plist */,
 				E4DEA254C7CFF930F6E6C347 /* IssueDetailView.swift */,
 				A5053C19BB732A6216DFB314 /* IssueListView.swift */,
@@ -107,6 +106,7 @@
 				9F50480EA57B3B44DC187F40 /* Session.swift */,
 				17DF45FD96E362F6AB0D52A9 /* SettingsView.swift */,
 				7C7C95BB3217B54AB8E5C42D /* SidebarView.swift */,
+				8E67EB49D18D1354B51EE0A1 /* Signed.entitlements */,
 				9284E4A1F96E0B4D18D3D3EF /* UpdateChecker.swift */,
 			);
 			path = Conductor;
@@ -176,6 +176,16 @@
 			attributes = {
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					3CB839982A2ACEF6F28983E5 = {
+						DevelopmentTeam = 7X7PA8RA37;
+						ProvisioningStyle = Automatic;
+					};
+					B3585E64249DDCCDE777FD17 = {
+						DevelopmentTeam = 7X7PA8RA37;
+						ProvisioningStyle = Automatic;
+					};
+				};
 			};
 			buildConfigurationList = 564A5101C844129075A52976 /* Build configuration list for PBXProject "Conductor" */;
 			developmentRegion = en;
@@ -338,7 +348,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
-				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
@@ -356,7 +366,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				CODE_SIGN_ENTITLEMENTS = Conductor/Debug.entitlements;
+				CODE_SIGN_ENTITLEMENTS = Conductor/Signed.entitlements;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 2;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -376,7 +386,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				CODE_SIGN_ENTITLEMENTS = Conductor/Conductor.entitlements;
+				CODE_SIGN_ENTITLEMENTS = Conductor/Signed.entitlements;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 2;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -442,8 +452,8 @@
 				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
-				CODE_SIGN_IDENTITY = "-";
-				CODE_SIGN_STYLE = Manual;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				DEVELOPMENT_TEAM = 7X7PA8RA37;
@@ -458,7 +468,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
-				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";

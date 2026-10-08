@@ -239,7 +239,7 @@ struct IssueDetailView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     header(issue)
-                    GlassEffectContainer(spacing: 16) {
+                    GlassGroup(spacing: 16) {
                         HStack(alignment: .top, spacing: 16) {
                             VStack(alignment: .leading, spacing: 16) {
                                 descriptionCard(issue)
@@ -267,7 +267,7 @@ struct IssueDetailView: View {
                 .padding(20)
             }
             // The toolbar has no background, so blur what scrolls under it instead of letting buttons sit on text.
-            .scrollEdgeEffectStyle(.soft, for: .top)
+            .softScrollEdge()
             .onChange(of: commentRequest) {
                 withAnimation { proxy.scrollTo("comments", anchor: .bottom) }
             }
@@ -328,9 +328,9 @@ struct IssueDetailView: View {
                 }
                 HStack(spacing: 10) {
                     Spacer()
-                    Button("Cancel") { descriptionDraft = nil; descriptionCaret = nil }.buttonStyle(.glass).keyboardShortcut(.cancelAction)
+                    Button("Cancel") { descriptionDraft = nil; descriptionCaret = nil }.glassButton().keyboardShortcut(.cancelAction)
                     // ⌘↩ belongs to whichever editor has focus; the comment box has the same shortcut.
-                    Button("Save") { saveDescription() }.buttonStyle(.glassProminent)
+                    Button("Save") { saveDescription() }.glassButton(prominent: true)
                         .keyboardShortcut(descriptionFocused ? KeyboardShortcut(.return, modifiers: .command) : nil)
                 }
             } else if let d = issue.fields.description, !(d.content ?? []).isEmpty {
@@ -739,8 +739,8 @@ struct IssueDetailView: View {
                                 .task { focusSoon($editCommentFocused) }
                             HStack(spacing: 10) {
                                 Spacer()
-                                Button("Cancel") { editingComment = nil }.buttonStyle(.glass).keyboardShortcut(.cancelAction)
-                                Button("Save") { saveCommentEdit(c) }.buttonStyle(.glassProminent)
+                                Button("Cancel") { editingComment = nil }.glassButton().keyboardShortcut(.cancelAction)
+                                Button("Save") { saveCommentEdit(c) }.glassButton(prominent: true)
                                     .keyboardShortcut(editCommentFocused ? KeyboardShortcut(.return, modifiers: .command) : nil)
                                     .disabled(editDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                             }
@@ -776,8 +776,7 @@ struct IssueDetailView: View {
             }
             .padding(.leading, 4)
         }
-        .sharedBackgroundVisibility(.hidden)
-        ToolbarSpacer(.flexible)
+        .glassTitle()
         ToolbarItem(id: "refresh") {
             Button { perform(.refresh) } label: { Label("Refresh", systemImage: "arrow.clockwise") }
                 .help("Refresh (⌘⇧R)")
@@ -1081,7 +1080,7 @@ struct CommentComposer: View {
         VStack(alignment: .trailing, spacing: 8) {
             Composer(text: $text, mentions: $mentions, placeholder: "Add a comment…  ⌘↩ to send", minHeight: 44, uploadImage: uploadImage, focus: focus)
             Button("Comment") { post() }
-                .buttonStyle(.glassProminent)
+                .glassButton(prominent: true)
                 // Only while this box has focus: the description and comment editors share the shortcut.
                 .keyboardShortcut(focus.wrappedValue ? KeyboardShortcut(.return, modifiers: .command) : nil)
                 .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || disabled)
@@ -1151,7 +1150,7 @@ struct ReminderView: View {
             Divider()
             HStack {
                 DatePicker("At", selection: $date, in: Date.now..., displayedComponents: [.date, .hourAndMinute]).labelsHidden()
-                Button("Set") { set(date) }.buttonStyle(.glassProminent).keyboardShortcut(.defaultAction)
+                Button("Set") { set(date) }.glassButton(prominent: true).keyboardShortcut(.defaultAction)
             }
             if let error { Text(error).font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true) }
         }
@@ -1196,9 +1195,9 @@ struct DueDatePicker: View {
             DatePicker("Due date", selection: $date, displayedComponents: .date)
                 .datePickerStyle(.graphical).labelsHidden()
             HStack {
-                if hadDate { Button("Clear") { onSave(nil) }.buttonStyle(.glass) }
+                if hadDate { Button("Clear") { onSave(nil) }.glassButton() }
                 Spacer()
-                Button("Save") { onSave(date) }.buttonStyle(.glassProminent).keyboardShortcut(.defaultAction)
+                Button("Save") { onSave(date) }.glassButton(prominent: true).keyboardShortcut(.defaultAction)
             }
         }
         .padding(12)
@@ -1229,7 +1228,7 @@ struct LabelsEditor: View {
                 Button { labels.append(m); draft = "" } label: { Text(m).frame(maxWidth: .infinity, alignment: .leading).contentShape(.rect) }
                     .buttonStyle(.plain).padding(.horizontal, 6).padding(.vertical, 3)
             }
-            HStack { Spacer(); Button("Save") { add(); onSave(labels) }.buttonStyle(.glassProminent).keyboardShortcut(.return, modifiers: .command) }
+            HStack { Spacer(); Button("Save") { add(); onSave(labels) }.glassButton(prominent: true).keyboardShortcut(.return, modifiers: .command) }
         }
         .padding(12)
         .frame(width: 280)
@@ -1274,9 +1273,9 @@ struct ParentPicker: View {
             }
             .listStyle(.plain).scrollContentBackground(.hidden).frame(height: 160)
             HStack {
-                if current != nil { Button("Clear") { onSave(nil) }.buttonStyle(.glass) }
+                if current != nil { Button("Clear") { onSave(nil) }.glassButton() }
                 Spacer()
-                Button("Set") { if let r = results.first { onSave(r.key) } }.buttonStyle(.glassProminent)
+                Button("Set") { if let r = results.first { onSave(r.key) } }.glassButton(prominent: true)
                     .disabled(results.isEmpty)
             }
         }
@@ -1335,7 +1334,7 @@ struct LinkIssueView: View {
             HStack {
                 Spacer()
                 Button("Link") { link() }
-                    .buttonStyle(.glassProminent)
+                    .glassButton(prominent: true)
                     .disabled(picked == nil || relation.isEmpty)
             }
         }
@@ -1376,7 +1375,7 @@ struct LogWorkView: View {
                 if !duration.isEmpty, seconds == nil { Text("Use w, d, h, m").font(.caption).foregroundStyle(.red) }
                 Spacer()
                 Button("Log") { if let s = seconds { onSubmit(s, comment, started) } }
-                    .buttonStyle(.glassProminent).keyboardShortcut(.defaultAction).disabled(seconds == nil)
+                    .glassButton(prominent: true).keyboardShortcut(.defaultAction).disabled(seconds == nil)
             }
         }
         .padding(12)

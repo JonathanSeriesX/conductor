@@ -193,11 +193,11 @@ struct CreateIssueView: View {
 
             HStack {
                 Spacer()
-                Button("Cancel") { if hasDraft { confirmDiscard = true } else { dismiss() } }.buttonStyle(.glass).keyboardShortcut(.cancelAction)
+                Button("Cancel") { if hasDraft { confirmDiscard = true } else { dismiss() } }.glassButton().keyboardShortcut(.cancelAction)
                 Button(action: create) {
                     if m.isWorking { ProgressView().controlSize(.small).frame(width: 60) } else { Text("Create").frame(width: 60) }
                 }
-                .buttonStyle(.glassProminent)
+                .glassButton(prominent: true)
                 .keyboardShortcut(.return, modifiers: .command)
                 .disabled(!m.canSubmit)
             }

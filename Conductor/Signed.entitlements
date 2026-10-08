@@ -10,7 +10,7 @@
 	<key>com.apple.security.files.user-selected.read-write</key>
 	<true/>
 	<!-- Puts accounts in the data protection keychain (see Keychain in JiraClient.swift). Needs a signing team,
-	     which Release builds on CI do not have, hence a separate file. -->
+	     which CI builds do not have: they use Conductor.entitlements instead. -->
 	<key>keychain-access-groups</key>
 	<array>
 		<string>$(AppIdentifierPrefix)org.evgenii.conductor</string>
