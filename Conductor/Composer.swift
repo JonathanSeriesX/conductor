@@ -16,6 +16,8 @@ struct Composer: View {
     /// Where the click that opened this editor landed, relative to the text it replaced (top-left origin):
     /// the caret starts at the same spot in the editor rather than at the end.
     var caret: CGPoint?
+    /// The owner's Save or Comment buttons, on the format bar's right, so nothing moves when editing starts.
+    var actions: AnyView = AnyView(EmptyView())
     @FocusState private var ownFocus: Bool
     @Environment(\.jira) private var jira
     @State private var candidates: [JiraUser] = []
@@ -30,7 +32,6 @@ struct Composer: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            formatBar
             if preview {
                 ADFView(node: .document(markdown: text, mentions: mentions))
                     .frame(maxWidth: .infinity, minHeight: minHeight, alignment: .topLeading)
@@ -39,6 +40,7 @@ struct Composer: View {
             } else {
                 editor
             }
+            formatBar
             if !candidates.isEmpty {
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(Array(candidates.enumerated()), id: \.element.id) { i, u in
@@ -102,12 +104,14 @@ struct Composer: View {
             tool("list.bullet", "Bulleted list") { prefixLine("- ") }
             tool("text.quote", "Quote") { prefixLine("> ") }
             tool("at", "Mention someone") { wrap("@", "") }
-            if uploading { ProgressView().controlSize(.mini).padding(.leading, 6) }
-            Spacer()
             Toggle(isOn: $preview) { Label("Preview", systemImage: preview ? "eye.fill" : "eye") }
                 .toggleStyle(.button).buttonStyle(.plain).labelStyle(.iconOnly)
                 .foregroundStyle(preview ? Color.accentColor : .secondary)
                 .help("Preview as Jira will show it")
+                .padding(.leading, 6)
+            if uploading { ProgressView().controlSize(.mini).padding(.leading, 6) }
+            Spacer()
+            actions
         }
         .font(.callout)
     }

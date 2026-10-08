@@ -17,6 +17,8 @@ struct IssueActions {
     let canEditDescription: Bool
     /// A summary, description or comment editor is open.
     let isEditing: Bool
+    /// Set while the page can go back to the issue it came from.
+    let back: (() -> Void)?
     let perform: (Action) -> Void
 }
 
@@ -30,6 +32,72 @@ struct ListActions {
 extension FocusedValues {
     @Entry var issueActions: IssueActions?
     @Entry var listActions: ListActions?
+}
+
+/// Single-key shortcuts after Jira's or Linear's, on top of the ⌘ ones in the menus. They act while no text
+/// field has the focus, so typing is never hijacked; that is why they are not menu key equivalents.
+enum ShortcutScheme: String, CaseIterable {
+    case mac, jira, linear
+
+    static var current: ShortcutScheme {
+        ShortcutScheme(rawValue: UserDefaults.standard.string(forKey: "shortcutScheme") ?? "") ?? .mac
+    }
+
+    var title: String {
+        switch self {
+        case .mac: "macOS"
+        case .jira: "Jira"
+        case .linear: "Linear"
+        }
+    }
+
+    enum Key {
+        case newIssue, search, issue(IssueActions.Action)
+        var title: String {
+            switch self {
+            case .newIssue: String(localized: "New Issue…")
+            case .search: String(localized: "Find Issues")
+            case .issue(.editSummary): String(localized: "Edit Summary")
+            case .issue(.assign): String(localized: "Assign…")
+            case .issue(.assignToMe): String(localized: "Assign to Me")
+            case .issue(.comment): String(localized: "Add Comment")
+            case .issue(.watch): String(localized: "Watch This Issue")
+            case .issue(let a): String(describing: a)
+            }
+        }
+    }
+
+    /// ponytail: the keys each tool documents that map onto an action this app has; extend as needed.
+    var keys: [(Character, Key)] {
+        switch self {
+        case .mac: []
+        case .jira:
+            [
+                ("c", .newIssue), ("/", .search), ("e", .issue(.editSummary)), ("a", .issue(.assign)),
+                ("i", .issue(.assignToMe)), ("m", .issue(.comment)), ("w", .issue(.watch)),
+            ]
+        case .linear: [("c", .newIssue), ("/", .search), ("a", .issue(.assign)), ("i", .issue(.assignToMe))]
+        }
+    }
+
+    /// "c New Issue… · a Assign…", for Settings.
+    var legend: String { keys.map { "\($0.0) \($0.1.title)" }.joined(separator: " · ") }
+
+    /// Runs the key's action and swallows the event; hands back anything else, and everything while text is edited.
+    @MainActor static func handle(_ e: NSEvent, issue: IssueActions?, session: Session) -> NSEvent? {
+        guard e.modifierFlags.intersection(.deviceIndependentFlagsMask).isEmpty,
+            !(e.window?.firstResponder is NSTextView), let ch = e.charactersIgnoringModifiers?.first,
+            let key = current.keys.first(where: { $0.0 == ch })?.1
+        else { return e }
+        switch key {
+        case .newIssue: session.createIssueRequested = true
+        case .search: session.focusSearchRequested = true
+        case .issue(let action):
+            guard let issue else { return e }
+            issue.perform(action)
+        }
+        return nil
+    }
 }
 
 /// Menu bar commands that act on whatever the key window shows.
@@ -135,6 +203,7 @@ struct IssueWindow: View {
     @State private var trail: [IssueTarget] = []
     @Environment(Session.self) private var session
     @Environment(\.dismiss) private var dismiss
+    @FocusedValue(\.issueActions) private var issueActions
 
     var body: some View {
         Group {
@@ -169,6 +238,14 @@ struct IssueWindow: View {
         }
         .writingToolsBehavior(.disabled)
         .background(WindowCascader())
+        // The main window's monitor covers the preview column; a window of its own needs one.
+        .background(
+            embedded
+                ? nil
+                : WindowEventMonitor(mask: .keyDown) {
+                    ShortcutScheme.handle($0, issue: issueActions, session: session)
+                }
+        )
     }
 }
 
