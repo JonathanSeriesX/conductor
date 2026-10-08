@@ -131,7 +131,8 @@ struct IssueDetailView: View {
     @State private var descriptionMentions: [String: String] = [:]
     /// What the editors opened with, so an untouched draft is never written back (the Markdown trip loses panels and media).
     @State private var descriptionOriginal = ""
-    @State private var summarySelection: TextSelection?
+    /// Where the click that started an edit landed, so the caret goes there and not to the end.
+    @State private var editClick: NSPoint?
     /// When a link in the description was last clicked, so that click does not also start editing.
     @State private var linkOpened: Date?
     @State private var editOriginal = ""
@@ -256,7 +257,7 @@ struct IssueDetailView: View {
         VStack(alignment: .leading, spacing: 8) {
             // The key and type icon are the window title; the parent is a row in the sidebar.
             if summaryDraft != nil {
-                TextField("Summary", text: Binding($summaryDraft, or: ""), selection: $summarySelection, axis: .vertical)
+                TextField("Summary", text: Binding($summaryDraft, or: ""), axis: .vertical)
                     .font(.system(.largeTitle, design: .rounded, weight: .semibold))
                     .textFieldStyle(.plain)
                     .lineLimit(1...4)
@@ -267,13 +268,7 @@ struct IssueDetailView: View {
                     .background(.quaternary.opacity(0.4), in: .rect(cornerRadius: 10))
                     .padding(.horizontal, -8)
                     .task { focusSoon($summaryFocused) }
-                    .onChange(of: summaryFocused) { _, on in
-                        // Focus selects everything a moment after it lands; the caret goes to the end instead, where typing continues.
-                        guard on else { return }
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                            if let d = summaryDraft { summarySelection = TextSelection(insertionPoint: d.endIndex) }
-                        }
-                    }
+                    .onChange(of: summaryFocused) { _, on in if on { placeCaret() } }
                 Text("↩ to save · esc to cancel").font(.caption2).foregroundStyle(.tertiary)
             } else {
                 // Selectable, and a click (not a drag) edits, as on the web. A simultaneous gesture, because
@@ -282,7 +277,11 @@ struct IssueDetailView: View {
                     .font(.system(.largeTitle, design: .rounded, weight: .semibold))
                     .textSelection(.enabled)
                     .contentShape(.rect)
-                    .simultaneousGesture(TapGesture().onEnded { if store.canEdit("summary") { summaryDraft = issue.fields.summary } })
+                    .simultaneousGesture(TapGesture().onEnded {
+                        guard store.canEdit("summary") else { return }
+                        editClick = NSEvent.mouseLocation
+                        summaryDraft = issue.fields.summary
+                    })
             }
         }
     }
@@ -293,6 +292,7 @@ struct IssueDetailView: View {
             if descriptionDraft != nil {
                 Composer(text: Binding($descriptionDraft, or: ""), mentions: $descriptionMentions, placeholder: "Description", minHeight: 140, maxHeight: 420, uploadImage: uploadPasted, focus: $descriptionFocused)
                     .task { focusSoon($descriptionFocused) }
+                    .onChange(of: descriptionFocused) { _, on in if on { placeCaret() } }
                 if issue.fields.description?.hasLossyNodes == true {
                     Label("This description has images, panels or other content the editor can't keep. Saving replaces them with the text shown here; Cancel leaves the description as it is.", systemImage: "exclamationmark.triangle")
                         .font(.caption).foregroundStyle(.orange)
@@ -312,9 +312,11 @@ struct IssueDetailView: View {
                     .environment(\.openURL, OpenURLAction { url in linkOpened = .now; return .systemAction(url) })
                     .simultaneousGesture(TapGesture().onEnded {
                         guard store.canEdit("description") else { return }
+                        let at = NSEvent.mouseLocation
                         Task {
                             try? await Task.sleep(for: .milliseconds(80))
                             if let t = linkOpened, t.timeIntervalSinceNow > -0.5 { return }
+                            editClick = at
                             beginDescriptionEdit(issue)
                         }
                     })
@@ -853,6 +855,24 @@ struct IssueDetailView: View {
     /// Focus set in the same pass that creates the field is lost; one turn of the run loop later it sticks.
     private func focusSoon(_ focus: FocusState<Bool>.Binding) {
         DispatchQueue.main.async { focus.wrappedValue = true }
+    }
+
+    /// Puts the caret under the click that opened the editor, or at the end when a key opened it (⌘E).
+    /// Focus selects everything a moment after it lands, so this waits for that and then takes over.
+    /// The editor sits where the text was, in the same font, so the character under the point is the one clicked;
+    /// in the description the Markdown markup shifts it a little.
+    private func placeCaret() {
+        let at = editClick
+        editClick = nil
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            guard let window = NSApp.keyWindow, let tv = window.firstResponder as? NSTextView else { return }
+            var index = (tv.string as NSString).length
+            if let at {
+                let local = tv.convert(window.convertPoint(fromScreen: at), from: nil)
+                index = tv.characterIndexForInsertion(at: local)
+            }
+            tv.setSelectedRange(NSRange(location: index, length: 0))
+        }
     }
 
     private func saveSummary() {
