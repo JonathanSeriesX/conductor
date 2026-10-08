@@ -24,6 +24,7 @@ struct IssueActions {
 struct ListActions {
     let saveFilter: (() -> Void)?
     let openBoard: (() -> Void)?
+    let sort: Binding<ListFilters.Sort>?
 }
 
 extension FocusedValues {
@@ -63,6 +64,11 @@ struct AppCommands: Commands {
             Button("Open Board") { list?.openBoard?() }
                 .keyboardShortcut("b", modifiers: [.command, .shift])
                 .disabled(list?.openBoard == nil)
+            Divider()
+            // Inline, as Mail's Sort By would be without its submenu.
+            Section("Sort By") {
+                SortMenuItems(sort: list?.sort ?? .constant(ListFilters.Sort())).disabled(list?.sort == nil)
+            }
             Divider()
         }
         CommandMenu("Issue") {
