@@ -10,6 +10,8 @@ final class BoardStore {
     var quickFilters: [QuickFilter] = []
     var activeFilters: Set<Int> = []
     var issues: [Issue] = []
+    /// Cards on their way to another column: key → the status they will have. Drawn there at once.
+    private var moving: [String: String] = [:]
     /// True from the start, so a window with no saved board shows a spinner rather than "No boards" first.
     var isLoading = true
     var error: String?
@@ -52,7 +54,7 @@ final class BoardStore {
         let ids = Set(column.statuses.map(\.id))
         let parents = fold ? Set(issues.map(\.key)) : []
         return (list ?? issues).filter { i in
-            ids.contains(i.fields.status.id)
+            ids.contains(moving[i.key] ?? i.fields.status.id)
                 && !(fold && i.fields.issuetype.isSubtask && i.fields.parent.map { parents.contains($0.key) } == true)
         }
     }
@@ -167,8 +169,14 @@ final class BoardStore {
                 )
                 return
             }
+            // The card sits in its new column while Jira works; only it is fetched afterwards, so the rest of the
+            // board stays exactly where it was instead of reloading page by page.
+            moving[key] = t.to.id
+            defer { moving[key] = nil }
             try await client.transition(key, to: t.id)
-            await loadIssues(client)
+            let fresh = try await client.issue(key)
+            if let i = issues.firstIndex(where: { $0.key == key }) { issues[i] = fresh }
+            saveSnapshot()
         } catch { self.error = error.localizedDescription }
     }
 }
@@ -511,6 +519,7 @@ struct BoardColumn: View {
     private var cards: some View {
         LazyVStack(spacing: 8) {
             ForEach(issues) { issue in
+                if issue.id != issues.first?.id { Divider().padding(.horizontal, 6) }
                 BoardCard(issue: issue)
                     .draggable(issue.key)
                     .onTapGesture(count: 2) {

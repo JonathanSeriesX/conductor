@@ -292,6 +292,7 @@ struct IssueListView: View {
                     toggle: d.children.isEmpty
                         ? nil : { withAnimation(.snappy(duration: 0.25)) { expanded.formSymmetricDifference([d.id]) } }
                 )
+                .id(row.issue.fields.summary)  // a new view after an edit, so the table measures the row again
                 .tag(row.target)
                 // The open issue stays in the accent colour while the preview has the focus, as in Notes and Mail;
                 // the table's own highlight, grey without focus, is off.
