@@ -133,6 +133,8 @@ struct IssueDetailView: View {
     @State private var descriptionOriginal = ""
     /// Where the click that started an edit landed, so the caret goes there and not to the end.
     @State private var editClick: NSPoint?
+    /// The same for the description, handed to its composer, which owns that editor's selection.
+    @State private var descriptionCaret: CGPoint?
     /// When a link in the description was last clicked, so that click does not also start editing.
     @State private var linkOpened: Date?
     @State private var editOriginal = ""
@@ -290,16 +292,15 @@ struct IssueDetailView: View {
         GlassCard {
             Text("Description").font(.headline).foregroundStyle(.secondary)
             if descriptionDraft != nil {
-                Composer(text: Binding($descriptionDraft, or: ""), mentions: $descriptionMentions, placeholder: "Description", minHeight: 140, maxHeight: 420, uploadImage: uploadPasted, focus: $descriptionFocused)
+                Composer(text: Binding($descriptionDraft, or: ""), mentions: $descriptionMentions, placeholder: "Description", minHeight: 140, maxHeight: 420, uploadImage: uploadPasted, focus: $descriptionFocused, caret: descriptionCaret)
                     .task { focusSoon($descriptionFocused) }
-                    .onChange(of: descriptionFocused) { _, on in if on { placeCaret() } }
                 if issue.fields.description?.hasLossyNodes == true {
                     Label("This description has images, panels or other content the editor can't keep. Saving replaces them with the text shown here; Cancel leaves the description as it is.", systemImage: "exclamationmark.triangle")
                         .font(.caption).foregroundStyle(.orange)
                 }
                 HStack(spacing: 10) {
                     Spacer()
-                    Button("Cancel") { descriptionDraft = nil }.buttonStyle(.glass).keyboardShortcut(.cancelAction)
+                    Button("Cancel") { descriptionDraft = nil; descriptionCaret = nil }.buttonStyle(.glass).keyboardShortcut(.cancelAction)
                     // ⌘↩ belongs to whichever editor has focus; the comment box has the same shortcut.
                     Button("Save") { saveDescription() }.buttonStyle(.glassProminent)
                         .keyboardShortcut(descriptionFocused ? KeyboardShortcut(.return, modifiers: .command) : nil)
@@ -310,13 +311,13 @@ struct IssueDetailView: View {
                     .contentShape(.rect)
                     // A link click runs through openURL first; the tap that follows must not open the editor.
                     .environment(\.openURL, OpenURLAction { url in linkOpened = .now; return .systemAction(url) })
-                    .simultaneousGesture(TapGesture().onEnded {
+                    .simultaneousGesture(SpatialTapGesture().onEnded { tap in
                         guard store.canEdit("description") else { return }
-                        let at = NSEvent.mouseLocation
+                        let at = tap.location
                         Task {
                             try? await Task.sleep(for: .milliseconds(80))
                             if let t = linkOpened, t.timeIntervalSinceNow > -0.5 { return }
-                            editClick = at
+                            descriptionCaret = at
                             beginDescriptionEdit(issue)
                         }
                     })
@@ -864,15 +865,22 @@ struct IssueDetailView: View {
     private func placeCaret() {
         let at = editClick
         editClick = nil
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-            guard let window = NSApp.keyWindow, let tv = window.firstResponder as? NSTextView else { return }
-            var index = (tv.string as NSString).length
-            if let at {
-                let local = tv.convert(window.convertPoint(fromScreen: at), from: nil)
-                index = tv.characterIndexForInsertion(at: local)
+        // AppKit hands the editor first responder some time after SwiftUI reports focus: poll for it, briefly.
+        func attempt(_ n: Int) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                guard let window = NSApp.keyWindow, let tv = window.firstResponder as? NSTextView else {
+                    if n < 10 { attempt(n + 1) }
+                    return
+                }
+                var index = (tv.string as NSString).length
+                if let at {
+                    let local = tv.convert(window.convertPoint(fromScreen: at), from: nil)
+                    index = tv.characterIndexForInsertion(at: local)
+                }
+                tv.setSelectedRange(NSRange(location: index, length: 0))
             }
-            tv.setSelectedRange(NSRange(location: index, length: 0))
         }
+        attempt(0)
     }
 
     private func saveSummary() {
@@ -893,6 +901,7 @@ struct IssueDetailView: View {
     private func saveDescription() {
         guard let draft = descriptionDraft else { return }
         descriptionDraft = nil
+        descriptionCaret = nil
         guard draft != descriptionOriginal else { return }
         let doc = ADFNode.document(markdown: draft, mentions: descriptionMentions)
         guard let value = try? JSONValue(doc) else { return }
