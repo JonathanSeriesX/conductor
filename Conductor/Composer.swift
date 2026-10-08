@@ -56,7 +56,7 @@ struct Composer: View {
                     }
                 }
                 .padding(4)
-                .glassEffect(.regular, in: .rect(cornerRadius: 10))
+                .glassPane(cornerRadius: 10)
                 .transition(.opacity)
             }
             if let error { Text(error).font(.caption).foregroundStyle(.red) }

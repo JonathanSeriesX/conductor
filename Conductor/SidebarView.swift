@@ -275,8 +275,7 @@ struct SidebarView: View {
         .listStyle(.sidebar)
         .navigationTitle("Conductor")
         .navigationSplitViewColumnWidth(min: 200, ideal: 240)
-        // A safe-area bar gets the system scroll-edge blur, so no opaque `.bar` backing is needed under the button.
-        .safeAreaBar(edge: .bottom) {
+        .bottomBar {
             VStack(alignment: .leading, spacing: 10) {
                 if Connectivity.shared.isOffline {
                     HStack {

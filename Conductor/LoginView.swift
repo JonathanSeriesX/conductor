@@ -18,7 +18,7 @@ struct LoginView: View {
         if isSheet {
             card
         } else {
-            ZStack { Backdrop(); card.glassEffect(.regular, in: .rect(cornerRadius: 28)) }
+            ZStack { Backdrop(); card.glassPane(cornerRadius: 28) }
         }
     }
 
@@ -45,13 +45,13 @@ struct LoginView: View {
 
                 HStack {
                     if isSheet {
-                        Button("Cancel") { dismiss() }.buttonStyle(.glass).controlSize(.large).keyboardShortcut(.cancelAction)
+                        Button("Cancel") { dismiss() }.glassButton().controlSize(.large).keyboardShortcut(.cancelAction)
                     }
                     Button(action: submit) {
                         if busy { ProgressView().controlSize(.small).frame(maxWidth: .infinity) }
                         else { Text(isSheet ? "Add" : "Sign In").frame(maxWidth: .infinity) }
                     }
-                    .buttonStyle(.glassProminent)
+                    .glassButton(prominent: true)
                     .controlSize(.large)
                     .disabled(!canSubmit)
                     .keyboardShortcut(.defaultAction)
