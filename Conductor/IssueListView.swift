@@ -770,13 +770,21 @@ struct IssueRow: View {
                 Text(issue.fields.summary).lineLimit(2).strikethrough(issue.isDone).foregroundStyle(
                     issue.isDone ? .secondary : .primary)
                 HStack(spacing: 8) {
-                    Text(issue.key).font(.caption.monospaced()).foregroundStyle(.secondary)
+                    // Key and status never wrap or truncate; the count is the first to give, down to "1/3".
+                    Text(issue.key).font(.caption.monospaced()).foregroundStyle(.secondary).fixedSize()
                     if let site { SiteBadge(name: site.name, color: site.color) }
-                    StatusPill(status: issue.fields.status)
+                    StatusPill(status: issue.fields.status).fixedSize()
                     if let p = issue.subtaskProgress {
-                        Label("\(p.done) of \(p.total) done", systemImage: "checklist")
-                            .font(.caption).foregroundStyle(p.done == p.total ? .green : .secondary).lineLimit(1)
-                            .layoutPriority(1)  // the spacer gives way before the count is cut
+                        ViewThatFits(in: .horizontal) {
+                            Label("\(p.done) of \(p.total) done", systemImage: "checklist")
+                            Label {
+                                Text(verbatim: "\(p.done)/\(p.total)")
+                            } icon: {
+                                Image(systemName: "checklist")
+                            }
+                        }
+                        .font(.caption).foregroundStyle(p.done == p.total ? .green : .secondary).lineLimit(1)
+                        .layoutPriority(1)
                     }
                     if let toggle {
                         Button(action: toggle) {

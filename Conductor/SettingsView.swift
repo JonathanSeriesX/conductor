@@ -6,6 +6,7 @@ struct SettingsView: View {
     @AppStorage("notificationsEnabled") private var notifications = true
     @AppStorage("pollMinutes") private var pollMinutes = 3
     @AppStorage("checkForUpdates") private var checkForUpdates = true
+    @AppStorage("shortcutScheme") private var shortcutScheme = ShortcutScheme.mac.rawValue
     @Environment(Session.self) private var session
     @State private var cacheSize: Int64 = 0
 
@@ -20,6 +21,15 @@ struct SettingsView: View {
                     .font(.caption).foregroundStyle(.secondary)
                 if !session.hiddenPresets.isEmpty {
                     Button("Show \(session.hiddenPresets.count) Hidden Sidebar Items") { session.showHiddenPresets() }
+                }
+            }
+            Section("Keyboard") {
+                Picker("Shortcuts", selection: $shortcutScheme) {
+                    ForEach(ShortcutScheme.allCases, id: \.rawValue) { Text(verbatim: $0.title).tag($0.rawValue) }
+                }
+                if let scheme = ShortcutScheme(rawValue: shortcutScheme), scheme != .mac {
+                    Text("Single keys while no text field has the focus: \(scheme.legend)")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
             }
             Section("Notifications") {

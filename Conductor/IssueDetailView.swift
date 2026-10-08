@@ -188,6 +188,8 @@ struct IssueDetailView: View {
     @State private var descriptionOriginal = ""
     /// Where the click that started an edit landed, so the caret goes there and not to the end.
     @State private var editClick: NSPoint?
+    /// The summary editor just opened and its caret still has to be placed.
+    @State private var caretPending = false
     /// The same for the description, handed to its composer, which owns that editor's selection.
     @State private var descriptionCaret: CGPoint?
     /// When a link in the description was last clicked, so that click does not also start editing.
@@ -289,7 +291,13 @@ struct IssueDetailView: View {
                         if embedded {
                             // The preview column is narrow: the fields go under the body, the first four above the comments.
                             cards(issue)
-                            metadata { primaryFields(issue) }.overlay(alignment: .topTrailing) { working }
+                            metadata {
+                                statusField(issue)
+                                assigneeField(issue)
+                                priorityField(issue)
+                                reporterField(issue)
+                            }
+                            .overlay(alignment: .topTrailing) { working }
                             GlassCard(title: "Comments") { comments(issue) }.id("comments")
                             metadata { fields(issue) }
                         } else {
@@ -300,7 +308,10 @@ struct IssueDetailView: View {
                                 }
                                 GlassCard {
                                     VStack(alignment: .leading, spacing: 14) {
-                                        primaryFields(issue)
+                                        statusField(issue)
+                                        priorityField(issue)
+                                        assigneeField(issue)
+                                        reporterField(issue)
                                         fields(issue)
                                     }
                                     .font(.callout)
@@ -389,7 +400,9 @@ struct IssueDetailView: View {
                     .background(.quaternary.opacity(0.4), in: .rect(cornerRadius: 10))
                     .padding(.horizontal, -8)
                     .task { focusSoon($summaryFocused) }
-                    .onChange(of: summaryFocused) { _, on in if on { placeCaret() } }
+                    .onReceive(NotificationCenter.default.publisher(for: NSTextView.didChangeSelectionNotification)) {
+                        placeCaret(in: $0.object as? NSTextView)
+                    }
                 Text("↩ to save · esc to cancel").font(.caption2).foregroundStyle(.tertiary)
             } else {
                 // Selectable, and a click (not a drag) edits, as on the web. A simultaneous gesture, because
@@ -402,6 +415,7 @@ struct IssueDetailView: View {
                         TapGesture().onEnded {
                             guard store.canEdit("summary") else { return }
                             editClick = NSEvent.mouseLocation
+                            caretPending = true
                             summaryDraft = issue.fields.summary
                         })
             }
@@ -415,7 +429,18 @@ struct IssueDetailView: View {
                 Composer(
                     text: Binding($descriptionDraft, or: ""), mentions: $descriptionMentions,
                     placeholder: "Description", minHeight: 140, maxHeight: 420, uploadImage: uploadPasted,
-                    focus: $descriptionFocused, caret: descriptionCaret
+                    focus: $descriptionFocused, caret: descriptionCaret,
+                    actions: AnyView(
+                        HStack(spacing: 10) {
+                            Button("Cancel") {
+                                descriptionDraft = nil
+                                descriptionCaret = nil
+                            }.glassButton().keyboardShortcut(.cancelAction)
+                            // ⌘↩ belongs to whichever editor has focus; the comment box has the same shortcut.
+                            Button("Save") { saveDescription() }.glassButton(prominent: true)
+                                .keyboardShortcut(
+                                    descriptionFocused ? KeyboardShortcut(.return, modifiers: .command) : nil)
+                        })
                 )
                 .task { focusSoon($descriptionFocused) }
                 if issue.fields.description?.hasLossyNodes == true {
@@ -424,16 +449,6 @@ struct IssueDetailView: View {
                         systemImage: "exclamationmark.triangle"
                     )
                     .font(.caption).foregroundStyle(.orange)
-                }
-                HStack(spacing: 10) {
-                    Spacer()
-                    Button("Cancel") {
-                        descriptionDraft = nil
-                        descriptionCaret = nil
-                    }.glassButton().keyboardShortcut(.cancelAction)
-                    // ⌘↩ belongs to whichever editor has focus; the comment box has the same shortcut.
-                    Button("Save") { saveDescription() }.glassButton(prominent: true)
-                        .keyboardShortcut(descriptionFocused ? KeyboardShortcut(.return, modifiers: .command) : nil)
                 }
             } else if let d = issue.fields.description, !(d.content ?? []).isEmpty {
                 ADFView(node: d)
@@ -510,7 +525,7 @@ struct IssueDetailView: View {
     }
 
     /// The four values a reader wants first, above the comments.
-    @ViewBuilder private func primaryFields(_ issue: Issue) -> some View {
+    @ViewBuilder private func statusField(_ issue: Issue) -> some View {
         field("Status") {
             Menu {
                 ForEach(store.transitions) { t in
@@ -528,6 +543,9 @@ struct IssueDetailView: View {
             .menuStyle(.button).buttonStyle(.plain).fixedSize()
             .disabled(store.transitions.isEmpty)
         }
+    }
+
+    @ViewBuilder private func priorityField(_ issue: Issue) -> some View {
         field("Priority") {
             if store.canEdit("priority"), !store.priorities.isEmpty {
                 Menu {
@@ -544,6 +562,9 @@ struct IssueDetailView: View {
                 priorityLabel(issue.fields.priority)
             }
         }
+    }
+
+    @ViewBuilder private func assigneeField(_ issue: Issue) -> some View {
         field("Assignee") {
             Button {
                 showAssign = true
@@ -562,6 +583,9 @@ struct IssueDetailView: View {
                 }
             }
         }
+    }
+
+    @ViewBuilder private func reporterField(_ issue: Issue) -> some View {
         field("Reporter") {
             HStack(spacing: 6) {
                 Avatar(user: issue.fields.reporter, size: 20)
@@ -1005,18 +1029,21 @@ struct IssueDetailView: View {
                         if editingComment?.id == c.id {
                             Composer(
                                 text: $editDraft, mentions: $editMentions, placeholder: "Edit comment",
-                                uploadImage: uploadPasted, focus: $editCommentFocused
+                                uploadImage: uploadPasted, focus: $editCommentFocused,
+                                actions: AnyView(
+                                    HStack(spacing: 10) {
+                                        Button("Cancel") { editingComment = nil }.glassButton()
+                                            .keyboardShortcut(.cancelAction)
+                                        Button("Save") { saveCommentEdit(c) }.glassButton(prominent: true)
+                                            .keyboardShortcut(
+                                                editCommentFocused
+                                                    ? KeyboardShortcut(.return, modifiers: .command) : nil
+                                            )
+                                            .disabled(
+                                                editDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                                    })
                             )
                             .task { focusSoon($editCommentFocused) }
-                            HStack(spacing: 10) {
-                                Spacer()
-                                Button("Cancel") { editingComment = nil }.glassButton().keyboardShortcut(.cancelAction)
-                                Button("Save") { saveCommentEdit(c) }.glassButton(prominent: true)
-                                    .keyboardShortcut(
-                                        editCommentFocused ? KeyboardShortcut(.return, modifiers: .command) : nil
-                                    )
-                                    .disabled(editDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                            }
                         } else {
                             ADFView(node: c.body)
                         }
@@ -1138,6 +1165,7 @@ struct IssueDetailView: View {
             canEditSummary: store.canEdit("summary"),
             canEditDescription: store.canEdit("description"),
             isEditing: summaryDraft != nil || descriptionDraft != nil || editingComment != nil,
+            back: back,
             perform: perform
         )
     }
@@ -1161,7 +1189,9 @@ struct IssueDetailView: View {
             run { try await $0.watch(key, on, me: me) }
         case .transition(let id): run { try await $0.transition(key, to: id) }
         case .remind: showRemind = true
-        case .editSummary: summaryDraft = summary
+        case .editSummary:
+            caretPending = true
+            summaryDraft = summary
         case .editDescription: if let issue = store.issue { beginDescriptionEdit(issue) }
         case .comment: commentRequest += 1
         case .attach: attachFiles()
@@ -1189,28 +1219,20 @@ struct IssueDetailView: View {
     }
 
     /// Puts the caret under the click that opened the editor, or at the end when a key opened it (⌘E).
-    /// Focus selects everything a moment after it lands, so this waits for that and then takes over.
-    /// The editor sits where the text was, in the same font, so the character under the point is the one clicked;
-    /// in the description the Markdown markup shifts it a little.
-    private func placeCaret() {
-        let at = editClick
-        editClick = nil
-        // AppKit hands the editor first responder some time after SwiftUI reports focus: poll for it, briefly.
-        func attempt(_ n: Int) {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                guard let window = NSApp.keyWindow, let tv = window.firstResponder as? NSTextView else {
-                    if n < 10 { attempt(n + 1) }
-                    return
-                }
-                var index = (tv.string as NSString).length
-                if let at {
-                    let local = tv.convert(window.convertPoint(fromScreen: at), from: nil)
-                    index = tv.characterIndexForInsertion(at: local)
-                }
-                tv.setSelectedRange(NSRange(location: index, length: 0))
-            }
+    /// Focus selects everything; this runs inside that selection change, so no frame ever shows it.
+    /// The editor sits where the text was, in the same font, so the character under the point is the one clicked.
+    private func placeCaret(in tv: NSTextView?) {
+        guard caretPending, let tv, let window = tv.window, window.isKeyWindow, window.firstResponder === tv,
+            tv.selectedRange().length == (tv.string as NSString).length, tv.selectedRange().length > 0
+        else { return }
+        caretPending = false
+        var index = (tv.string as NSString).length
+        if let at = editClick {
+            let local = tv.convert(window.convertPoint(fromScreen: at), from: nil)
+            index = tv.characterIndexForInsertion(at: local)
         }
-        attempt(0)
+        editClick = nil
+        tv.setSelectedRange(NSRange(location: index, length: 0))
     }
 
     private func saveSummary() {
@@ -1391,16 +1413,16 @@ struct CommentComposer: View {
     @State private var mentions: [String: String] = [:]
 
     var body: some View {
-        VStack(alignment: .trailing, spacing: 8) {
-            Composer(
-                text: $text, mentions: $mentions, placeholder: "Add a comment…  ⌘↩ to send", minHeight: 44,
-                uploadImage: uploadImage, focus: focus)
-            Button("Comment") { post() }
-                .glassButton(prominent: true)
-                // Only while this box has focus: the description and comment editors share the shortcut.
-                .keyboardShortcut(focus.wrappedValue ? KeyboardShortcut(.return, modifiers: .command) : nil)
-                .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || disabled)
-        }
+        Composer(
+            text: $text, mentions: $mentions, placeholder: "Add a comment…  ⌘↩ to send", minHeight: 44,
+            uploadImage: uploadImage, focus: focus,
+            actions: AnyView(
+                Button("Comment") { post() }
+                    .glassButton(prominent: true)
+                    // Only while this box has focus: the description and comment editors share the shortcut.
+                    .keyboardShortcut(focus.wrappedValue ? KeyboardShortcut(.return, modifiers: .command) : nil)
+                    .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || disabled))
+        )
         .onChange(of: focusRequest) { focus.wrappedValue = true }
     }
 

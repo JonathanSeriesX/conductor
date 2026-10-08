@@ -115,7 +115,9 @@ struct RootView: View {
                             set: { if let f = $0 { filters = f } }))
                 } content: {
                     IssueListView(filters: $filters, selection: $selection)
-                        .navigationSplitViewColumnWidth(min: 340, ideal: 420)
+                        // No narrower than 420: below that keys wrap and pills clip. Half a 1100-wide window
+                        // on a 13" MacBook Air, after the sidebar.
+                        .navigationSplitViewColumnWidth(min: 420, ideal: 460)
                 } detail: {
                     if let selection {
                         IssueWindow(target: selection, embedded: true).id(selection)
@@ -127,7 +129,11 @@ struct RootView: View {
                             .toolbar(id: "empty") { ToolbarItem(id: "none") { EmptyView() }.glassTitle() }
                     }
                 }
-                .background(WindowEventMonitor(mask: .keyDown) { escape($0) })
+                .background(
+                    WindowEventMonitor(mask: .keyDown) { e in
+                        escape(e).flatMap { ShortcutScheme.handle($0, issue: issueActions, session: session) }
+                    }
+                )
                 .sheet(isPresented: Bindable(session).createIssueRequested) {
                     CreateIssueView(defaultProject: currentProject) { openWindow(id: "issue", value: $0) }
                 }
@@ -182,16 +188,16 @@ struct RootView: View {
         #endif
     }
 
-    /// Escape empties the preview column wherever the focus is, unless something nearer has a use for it: a field
-    /// being edited cancels that edit, a search with text clears it, and a comment draft stays as it is.
+    /// Escape steps back along the preview's trail, then empties the preview column, wherever the focus is, unless
+    /// something nearer has a use for it: a field being edited cancels that edit, a search with text clears it, and
+    /// a comment draft stays as it is. With nothing to do it is used up all the same: passed on, the toolbar twitches.
     private func escape(_ e: NSEvent) -> NSEvent? {
-        guard e.keyCode == 53, e.modifierFlags.intersection(.deviceIndependentFlagsMask).isEmpty, selection != nil
-        else { return e }
+        guard e.keyCode == 53, e.modifierFlags.intersection(.deviceIndependentFlagsMask).isEmpty else { return e }
         if issueActions?.isEditing == true { return e }
         // A popover's Escape arrives tagged with the main window on Tahoe; the popover (a child window) must close, not the preview.
         if NSApp.keyWindow !== e.window || e.window?.childWindows?.contains(where: \.isVisible) == true { return e }
         if let tv = e.window?.firstResponder as? NSTextView, !tv.string.isEmpty { return e }
-        selection = nil
+        if let back = issueActions?.back { back() } else { selection = nil }
         return nil
     }
 
