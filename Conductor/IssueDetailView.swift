@@ -52,8 +52,24 @@ final class IssueDetailStore {
     /// A row from a list has the summary and status but no description or comments yet.
     var isPartial: Bool { issue?.fields.comment == nil }
 
+    /// The issue this store holds. One store serves the preview column across selections.
+    private(set) var key: String?
+
     func load(_ state: AccountState, key: String, full: Bool = true) async {
         let client = state.client
+        if self.key != key {
+            // Another issue: start clean. The previous load is cancelled by the task that owned it, but a reply
+            // already in flight must not land here, hence the key checks after each await below.
+            self.key = key
+            issue = nil
+            transitions = []
+            editMeta = nil
+            sprints = []
+            children = []
+            error = nil
+            gone = false
+            allLabels = []
+        }
         if issue == nil {
             // Last opened copy from disk, else what the list row already knows: either way, no blank page.
             // Everything the right column is built from comes with it, so no row appears or wakes up a second
@@ -64,7 +80,9 @@ final class IssueDetailStore {
             async let diskTransitions: [Transition]? = DiskCache.loadAsync(account: account, name: "transitions-\(key)")
             async let diskChildren: [Issue]? =
                 full ? DiskCache.loadAsync(account: account, name: "children-\(key)") : nil
-            issue = await diskIssue ?? state.peek[key]
+            let cached = await diskIssue ?? state.peek[key]
+            guard self.key == key else { return }
+            issue = cached
             if let m = await diskMeta {
                 editMeta = m
             } else if let i = issue, let m = state.editMetaByWorkflow[AccountState.workflowKey(i)] {
@@ -86,19 +104,21 @@ final class IssueDetailStore {
             async let m = client.editMeta(key)
             async let kids = full ? client.search(jql: "parent = \"\(key)\" ORDER BY created ASC") : nil
             async let types = full ? state.linkTypes() : nil
-            issue = try await i
+            let fresh = try await i
+            guard self.key == key else { return }
+            issue = fresh
             DiskCache.saveAsync(issue, account: state.account, name: "issue-\(key)")
             Spotlight.index([issue!], host: state.host)
-            if let fresh = try? await t {
+            if let fresh = try? await t, self.key == key {
                 transitions = fresh
                 DiskCache.saveAsync(fresh, account: state.account, name: "transitions-\(key)")
             }
-            if let fresh = try? await m {
+            if let fresh = try? await m, self.key == key {
                 editMeta = fresh
                 DiskCache.saveAsync(fresh, account: state.account, name: "editmeta-\(key)")
             }
             if full {
-                if let page = try? await kids {
+                if let page = try? await kids, self.key == key {
                     children = page.issues.filter { !$0.fields.issuetype.isSubtask }
                     DiskCache.saveAsync(children, account: state.account, name: "children-\(key)")
                 }
@@ -106,6 +126,7 @@ final class IssueDetailStore {
                 prefetchRelated(state)
             }
         } catch {
+            guard self.key == key else { return }
             if (error as? JiraError)?.status == 404 {
                 gone = true
                 issue = nil
@@ -115,9 +136,13 @@ final class IssueDetailStore {
             return
         }
         if full, canEdit(client.sprintField), let project = issue?.fields.project?.key {
-            sprints = await state.sprints(project: project)
+            let list = await state.sprints(project: project)
+            if self.key == key { sprints = list }
         }
-        if full, allLabels.isEmpty, canEdit("labels") { allLabels = (try? await client.labels()) ?? [] }
+        if full, allLabels.isEmpty, canEdit("labels") {
+            let list = (try? await client.labels()) ?? []
+            if self.key == key { allLabels = list }
+        }
     }
 
     /// Full records for everything this page can open with a click: subtasks, children, the parent and linked
@@ -241,7 +266,6 @@ struct IssueDetailView: View {
         .task(id: "\(key)|\(session.reloadTick)") { if let jira { await store.load(jira, key: key) } }
         // The same view serves one issue after another (a fresh view would take the toolbar with it for a frame).
         .onChange(of: target) {
-            store = IssueDetailStore()
             summaryDraft = nil
             descriptionDraft = nil
             descriptionCaret = nil

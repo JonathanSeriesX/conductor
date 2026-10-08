@@ -1024,6 +1024,7 @@ private struct NativeSelectionOff: NSViewRepresentable {
             var v: NSView? = self
             while let s = v, !(s is NSTableView) { v = s.superview }
             (v as? NSTableView)?.selectionHighlightStyle = .none
+            (v as? NSTableView)?.allowsTypeSelect = false  // letters are shortcuts here, not a jump to a row
         }
     }
 }
