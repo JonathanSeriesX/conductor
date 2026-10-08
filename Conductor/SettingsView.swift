@@ -24,8 +24,13 @@ struct SettingsView: View {
             }
             Section("Notifications") {
                 Toggle("Notify about assignments, comments and status changes", isOn: $notifications)
-                Stepper("Check every \(pollMinutes) min", value: $pollMinutes, in: 1...30)
-                    .disabled(!notifications)
+                Picker("Check every", selection: $pollMinutes) {
+                    // The stored value stays on the list even when it is not one of the presets.
+                    ForEach(Set([1, 2, 3, 5, 10, 15, 30] + [pollMinutes]).sorted(), id: \.self) { n in
+                        Text(Duration.seconds(n * 60), format: .units(allowed: [.minutes], width: .wide)).tag(n)
+                    }
+                }
+                .disabled(!notifications)
                 Text("Covers issues you are assigned to, reported or are watching, on every account.")
                     .font(.caption).foregroundStyle(.secondary)
             }

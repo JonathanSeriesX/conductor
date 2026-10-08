@@ -11,6 +11,12 @@ struct ConductorApp: App {
     @State private var session = Session()
     @Environment(\.openWindow) private var openWindow
 
+    init() {
+        // Windows come back after ⌘Q whatever the system-wide "Close windows when quitting" setting says.
+        UserDefaults.standard.set(true, forKey: "NSQuitAlwaysKeepsWindows")
+        MenuClickThrough.install()
+    }
+
     var body: some Scene {
         WindowGroup(id: "main") {
             RootView()
@@ -164,7 +170,7 @@ struct RootView: View {
                 Self.debugHooksRan = true
                 while !session.isSignedIn { try? await Task.sleep(for: .milliseconds(200)) }
                 try? await Task.sleep(for: .seconds(1))
-                if let key = env["CONDUCTOR_OPEN"], let st = session.states.first {
+                if let key = env["CONDUCTOR_OPEN"], let st = session.state(forKey: key) {
                     openWindow(id: "issue", value: IssueTarget(accountID: st.id, key: key))
                 }
                 if env["CONDUCTOR_SHOW"] == "create" { session.createIssueRequested = true }
