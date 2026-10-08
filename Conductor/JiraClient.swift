@@ -1,19 +1,22 @@
+import CryptoKit
 import Foundation
 import Security
-import CryptoKit
 
 struct Account: Codable, Sendable, Equatable, Identifiable {
     var id: UUID
-    var site: URL      // https://team.atlassian.net
+    var site: URL  // https://team.atlassian.net
     var email: String
     var token: String
 
     /// The id is derived from host + email so a re-added account (or a dev launch) matches windows restored from a previous run.
     init(site: URL, email: String, token: String) {
-        self.site = site; self.email = email; self.token = token
+        self.site = site
+        self.email = email
+        self.token = token
         let digest = SHA256.hash(data: Data("\(site.host() ?? "")|\(email.lowercased())".utf8))
         var bytes = Array(digest.prefix(16))
-        bytes[6] = (bytes[6] & 0x0F) | 0x50; bytes[8] = (bytes[8] & 0x3F) | 0x80   // UUID v5 shape
+        bytes[6] = (bytes[6] & 0x0F) | 0x50
+        bytes[8] = (bytes[8] & 0x3F) | 0x80  // UUID v5 shape
         id = NSUUID(uuidBytes: bytes) as UUID
     }
 
@@ -39,7 +42,10 @@ struct JiraError: LocalizedError, Sendable {
     var errorDescription: String? {
         messages.isEmpty ? String(localized: "Jira returned HTTP \(status)") : messages.joined(separator: "\n")
     }
-    private struct Body: Decodable { let errorMessages: [String]?; let errors: [String: String]? }
+    private struct Body: Decodable {
+        let errorMessages: [String]?
+        let errors: [String: String]?
+    }
     init(status: Int, data: Data) {
         self.status = status
         let b = try? JSONDecoder().decode(Body.self, from: data)
@@ -65,13 +71,15 @@ struct JiraClient: Sendable {
     /// What a list row carries: everything the issue page's right column shows, so a page opened from a row is
     /// complete there at once; only the description, comments, attachments and links wait for the full record.
     var listFields: String {
-        var f = "summary,status,assignee,reporter,priority,issuetype,created,updated,project,watches,parent,subtasks,labels,duedate,components,fixVersions,timetracking"
+        var f =
+            "summary,status,assignee,reporter,priority,issuetype,created,updated,project,watches,parent,subtasks,labels,duedate,components,fixVersions,timetracking"
         if let sprintField { f += "," + sprintField }
         for p in pointsFields { f += "," + p }
         return f
     }
     var detailFields: String {
-        var f = "summary,description,status,assignee,reporter,priority,issuetype,labels,created,updated,comment,attachment,project,parent,subtasks,issuelinks,worklog,timetracking,watches,duedate,components,fixVersions"
+        var f =
+            "summary,description,status,assignee,reporter,priority,issuetype,labels,created,updated,comment,attachment,project,parent,subtasks,issuelinks,worklog,timetracking,watches,duedate,components,fixVersions"
         if let sprintField { f += "," + sprintField }
         for p in pointsFields { f += "," + p }
         return f
@@ -79,7 +87,10 @@ struct JiraClient: Sendable {
 
     // MARK: Requests
 
-    private func request(_ path: String, query: [String: String] = [:], method: String = "GET", body: (any Encodable)? = nil, base: URL? = nil) async throws -> Data {
+    private func request(
+        _ path: String, query: [String: String] = [:], method: String = "GET", body: (any Encodable)? = nil,
+        base: URL? = nil
+    ) async throws -> Data {
         var comps = URLComponents(url: (base ?? api).appending(path: path), resolvingAgainstBaseURL: false)!
         if !query.isEmpty { comps.queryItems = query.map { URLQueryItem(name: $0.key, value: $0.value) } }
         var req = URLRequest(url: comps.url!)
@@ -93,7 +104,10 @@ struct JiraClient: Sendable {
         }
         let (data, resp): (Data, URLResponse)
         let host = account.site.host() ?? ""
-        do { (data, resp) = try await URLSession.shared.data(for: req) } catch { await Connectivity.shared.report(error, host: host); throw error }
+        do { (data, resp) = try await URLSession.shared.data(for: req) } catch {
+            await Connectivity.shared.report(error, host: host)
+            throw error
+        }
         await Connectivity.shared.reportSuccess(host: host)
         let status = (resp as? HTTPURLResponse)?.statusCode ?? 0
         guard (200..<300).contains(status) else { throw JiraError(status: status, data: data) }
@@ -158,7 +172,9 @@ struct JiraClient: Sendable {
     func projects() async throws -> [Project] {
         var all: [Project] = []
         while true {
-            let page: ProjectPage = try await get("project/search", query: ["maxResults": "100", "startAt": "\(all.count)", "orderBy": "name", "expand": "favourite"])
+            let page: ProjectPage = try await get(
+                "project/search",
+                query: ["maxResults": "100", "startAt": "\(all.count)", "orderBy": "name", "expand": "favourite"])
             all += page.values
             if page.isLast || page.values.isEmpty { return all }
         }
@@ -190,7 +206,10 @@ struct JiraClient: Sendable {
     }
 
     func transition(_ key: String, to id: String) async throws {
-        struct Body: Encodable { struct T: Encodable { let id: String }; let transition: T }
+        struct Body: Encodable {
+            struct T: Encodable { let id: String }
+            let transition: T
+        }
         _ = try await request("issue/\(key)/transitions", method: "POST", body: Body(transition: .init(id: id)))
     }
 
@@ -199,8 +218,13 @@ struct JiraClient: Sendable {
     }
 
     func assign(_ key: String, to accountId: String?) async throws {
-        struct Body: Encodable { let accountId: String? ; func encode(to e: Encoder) throws {
-            var c = e.container(keyedBy: AnyKey.self); try c.encode(accountId, forKey: AnyKey("accountId")) } }
+        struct Body: Encodable {
+            let accountId: String?
+            func encode(to e: Encoder) throws {
+                var c = e.container(keyedBy: AnyKey.self)
+                try c.encode(accountId, forKey: AnyKey("accountId"))
+            }
+        }
         _ = try await request("issue/\(key)/assignee", method: "PUT", body: Body(accountId: accountId))
     }
 
@@ -240,7 +264,8 @@ struct JiraClient: Sendable {
     }
 
     func createFields(project: String, issueType: String) async throws -> [CreateField] {
-        let m: CreateMetaFields = try await get("issue/createmeta/\(project)/issuetypes/\(issueType)", query: ["maxResults": "200"])
+        let m: CreateMetaFields = try await get(
+            "issue/createmeta/\(project)/issuetypes/\(issueType)", query: ["maxResults": "200"])
         return m.fields
     }
 
@@ -260,7 +285,10 @@ struct JiraClient: Sendable {
 
     /// Every label on the site, for suggestions while typing one.
     func labels() async throws -> [String] {
-        struct Page: Decodable { let values: [String]; let isLast: Bool }
+        struct Page: Decodable {
+            let values: [String]
+            let isLast: Bool
+        }
         var all: [String] = []
         while true {
             let page: Page = try await get("label", query: ["maxResults": "1000", "startAt": "\(all.count)"])
@@ -283,7 +311,9 @@ struct JiraClient: Sendable {
         req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
         let safeName = filename.replacingOccurrences(of: "\"", with: "_")
         var body = Data()
-        body.append("--\(boundary)\r\nContent-Disposition: form-data; name=\"file\"; filename=\"\(safeName)\"\r\nContent-Type: application/octet-stream\r\n\r\n".data(using: .utf8)!)
+        body.append(
+            "--\(boundary)\r\nContent-Disposition: form-data; name=\"file\"; filename=\"\(safeName)\"\r\nContent-Type: application/octet-stream\r\n\r\n"
+                .data(using: .utf8)!)
         body.append(data)
         body.append("\r\n--\(boundary)--\r\n".data(using: .utf8)!)
         req.httpBody = body
@@ -310,15 +340,23 @@ struct JiraClient: Sendable {
     func link(type: String, from: String, to: String) async throws {
         struct Ref: Encodable { let key: String }
         struct T: Encodable { let name: String }
-        struct Body: Encodable { let type: T; let inwardIssue: Ref; let outwardIssue: Ref }
-        _ = try await request("issueLink", method: "POST", body: Body(type: T(name: type), inwardIssue: Ref(key: from), outwardIssue: Ref(key: to)))
+        struct Body: Encodable {
+            let type: T
+            let inwardIssue: Ref
+            let outwardIssue: Ref
+        }
+        _ = try await request(
+            "issueLink", method: "POST",
+            body: Body(type: T(name: type), inwardIssue: Ref(key: from), outwardIssue: Ref(key: to)))
     }
 
     func deleteLink(id: String) async throws {
         _ = try await request("issueLink/\(id)", method: "DELETE")
     }
 
-    func pickIssues(query: String, excluding key: String? = nil, jql: String = "ORDER BY updated DESC") async throws -> [IssuePickerResult.Item] {
+    func pickIssues(query: String, excluding key: String? = nil, jql: String = "ORDER BY updated DESC") async throws
+        -> [IssuePickerResult.Item]
+    {
         // Jira's "History Search" section only knows issues opened on the web; the "Current Search" section
         // needs a JQL scope, and an empty-text query lists recent issues of that scope.
         var q = ["query": query, "showSubTasks": "true", "currentJQL": jql]
@@ -332,12 +370,17 @@ struct JiraClient: Sendable {
     /// `adjustsEstimate`: subtract the time from the remaining estimate, which Jira otherwise does on its own and
     /// which leaves a "0m remaining" on an issue that never had an estimate.
     func addWorklog(_ key: String, seconds: Int, comment: ADFNode?, started: Date, adjustsEstimate: Bool) async throws {
-        struct Body: Encodable { let timeSpentSeconds: Int; let comment: ADFNode?; let started: String }
+        struct Body: Encodable {
+            let timeSpentSeconds: Int
+            let comment: ADFNode?
+            let started: String
+        }
         let f = DateFormatter()
         f.locale = Locale(identifier: "en_US_POSIX")
         f.dateFormat = "yyyy-MM-dd'T'HH:mm:ss.SSSZ"
-        _ = try await request("issue/\(key)/worklog", query: ["adjustEstimate": adjustsEstimate ? "auto" : "leave"], method: "POST",
-                              body: Body(timeSpentSeconds: seconds, comment: comment, started: f.string(from: started)))
+        _ = try await request(
+            "issue/\(key)/worklog", query: ["adjustEstimate": adjustsEstimate ? "auto" : "leave"], method: "POST",
+            body: Body(timeSpentSeconds: seconds, comment: comment, started: f.string(from: started)))
     }
 
     func deleteWorklog(_ key: String, id: String) async throws {
@@ -372,7 +415,8 @@ struct JiraClient: Sendable {
     }
 
     func sprints(board: Int, states: String = "active,future") async throws -> [Sprint] {
-        let p: SprintPage = try await get("board/\(board)/sprint", query: ["state": states, "maxResults": "50"], base: agile)
+        let p: SprintPage = try await get(
+            "board/\(board)/sprint", query: ["state": states, "maxResults": "50"], base: agile)
         return p.values
     }
 
@@ -394,7 +438,8 @@ struct JiraClient: Sendable {
     func jqlAutocomplete() async throws -> JQLAutocomplete { try await get("jql/autocompletedata") }
 
     func jqlSuggestions(field: String, value: String) async throws -> [JQLSuggestions.Result] {
-        let s: JQLSuggestions = try await get("jql/autocompletedata/suggestions", query: ["fieldName": field, "fieldValue": value])
+        let s: JQLSuggestions = try await get(
+            "jql/autocompletedata/suggestions", query: ["fieldName": field, "fieldValue": value])
         return s.results
     }
 
@@ -403,10 +448,14 @@ struct JiraClient: Sendable {
     /// `/projects/KEY` lands on the project's own board; `RapidBoard.jspa?projectKey=` picks a wrong board.
     func boardURL(project: String, board: Int? = nil) -> URL {
         guard let board else { return account.site.appending(path: "projects/\(project)") }
-        return account.site.appending(path: "secure/RapidBoard.jspa").appending(queryItems: [URLQueryItem(name: "rapidView", value: String(board))])
+        return account.site.appending(path: "secure/RapidBoard.jspa").appending(queryItems: [
+            URLQueryItem(name: "rapidView", value: String(board))
+        ])
     }
     /// `[ES-123: summary](https://site/browse/ES-123)`, for pasting into Slack, Linear or Notion.
-    func markdownLink(_ key: String, summary: String) -> String { "[\(key): \(summary)](\(browseURL(key).absoluteString))" }
+    func markdownLink(_ key: String, summary: String) -> String {
+        "[\(key): \(summary)](\(browseURL(key).absoluteString))"
+    }
 }
 
 // MARK: - Keychain
@@ -421,10 +470,12 @@ enum Keychain {
     }()
 
     private static var query: [String: Any] {
-        [kSecClass as String: kSecClassGenericPassword,
-         kSecAttrService as String: "org.evgenii.conductor",
-         kSecAttrAccount as String: "accounts",
-         kSecUseDataProtectionKeychain as String: dataProtected]
+        [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: "org.evgenii.conductor",
+            kSecAttrAccount as String: "accounts",
+            kSecUseDataProtectionKeychain as String: dataProtected,
+        ]
     }
 
     static func load() -> [Account] {

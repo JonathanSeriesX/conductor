@@ -20,13 +20,20 @@ final class BoardStore {
 
     /// Everything a board window needs to draw, saved per project so it opens from disk and refreshes behind.
     struct Snapshot: Codable {
-        var boards: [Board]; var board: Board?; var config: BoardConfiguration?
-        var sprints: [Sprint]; var sprint: Sprint?; var quickFilters: [QuickFilter]; var issues: [Issue]
+        var boards: [Board]
+        var board: Board?
+        var config: BoardConfiguration?
+        var sprints: [Sprint]
+        var sprint: Sprint?
+        var quickFilters: [QuickFilter]
+        var issues: [Issue]
     }
 
     private func saveSnapshot() {
         guard let state, !projectKey.isEmpty else { return }
-        let snap = Snapshot(boards: boards, board: board, config: config, sprints: sprints, sprint: sprint, quickFilters: quickFilters, issues: issues)
+        let snap = Snapshot(
+            boards: boards, board: board, config: config, sprints: sprints, sprint: sprint, quickFilters: quickFilters,
+            issues: issues)
         DiskCache.saveAsync(snap, account: state.account, name: "board-\(projectKey)")
     }
 
@@ -45,27 +52,36 @@ final class BoardStore {
         let ids = Set(column.statuses.map(\.id))
         let parents = fold ? Set(issues.map(\.key)) : []
         return (list ?? issues).filter { i in
-            ids.contains(i.fields.status.id) && !(fold && i.fields.issuetype.isSubtask && i.fields.parent.map { parents.contains($0.key) } == true)
+            ids.contains(i.fields.status.id)
+                && !(fold && i.fields.issuetype.isSubtask && i.fields.parent.map { parents.contains($0.key) } == true)
         }
     }
 
     /// Last run's board, read on the spot rather than after a hop to another thread: a board window calls this
     /// as it appears, so its first frame has the columns and cards instead of a blank window.
     func restore(_ state: AccountState, project: String) {
-        guard issues.isEmpty, let snap: Snapshot = DiskCache.load(account: state.account, name: "board-\(project)") else { return }
+        guard issues.isEmpty, let snap: Snapshot = DiskCache.load(account: state.account, name: "board-\(project)")
+        else { return }
         apply(snap)
     }
 
     private func apply(_ snap: Snapshot) {
-        boards = snap.boards; board = snap.board; config = snap.config
-        sprints = snap.sprints; sprint = snap.sprint; quickFilters = snap.quickFilters; issues = snap.issues
+        boards = snap.boards
+        board = snap.board
+        config = snap.config
+        sprints = snap.sprints
+        sprint = snap.sprint
+        quickFilters = snap.quickFilters
+        issues = snap.issues
     }
 
     func load(_ state: AccountState, project: String) async {
         self.state = state
         projectKey = project
         let client = state.client
-        if issues.isEmpty, let snap: Snapshot = await DiskCache.loadAsync(account: state.account, name: "board-\(project)") {
+        if issues.isEmpty,
+            let snap: Snapshot = await DiskCache.loadAsync(account: state.account, name: "board-\(project)")
+        {
             // Last run's board at once; the network pass below replaces it piece by piece.
             apply(snap)
         }
@@ -73,7 +89,9 @@ final class BoardStore {
         defer { isLoading = false }
         do {
             boards = try await client.boards(project: project)
-            if !boards.contains(where: { $0.id == board?.id }) { board = boards.first { $0.type == "scrum" } ?? boards.first }
+            if !boards.contains(where: { $0.id == board?.id }) {
+                board = boards.first { $0.type == "scrum" } ?? boards.first
+            }
             await loadBoard(client)
         } catch { if !error.isOffline { self.error = error.localizedDescription } }
     }
@@ -90,7 +108,9 @@ final class BoardStore {
             sprints = (try? await sp) ?? []
             quickFilters = (try? await qf) ?? []
             activeFilters = activeFilters.filter { id in quickFilters.contains { $0.id == id } }
-            if !sprints.contains(where: { $0.id == sprint?.id }) { sprint = sprints.first { $0.state == "active" } ?? sprints.first }
+            if !sprints.contains(where: { $0.id == sprint?.id }) {
+                sprint = sprints.first { $0.state == "active" } ?? sprints.first
+            }
             await loadIssues(client)
         } catch { if !error.isOffline { self.error = error.localizedDescription } }
     }
@@ -104,12 +124,18 @@ final class BoardStore {
         var all: [Issue] = []
         truncated = false
         while true {
-            guard let page = try? await client.boardIssues(board.id, sprint: sprint?.id, jql: jql.isEmpty ? nil : jql, startAt: all.count),
-                  gen == generation else { break }
+            guard
+                let page = try? await client.boardIssues(
+                    board.id, sprint: sprint?.id, jql: jql.isEmpty ? nil : jql, startAt: all.count),
+                gen == generation
+            else { break }
             all += page.issues
             issues = all
             if page.issues.isEmpty || all.count >= page.total { break }
-            if all.count >= 2000 { truncated = true; break } // ponytail: 20 pages; past that a board wants server-side filtering
+            if all.count >= 2000 {
+                truncated = true
+                break
+            }  // ponytail: 20 pages; past that a board wants server-side filtering
         }
         if gen == generation {
             issues = all
@@ -119,18 +145,26 @@ final class BoardStore {
     }
 
     func toggle(_ filter: QuickFilter, client: JiraClient) async {
-        if activeFilters.contains(filter.id) { activeFilters.remove(filter.id) } else { activeFilters.insert(filter.id) }
+        if activeFilters.contains(filter.id) {
+            activeFilters.remove(filter.id)
+        } else {
+            activeFilters.insert(filter.id)
+        }
         await loadIssues(client)
     }
 
     /// Moves a card by firing the first transition that lands in the column.
     func move(_ key: String, to column: BoardConfiguration.Column, client: JiraClient) async {
         let targets = Set(column.statuses.map(\.id))
-        guard let issue = issues.first(where: { $0.key == key }), !targets.contains(issue.fields.status.id) else { return }
+        guard let issue = issues.first(where: { $0.key == key }), !targets.contains(issue.fields.status.id) else {
+            return
+        }
         do {
             let transitions = try await client.transitions(key)
             guard let t = transitions.first(where: { targets.contains($0.to.id) }) else {
-                error = String(localized: "No transition from \(issue.fields.status.name) to \(column.name) is allowed for \(key).")
+                error = String(
+                    localized: "No transition from \(issue.fields.status.name) to \(column.name) is allowed for \(key)."
+                )
                 return
             }
             try await client.transition(key, to: t.id)
@@ -140,7 +174,9 @@ final class BoardStore {
 }
 
 enum Swimlanes: String, CaseIterable {
-    case none = "No Swimlanes", assignee = "Assignee", parent = "Parent"
+    case none = "No Swimlanes"
+    case assignee = "Assignee"
+    case parent = "Parent"
 
     var title: String {
         switch self {
@@ -150,23 +186,43 @@ enum Swimlanes: String, CaseIterable {
         }
     }
 
-    struct Lane: Identifiable { let id: String; let title: String; let issues: [Issue] }
+    struct Lane: Identifiable {
+        let id: String
+        let title: String
+        let issues: [Issue]
+    }
 
     /// Lanes in first-seen order, with the "nobody" lane last.
     func lanes(_ issues: [Issue]) -> [Lane] {
-        let key: (Issue) -> (String, String)? = switch self {
-        case .none: { _ in ("all", "") }
-        case .assignee: { $0.fields.assignee.map { ($0.accountId, $0.displayName) } }
-        case .parent: { $0.fields.parent.map { ($0.key, "\($0.key)  \($0.fields.summary)") } }
-        }
-        var order: [String] = [], titles: [String: String] = [:], groups: [String: [Issue]] = [:], rest: [Issue] = []
+        let key: (Issue) -> (String, String)? =
+            switch self {
+            case .none: { _ in ("all", "") }
+            case .assignee: { $0.fields.assignee.map { ($0.accountId, $0.displayName) } }
+            case .parent: { $0.fields.parent.map { ($0.key, "\($0.key)  \($0.fields.summary)") } }
+            }
+        var order: [String] = []
+        var titles: [String: String] = [:]
+        var groups: [String: [Issue]] = [:]
+        var rest: [Issue] = []
         for i in issues {
-            guard let (id, title) = key(i) else { rest.append(i); continue }
-            if groups[id] == nil { order.append(id); titles[id] = title }
+            guard let (id, title) = key(i) else {
+                rest.append(i)
+                continue
+            }
+            if groups[id] == nil {
+                order.append(id)
+                titles[id] = title
+            }
             groups[id, default: []].append(i)
         }
         var lanes = order.map { Lane(id: $0, title: titles[$0]!, issues: groups[$0]!) }
-        if !rest.isEmpty { lanes.append(Lane(id: "none", title: self == .assignee ? String(localized: "Unassigned") : String(localized: "No parent"), issues: rest)) }
+        if !rest.isEmpty {
+            lanes.append(
+                Lane(
+                    id: "none",
+                    title: self == .assignee ? String(localized: "Unassigned") : String(localized: "No parent"),
+                    issues: rest))
+        }
         return lanes
     }
 }
@@ -185,7 +241,9 @@ struct BoardView: View {
             if swimlanes == .none {
                 HStack(alignment: .top, spacing: 12) {
                     ForEach(store.columns) { column in
-                        BoardColumn(column: column, issues: store.issues(in: column, fold: true), onDrop: drop(column), onWrite: reload)
+                        BoardColumn(
+                            column: column, issues: store.issues(in: column, fold: true), onDrop: drop(column),
+                            onWrite: reload)
                     }
                 }
                 .padding(16)
@@ -196,7 +254,12 @@ struct BoardView: View {
                     HStack(spacing: 12) {
                         ForEach(store.columns) { column in
                             // Counted the way the lanes draw them, so the header agrees with the cards below it.
-                            BoardColumnHeader(column: column, count: laneList.reduce(0) { $0 + store.issues(in: column, from: $1.issues, fold: swimlanes != .parent).count }).frame(width: 280)
+                            BoardColumnHeader(
+                                column: column,
+                                count: laneList.reduce(0) {
+                                    $0 + store.issues(in: column, from: $1.issues, fold: swimlanes != .parent).count
+                                }
+                            ).frame(width: 280)
                         }
                     }
                     .padding(.horizontal, 16).padding(.top, 16)
@@ -218,8 +281,11 @@ struct BoardView: View {
                 } actions: {
                     Button("Close") { dismiss() }
                 }
-            } else if store.isLoading || state == nil, store.issues.isEmpty { ProgressView() }
-            else if store.boards.isEmpty { ContentUnavailableView("No boards for \(projectKey)", systemImage: "rectangle.split.3x1") }
+            } else if store.isLoading || state == nil, store.issues.isEmpty {
+                ProgressView()
+            } else if store.boards.isEmpty {
+                ContentUnavailableView("No boards for \(projectKey)", systemImage: "rectangle.split.3x1")
+            }
         }
         .navigationTitle(store.board?.name ?? projectKey)
         .navigationSubtitle(subtitle)
@@ -230,13 +296,19 @@ struct BoardView: View {
                 // can run off the top of the screen.
                 Menu {
                     ForEach(store.boards) { b in
-                        Toggle(b.name, isOn: Binding(get: { store.board == b }, set: { on in
-                            guard on else { return }
-                            store.board = b
-                            if let c = state?.client { Task { await store.loadBoard(c) } }
-                        }))
+                        Toggle(
+                            b.name,
+                            isOn: Binding(
+                                get: { store.board == b },
+                                set: { on in
+                                    guard on else { return }
+                                    store.board = b
+                                    if let c = state?.client { Task { await store.loadBoard(c) } }
+                                }))
                     }
-                } label: { Text(store.board?.name ?? String(localized: "Board")).lineLimit(1) }
+                } label: {
+                    Text(store.board?.name ?? String(localized: "Board")).lineLimit(1)
+                }
                 .frame(maxWidth: 220)
                 .disabled(store.boards.count < 2)
             }
@@ -244,13 +316,19 @@ struct BoardView: View {
                 if !store.sprints.isEmpty {
                     Menu {
                         ForEach(store.sprints) { s in
-                            Toggle(sprintTitle(s), isOn: Binding(get: { store.sprint == s }, set: { on in
-                                guard on else { return }
-                                store.sprint = s
-                                if let c = state?.client { Task { await store.loadIssues(c) } }
-                            }))
+                            Toggle(
+                                sprintTitle(s),
+                                isOn: Binding(
+                                    get: { store.sprint == s },
+                                    set: { on in
+                                        guard on else { return }
+                                        store.sprint = s
+                                        if let c = state?.client { Task { await store.loadIssues(c) } }
+                                    }))
                         }
-                    } label: { Text(store.sprint.map(sprintTitle) ?? String(localized: "Sprint")).lineLimit(1) }
+                    } label: {
+                        Text(store.sprint.map(sprintTitle) ?? String(localized: "Sprint")).lineLimit(1)
+                    }
                     .frame(maxWidth: 260)
                 }
             }
@@ -259,17 +337,29 @@ struct BoardView: View {
                     ForEach(Swimlanes.allCases, id: \.self) { s in
                         Toggle(s.title, isOn: Binding(get: { swimlanes == s }, set: { if $0 { swimlanes = s } }))
                     }
-                } label: { Text(swimlanes.title) }
+                } label: {
+                    Text(swimlanes.title)
+                }
                 .help("Group cards into swimlanes")
             }
             ToolbarItem(id: "openInBrowser") {
-                Button { if let c = state?.client { NSWorkspace.shared.open(c.boardURL(project: projectKey, board: store.board?.id)) } } label: { Label("Open in Browser", systemImage: "safari") }
-                    .help("Open this board on the web")
+                Button {
+                    if let c = state?.client {
+                        NSWorkspace.shared.open(c.boardURL(project: projectKey, board: store.board?.id))
+                    }
+                } label: {
+                    Label("Open in Browser", systemImage: "safari")
+                }
+                .help("Open this board on the web")
             }
             ToolbarItem(id: "refresh") {
-                Button { if let c = state?.client { Task { await store.loadIssues(c) } } } label: { Label("Refresh", systemImage: "arrow.clockwise") }
-                    .keyboardShortcut("r")
-                    .help("Refresh (⌘R)")
+                Button {
+                    if let c = state?.client { Task { await store.loadIssues(c) } }
+                } label: {
+                    Label("Refresh", systemImage: "arrow.clockwise")
+                }
+                .keyboardShortcut("r")
+                .help("Refresh (⌘R)")
             }
         }
         .onAppear { if let state { store.restore(state, project: projectKey) } }
@@ -289,7 +379,10 @@ struct BoardView: View {
                     Text("\(lane.title)  ·  \(lane.issues.count)").font(.headline).lineLimit(1)
                     HStack(alignment: .top, spacing: 12) {
                         ForEach(store.columns) { column in
-                            BoardColumn(column: column, issues: store.issues(in: column, from: lane.issues, fold: swimlanes != .parent), showsHeader: false, onDrop: drop(column), onWrite: reload)
+                            BoardColumn(
+                                column: column,
+                                issues: store.issues(in: column, from: lane.issues, fold: swimlanes != .parent),
+                                showsHeader: false, onDrop: drop(column), onWrite: reload)
                         }
                     }
                 }
@@ -305,7 +398,9 @@ struct BoardView: View {
                 HStack(spacing: 6) {
                     ForEach(store.quickFilters) { f in
                         let on = store.activeFilters.contains(f.id)
-                        Button { if let c = state?.client { Task { await store.toggle(f, client: c) } } } label: {
+                        Button {
+                            if let c = state?.client { Task { await store.toggle(f, client: c) } }
+                        } label: {
                             Text(f.name).font(.caption.weight(.medium))
                                 .padding(.horizontal, 8).padding(.vertical, 4)
                                 .foregroundStyle(on ? Color.white : .primary)
@@ -320,7 +415,9 @@ struct BoardView: View {
         }
     }
 
-    private func sprintTitle(_ s: Sprint) -> String { s.state == "active" ? String(localized: "\(s.name) · active") : s.name }
+    private func sprintTitle(_ s: Sprint) -> String {
+        s.state == "active" ? String(localized: "\(s.name) · active") : s.name
+    }
 
     private func reload() { if let c = state?.client { Task { await store.loadIssues(c) } } }
 
@@ -332,7 +429,12 @@ struct BoardView: View {
     private var cardCount: Int {
         if swimlanes == .none { return store.columns.reduce(0) { $0 + store.issues(in: $1, fold: true).count } }
         let laneList = swimlanes.lanes(store.issues)
-        return store.columns.reduce(0) { sum, column in sum + laneList.reduce(0) { $0 + store.issues(in: column, from: $1.issues, fold: swimlanes != .parent).count } }
+        return store.columns.reduce(0) { sum, column in
+            sum
+                + laneList.reduce(0) {
+                    $0 + store.issues(in: column, from: $1.issues, fold: swimlanes != .parent).count
+                }
+        }
     }
 
     private var subtitle: String {
@@ -357,7 +459,10 @@ struct BoardColumnHeader: View {
                 .foregroundStyle(over ? Color.white : .secondary)
                 .padding(.horizontal, 6).padding(.vertical, 1)
                 .background(over ? AnyShapeStyle(.red) : AnyShapeStyle(.quaternary.opacity(0.6)), in: .capsule)
-                .help(column.max.map { over ? String(localized: "WIP limit \($0), exceeded") : String(localized: "WIP limit \($0)") } ?? "")
+                .help(
+                    column.max.map {
+                        over ? String(localized: "WIP limit \($0), exceeded") : String(localized: "WIP limit \($0)")
+                    } ?? "")
             Spacer()
         }
         .padding(.horizontal, 4)
@@ -390,14 +495,16 @@ struct BoardColumn: View {
         .frame(width: 280)
         .frame(maxHeight: showsHeader ? .infinity : nil, alignment: .top)
         .frame(minHeight: showsHeader ? nil : 60, alignment: .top)
-        .frosted(cornerRadius: 16, opacity: 0.45)   // lighter than the cards on it
+        .frosted(cornerRadius: 16, opacity: 0.45)  // lighter than the cards on it
         .overlay {
             RoundedRectangle(cornerRadius: 16).strokeBorder(Color.accentColor, lineWidth: targeted ? 2 : 0)
         }
         .dropDestination(for: String.self) { keys, _ in
             keys.forEach(onDrop)
             return true
-        } isTargeted: { targeted = $0 }
+        } isTargeted: {
+            targeted = $0
+        }
         .animation(.easeOut(duration: 0.12), value: targeted)
     }
 
@@ -406,9 +513,18 @@ struct BoardColumn: View {
             ForEach(issues) { issue in
                 BoardCard(issue: issue)
                     .draggable(issue.key)
-                    .onTapGesture(count: 2) { if let jira { openWindow(id: "issue", value: IssueTarget(accountID: jira.id, key: issue.key)) } }
+                    .onTapGesture(count: 2) {
+                        if let jira { openWindow(id: "issue", value: IssueTarget(accountID: jira.id, key: issue.key)) }
+                    }
                     .contextMenu {
-                        if let jira { IssueMenu(issue: issue, state: jira) { op in Task { try? await op(); onWrite() } } }
+                        if let jira {
+                            IssueMenu(issue: issue, state: jira) { op in
+                                Task {
+                                    try? await op()
+                                    onWrite()
+                                }
+                            }
+                        }
                     }
             }
         }
@@ -437,7 +553,8 @@ struct BoardCard: View {
                 Text(issue.key).font(.caption.monospaced()).foregroundStyle(.secondary)
                 if let p = issue.subtaskProgress {
                     Label("\(p.done)/\(p.total)", systemImage: "checklist").font(.caption2)
-                        .foregroundStyle(p.done == p.total ? .green : .secondary).help("\(p.done) of \(p.total) subtasks done")
+                        .foregroundStyle(p.done == p.total ? .green : .secondary).help(
+                            "\(p.done) of \(p.total) subtasks done")
                 }
                 if let d = staleDays {
                     Label("\(d)d", systemImage: "clock").font(.caption2).foregroundStyle(.orange)

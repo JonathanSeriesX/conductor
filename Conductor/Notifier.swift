@@ -19,7 +19,9 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     func start(_ session: Session) {
         self.session = session
         UNUserNotificationCenter.current().delegate = self
-        NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { _ in
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
+        ) { _ in
             Task { @MainActor in Notifier.shared.clearBadge() }
         }
         task?.cancel()
@@ -36,7 +38,9 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
 
     private func poll() async {
         guard enabled, let session, session.isSignedIn else { return }
-        let granted = (try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge])) ?? false
+        let granted =
+            (try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]))
+            ?? false
         guard granted else { return }
         for account in session.accounts {
             await poll(account)
@@ -55,29 +59,47 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         lastPoll[account.id] = now
         let minutes = max(1, Int(now.timeIntervalSince(since) / 60) + 1)
         if meIDs[account.id] == nil {
-            if let cached = session?.state(account.id)?.me?.accountId { meIDs[account.id] = cached }
-            else { meIDs[account.id] = try? await client.myself().accountId }
+            if let cached = session?.state(account.id)?.me?.accountId {
+                meIDs[account.id] = cached
+            } else {
+                meIDs[account.id] = try? await client.myself().accountId
+            }
         }
         guard let me = meIDs[account.id] else { return }
         let involved = "(assignee = currentUser() OR reporter = currentUser() OR watcher = currentUser())"
 
-        if let page = try? await client.search(jql: "assignee CHANGED TO currentUser() AFTER -\(minutes)m AND NOT assignee CHANGED BY currentUser() AFTER -\(minutes)m ORDER BY updated DESC") {
-            for i in page.issues where announced.insert("\(host)|\(i.key)|assigned|\(i.fields.updated?.timeIntervalSince1970 ?? 0)").inserted {
+        if let page = try? await client.search(
+            jql:
+                "assignee CHANGED TO currentUser() AFTER -\(minutes)m AND NOT assignee CHANGED BY currentUser() AFTER -\(minutes)m ORDER BY updated DESC"
+        ) {
+            for i in page.issues
+            where announced.insert("\(host)|\(i.key)|assigned|\(i.fields.updated?.timeIntervalSince1970 ?? 0)").inserted
+            {
                 notify(String(localized: "Assigned to you"), "\(i.key)  \(i.fields.summary)", host: host, key: i.key)
             }
         }
-        if let page = try? await client.search(jql: "\(involved) AND status CHANGED AFTER -\(minutes)m AND NOT status CHANGED BY currentUser() AFTER -\(minutes)m ORDER BY updated DESC") {
+        if let page = try? await client.search(
+            jql:
+                "\(involved) AND status CHANGED AFTER -\(minutes)m AND NOT status CHANGED BY currentUser() AFTER -\(minutes)m ORDER BY updated DESC"
+        ) {
             for i in page.issues where announced.insert("\(host)|\(i.key)|status|\(i.fields.status.id)").inserted {
-                notify(String(localized: "\(i.key) is now \(i.fields.status.name)"), i.fields.summary, host: host, key: i.key)
+                notify(
+                    String(localized: "\(i.key) is now \(i.fields.status.name)"), i.fields.summary, host: host,
+                    key: i.key)
             }
         }
-        if let page = try? await client.search(jql: "\(involved) AND updated >= -\(minutes)m ORDER BY updated DESC", fields: "summary,comment") {
+        if let page = try? await client.search(
+            jql: "\(involved) AND updated >= -\(minutes)m ORDER BY updated DESC", fields: "summary,comment")
+        {
             for i in page.issues {
                 for c in i.fields.comment?.comments ?? [] where c.created > since && c.author?.accountId != me {
                     let id = "\(host)|\(c.id)"
                     guard seenComments.insert(id).inserted else { continue }
                     let text = c.body.plainText.replacingOccurrences(of: "\n", with: " ")
-                    notify(String(localized: "\(c.author?.displayName ?? String(localized: "Someone")) commented on \(i.key)"), String(text.prefix(140)), host: host, key: i.key)
+                    notify(
+                        String(
+                            localized: "\(c.author?.displayName ?? String(localized: "Someone")) commented on \(i.key)"),
+                        String(text.prefix(140)), host: host, key: i.key)
                 }
             }
         }
@@ -89,7 +111,8 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         content.body = body
         content.sound = .default
         content.userInfo = ["url": "https://\(host)/browse/\(key)"]
-        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
+        UNUserNotificationCenter.current().add(
+            UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
         if !NSApp.isActive {
             unread += 1
             NSApp.dockTile.badgeLabel = "\(unread)"
@@ -109,7 +132,13 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     static func remind(_ url: URL, key: String, summary: String, at date: Date) async throws {
         let center = UNUserNotificationCenter.current()
         guard try await center.requestAuthorization(options: [.alert, .sound]) else {
-            throw CocoaError(.userCancelled, userInfo: [NSLocalizedDescriptionKey: String(localized: "Notifications are off for Conductor. Turn them on in System Settings › Notifications.")])
+            throw CocoaError(
+                .userCancelled,
+                userInfo: [
+                    NSLocalizedDescriptionKey: String(
+                        localized:
+                            "Notifications are off for Conductor. Turn them on in System Settings › Notifications.")
+                ])
         }
         let content = UNMutableNotificationContent()
         content.title = String(localized: "Reminder: \(key)")
@@ -117,24 +146,34 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         content.sound = .default
         content.userInfo = ["url": url.absoluteString]
         let when = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute], from: date)
-        try await center.add(UNNotificationRequest(identifier: reminderID(url), content: content, trigger: UNCalendarNotificationTrigger(dateMatching: when, repeats: false)))
+        try await center.add(
+            UNNotificationRequest(
+                identifier: reminderID(url), content: content,
+                trigger: UNCalendarNotificationTrigger(dateMatching: when, repeats: false)))
     }
 
     static func reminder(for url: URL) async -> Date? {
         let pending = await UNUserNotificationCenter.current().pendingNotificationRequests()
-        return (pending.first { $0.identifier == reminderID(url) }?.trigger as? UNCalendarNotificationTrigger)?.nextTriggerDate()
+        return (pending.first { $0.identifier == reminderID(url) }?.trigger as? UNCalendarNotificationTrigger)?
+            .nextTriggerDate()
     }
 
     static func cancelReminder(for url: URL) {
         UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: [reminderID(url)])
     }
 
-    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter, willPresent notification: UNNotification
+    ) async -> UNNotificationPresentationOptions {
         [.banner, .sound]
     }
 
-    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
-        guard let s = response.notification.request.content.userInfo["url"] as? String, let url = URL(string: s) else { return }
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse
+    ) async {
+        guard let s = response.notification.request.content.userInfo["url"] as? String, let url = URL(string: s) else {
+            return
+        }
         await MainActor.run { Notifier.shared.session?.open(url: url) }
     }
 }

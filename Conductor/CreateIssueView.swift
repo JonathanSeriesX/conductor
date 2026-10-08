@@ -25,7 +25,9 @@ final class CreateIssueModel {
     var isLoadingMeta = false
 
     /// Fields this sheet knows how to fill.
-    private static let handled: Set<String> = ["project", "issuetype", "summary", "description", "assignee", "priority", "labels", "parent", "reporter"]
+    private static let handled: Set<String> = [
+        "project", "issuetype", "summary", "description", "assignee", "priority", "labels", "parent", "reporter",
+    ]
 
     var priorities: [Priority] {
         fields.first { $0.fieldId == "priority" }?.allowedValues?.compactMap { v in
@@ -36,11 +38,14 @@ final class CreateIssueModel {
     func has(_ id: String) -> Bool { fields.contains { $0.fieldId == id } }
     var parentRequired: Bool { type?.isSubtask == true || fields.first { $0.fieldId == "parent" }?.required == true }
     /// Required fields on this site that the sheet cannot fill; creation would be rejected.
-    var unsupportedRequired: [String] { fields.filter { $0.required && !Self.handled.contains($0.fieldId) }.map(\.name) }
+    var unsupportedRequired: [String] {
+        fields.filter { $0.required && !Self.handled.contains($0.fieldId) }.map(\.name)
+    }
 
     var canSubmit: Bool {
         project != nil && type != nil && !summary.trimmingCharacters(in: .whitespaces).isEmpty
-            && unsupportedRequired.isEmpty && (!parentRequired || !parentKey.trimmingCharacters(in: .whitespaces).isEmpty)
+            && unsupportedRequired.isEmpty
+            && (!parentRequired || !parentKey.trimmingCharacters(in: .whitespaces).isEmpty)
             && !isWorking && !isLoadingMeta
     }
 
@@ -51,14 +56,19 @@ final class CreateIssueModel {
         if !types.contains(where: { $0.id == type?.id }) {
             let candidates = types.filter { parentKey.isEmpty ? !$0.isSubtask : $0.isSubtask }
             // Task is the everyday default; Epic is rarely what someone means by ⌘N.
-            type = candidates.first { $0.name.caseInsensitiveCompare("Task") == .orderedSame }
-                ?? candidates.first { $0.name.caseInsensitiveCompare("Epic") != .orderedSame } ?? candidates.first ?? types.first
+            type =
+                candidates.first { $0.name.caseInsensitiveCompare("Task") == .orderedSame }
+                ?? candidates.first { $0.name.caseInsensitiveCompare("Epic") != .orderedSame } ?? candidates.first
+                ?? types.first
         }
         await loadFields(c)
     }
 
     func loadFields(_ c: JiraClient) async {
-        guard let p = project, let t = type else { isLoadingMeta = false; return }
+        guard let p = project, let t = type else {
+            isLoadingMeta = false
+            return
+        }
         isLoadingMeta = true
         fields = (try? await c.createFields(project: p.key, issueType: t.id)) ?? []
         if let pr = priority, !priorities.contains(pr) { priority = nil }
@@ -104,7 +114,9 @@ struct CreateIssueView: View {
                 Picker("Project", selection: $m.choice) {
                     ForEach(session.states) { st in
                         Section(session.states.count > 1 ? st.title : "") {
-                            ForEach(st.projects) { p in Text(p.name).tag(Optional(ProjectChoice(project: p, accountID: st.id))) }
+                            ForEach(st.projects) { p in
+                                Text(p.name).tag(Optional(ProjectChoice(project: p, accountID: st.id)))
+                            }
                         }
                     }
                 }
@@ -116,7 +128,11 @@ struct CreateIssueView: View {
             HStack(spacing: 10) {
                 Picker("Type", selection: $m.type) {
                     ForEach(m.types) { t in
-                        Label { Text(t.name) } icon: { RemoteImage(url: t.iconUrl).frame(width: 14, height: 14) }.tag(Optional(t))
+                        Label {
+                            Text(t.name)
+                        } icon: {
+                            RemoteImage(url: t.iconUrl).frame(width: 14, height: 14)
+                        }.tag(Optional(t))
                     }
                 }
                 .labelsHidden()
@@ -141,16 +157,22 @@ struct CreateIssueView: View {
             HStack(alignment: .top, spacing: 18) {
                 if m.has("assignee") {
                     labeled("Assignee") {
-                        Button { showAssign = true } label: {
+                        Button {
+                            showAssign = true
+                        } label: {
                             HStack(spacing: 6) {
                                 Avatar(user: m.assignee, size: 18)
-                                Text(m.assignee?.displayName ?? String(localized: "Unassigned")).foregroundStyle(m.assignee == nil ? .secondary : .primary)
+                                Text(m.assignee?.displayName ?? String(localized: "Unassigned")).foregroundStyle(
+                                    m.assignee == nil ? .secondary : .primary)
                             }
                         }
                         .buttonStyle(.plain)
                         .popover(isPresented: $showAssign, arrowEdge: .bottom) {
-                            PeoplePicker(scope: .project(m.project?.key ?? ""), current: m.assignee) { m.assignee = $0; showAssign = false }
-                                .environment(\.jira, m.state)
+                            PeoplePicker(scope: .project(m.project?.key ?? ""), current: m.assignee) {
+                                m.assignee = $0
+                                showAssign = false
+                            }
+                            .environment(\.jira, m.state)
                         }
                     }
                 }
@@ -186,16 +208,24 @@ struct CreateIssueView: View {
             }
 
             if !m.unsupportedRequired.isEmpty {
-                Label("This type also requires \(m.unsupportedRequired.formatted(.list(type: .and))), which Conductor can't fill yet. Create it in the browser.", systemImage: "exclamationmark.triangle")
-                    .font(.callout).foregroundStyle(.orange)
+                Label(
+                    "This type also requires \(m.unsupportedRequired.formatted(.list(type: .and))), which Conductor can't fill yet. Create it in the browser.",
+                    systemImage: "exclamationmark.triangle"
+                )
+                .font(.callout).foregroundStyle(.orange)
             }
             if let e = m.error { Text(e).font(.callout).foregroundStyle(.red) }
 
             HStack {
                 Spacer()
-                Button("Cancel") { if hasDraft { confirmDiscard = true } else { dismiss() } }.glassButton().keyboardShortcut(.cancelAction)
+                Button("Cancel") { if hasDraft { confirmDiscard = true } else { dismiss() } }.glassButton()
+                    .keyboardShortcut(.cancelAction)
                 Button(action: create) {
-                    if m.isWorking { ProgressView().controlSize(.small).frame(width: 60) } else { Text("Create").frame(width: 60) }
+                    if m.isWorking {
+                        ProgressView().controlSize(.small).frame(width: 60)
+                    } else {
+                        Text("Create").frame(width: 60)
+                    }
                 }
                 .glassButton(prominent: true)
                 .keyboardShortcut(.return, modifiers: .command)
@@ -217,9 +247,12 @@ struct CreateIssueView: View {
             if let (p, st) = defaultProject {
                 m.choice = ProjectChoice(project: st.projects.first { $0.key == p.key } ?? p, accountID: st.id)
             } else if let last, let st = session.states.first(where: { last.hasPrefix("\($0.id)|") }),
-                      let p = st.projects.first(where: { "\(st.id)|\($0.key)" == last }) {
+                let p = st.projects.first(where: { "\(st.id)|\($0.key)" == last })
+            {
                 m.choice = ProjectChoice(project: p, accountID: st.id)
-            } else if let st = session.states.first(where: { !$0.starredProjects.isEmpty }), let p = st.starredProjects.first {
+            } else if let st = session.states.first(where: { !$0.starredProjects.isEmpty }),
+                let p = st.starredProjects.first
+            {
                 m.choice = ProjectChoice(project: p, accountID: st.id)
             } else if let st = session.states.first, let p = st.projects.first {
                 m.choice = ProjectChoice(project: p, accountID: st.id)
@@ -228,7 +261,10 @@ struct CreateIssueView: View {
             syncState()
             if let c = m.state?.client { await m.loadTypes(c) }
         }
-        .onChange(of: m.choice) { syncState(); if let c = m.state?.client { Task { await m.loadTypes(c) } } }
+        .onChange(of: m.choice) {
+            syncState()
+            if let c = m.state?.client { Task { await m.loadTypes(c) } }
+        }
         .onChange(of: m.type) { if let c = m.state?.client { Task { await m.loadFields(c) } } }
     }
 

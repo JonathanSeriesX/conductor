@@ -35,21 +35,25 @@ struct Composer: View {
                 ADFView(node: .document(markdown: text, mentions: mentions))
                     .frame(maxWidth: .infinity, minHeight: minHeight, alignment: .topLeading)
                     .padding(10)
-                .background(.quaternary.opacity(0.2), in: .rect(cornerRadius: 10))
+                    .background(.quaternary.opacity(0.2), in: .rect(cornerRadius: 10))
             } else {
                 editor
             }
             if !candidates.isEmpty {
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(Array(candidates.enumerated()), id: \.element.id) { i, u in
-                        Button { accept(u) } label: {
+                        Button {
+                            accept(u)
+                        } label: {
                             HStack(spacing: 8) {
                                 Avatar(user: u, size: 18)
                                 Text(u.displayName)
                                 Spacer()
                             }
                             .padding(.horizontal, 8).padding(.vertical, 5)
-                            .background(i == highlighted ? Color.accentColor.opacity(0.18) : .clear, in: .rect(cornerRadius: 6))
+                            .background(
+                                i == highlighted ? Color.accentColor.opacity(0.18) : .clear, in: .rect(cornerRadius: 6)
+                            )
                             .contentShape(.rect)
                         }
                         .buttonStyle(.plain)
@@ -66,8 +70,13 @@ struct Composer: View {
             // A trailing "@name" drives the suggestion list; anything else dismisses it. A name just accepted
             // from the list (followed by its space) is complete and must not open the list again.
             if let m = new.firstMatch(of: /@([\p{L}\p{N}][\p{L}\p{N} .'-]{0,30})$/),
-               !mentions.keys.contains(where: { String(m.1).hasPrefix($0 + " ") || String(m.1) == $0 }) { query = String(m.1) }
-            else { query = ""; candidates = [] }
+                !mentions.keys.contains(where: { String(m.1).hasPrefix($0 + " ") || String(m.1) == $0 })
+            {
+                query = String(m.1)
+            } else {
+                query = ""
+                candidates = []
+            }
         }
         .task(id: query) {
             guard !query.isEmpty, let c = jira?.client else { return }
@@ -75,7 +84,9 @@ struct Composer: View {
             guard !Task.isCancelled else { return }
             let found = (try? await c.users(matching: query)) ?? []
             highlighted = 0
-            withAnimation(.easeOut(duration: 0.15)) { candidates = Array(found.filter { $0.active != false }.prefix(5)) }
+            withAnimation(.easeOut(duration: 0.15)) {
+                candidates = Array(found.filter { $0.active != false }.prefix(5))
+            }
         }
     }
 
@@ -101,14 +112,18 @@ struct Composer: View {
         .font(.callout)
     }
 
-    private func tool(_ symbol: String, _ help: LocalizedStringKey, key: KeyEquivalent? = nil, _ action: @escaping () -> Void) -> some View {
+    private func tool(
+        _ symbol: String, _ help: LocalizedStringKey, key: KeyEquivalent? = nil, _ action: @escaping () -> Void
+    ) -> some View {
         // A Label, so VoiceOver reads "Quote" rather than the symbol's own name ("Lyrics").
-        Button(action: action) { Label(help, systemImage: symbol).labelStyle(.iconOnly).frame(width: 24, height: 20).contentShape(.rect) }
-            .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
-            .help(help)
-            .keyboardShortcut(isFocused ? key.map { KeyboardShortcut($0) } : nil)
-            .disabled(preview)
+        Button(action: action) {
+            Label(help, systemImage: symbol).labelStyle(.iconOnly).frame(width: 24, height: 20).contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
+        .help(help)
+        .keyboardShortcut(isFocused ? key.map { KeyboardShortcut($0) } : nil)
+        .disabled(preview)
     }
 
     /// The selected range, or the caret, or the end of the text when the editor never had focus.
@@ -163,30 +178,33 @@ struct Composer: View {
         // box unreachable. A hidden Text with the same content sets the height; the editor is an overlay,
         // so it never takes part in layout. Past maxHeight the editor scrolls on its own.
         Text(text.isEmpty ? " " : text).font(.body).padding(.horizontal, 5).padding(.vertical, 1)
-                .frame(maxWidth: .infinity, alignment: .topLeading)
-                .frame(minHeight: minHeight, maxHeight: maxHeight)
-                .fixedSize(horizontal: false, vertical: true)   // ignore whatever height the page proposes
-                .hidden()
-                .overlay {
-                    TextEditor(text: $text, selection: $selection)
-                        .focused(focus ?? $ownFocus)
-                        .font(.body)
-                        .scrollContentBackground(.hidden)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .frame(minHeight: minHeight, maxHeight: maxHeight)
+            .fixedSize(horizontal: false, vertical: true)  // ignore whatever height the page proposes
+            .hidden()
+            .overlay {
+                TextEditor(text: $text, selection: $selection)
+                    .focused(focus ?? $ownFocus)
+                    .font(.body)
+                    .scrollContentBackground(.hidden)
+            }
+            .padding(6)
+            .background(.quaternary.opacity(0.4), in: .rect(cornerRadius: 10))
+            .overlay(alignment: .topLeading) {
+                if text.isEmpty {
+                    Text(placeholder).foregroundStyle(.tertiary)
+                        .padding(.horizontal, 11).padding(.vertical, 6).allowsHitTesting(false)
                 }
-                .padding(6)
-                .background(.quaternary.opacity(0.4), in: .rect(cornerRadius: 10))
-                .overlay(alignment: .topLeading) {
-                    if text.isEmpty {
-                        Text(placeholder).foregroundStyle(.tertiary)
-                            .padding(.horizontal, 11).padding(.vertical, 6).allowsHitTesting(false)
-                    }
-                }
-                // ⌘V with files or an image on the pasteboard: upload them and link them here, instead of
-                // letting the text view paste the file paths.
-                .background(WindowEventMonitor(mask: .keyDown) { e in
+            }
+            // ⌘V with files or an image on the pasteboard: upload them and link them here, instead of
+            // letting the text view paste the file paths.
+            .background(
+                WindowEventMonitor(mask: .keyDown) { e in
                     guard isFocused else { return e }
                     // Smart quotes and dashes would corrupt code and tables; the text view is only reachable here.
-                    if let tv = e.window?.firstResponder as? NSTextView, tv.isAutomaticQuoteSubstitutionEnabled || tv.isAutomaticDashSubstitutionEnabled {
+                    if let tv = e.window?.firstResponder as? NSTextView,
+                        tv.isAutomaticQuoteSubstitutionEnabled || tv.isAutomaticDashSubstitutionEnabled
+                    {
                         tv.isAutomaticQuoteSubstitutionEnabled = false
                         tv.isAutomaticDashSubstitutionEnabled = false
                         tv.isAutomaticTextReplacementEnabled = false
@@ -194,15 +212,24 @@ struct Composer: View {
                     // While the mention list shows, the arrows, ↩ and Tab pick from it; Esc dismisses it.
                     if !candidates.isEmpty, e.modifierFlags.intersection(.deviceIndependentFlagsMask).isEmpty {
                         switch e.keyCode {
-                        case 125: highlighted = min(highlighted + 1, candidates.count - 1); return nil
-                        case 126: highlighted = max(highlighted - 1, 0); return nil
-                        case 36, 48: accept(candidates[highlighted]); return nil
-                        case 53: candidates = []; return nil
+                        case 125:
+                            highlighted = min(highlighted + 1, candidates.count - 1)
+                            return nil
+                        case 126:
+                            highlighted = max(highlighted - 1, 0)
+                            return nil
+                        case 36, 48:
+                            accept(candidates[highlighted])
+                            return nil
+                        case 53:
+                            candidates = []
+                            return nil
                         default: break
                         }
                     }
                     guard let uploadImage, e.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
-                          e.charactersIgnoringModifiers == "v" else { return e }
+                        e.charactersIgnoringModifiers == "v"
+                    else { return e }
                     if let files = PastedImage.readFiles() {
                         for f in files { pasteImage(f, uploadImage) }
                         return nil
@@ -213,7 +240,8 @@ struct Composer: View {
                 })
     }
 
-    private func pasteImage(_ image: (data: Data, name: String), _ upload: @escaping (Data, String) async throws -> URL) {
+    private func pasteImage(_ image: (data: Data, name: String), _ upload: @escaping (Data, String) async throws -> URL)
+    {
         uploading = true
         error = nil
         Task {
@@ -227,7 +255,7 @@ struct Composer: View {
 
     private func accept(_ user: JiraUser) {
         guard let r = text.range(of: "@" + query, options: .backwards) else { return }
-        mentions[user.displayName] = user.accountId   // before the text change, so onChange knows the name is complete
+        mentions[user.displayName] = user.accountId  // before the text change, so onChange knows the name is complete
         let inserted = "@\(user.displayName) "
         let start = text.distance(from: text.startIndex, to: r.lowerBound)
         text.replaceSubrange(r, with: inserted)
@@ -243,7 +271,9 @@ struct Composer: View {
 enum PastedImage {
     /// Files copied in the Finder, read into memory with their own names.
     @MainActor static func readFiles() -> [(data: Data, name: String)]? {
-        let urls = (NSPasteboard.general.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL]) ?? []
+        let urls =
+            (NSPasteboard.general.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true])
+                as? [URL]) ?? []
         let files = urls.compactMap { url -> (Data, String)? in
             guard let data = try? Data(contentsOf: url) else { return nil }
             return (data, url.lastPathComponent)
@@ -254,10 +284,11 @@ enum PastedImage {
     @MainActor static func read() -> (data: Data, name: String)? {
         let pb = NSPasteboard.general
         guard pb.string(forType: .string) == nil,
-              let image = (pb.readObjects(forClasses: [NSImage.self]) as? [NSImage])?.first,
-              let tiff = image.tiffRepresentation,
-              let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) else { return nil }
-        let f = DateFormatter()   // local time; POSIX so a forced 12-hour clock cannot rewrite the pattern
+            let image = (pb.readObjects(forClasses: [NSImage.self]) as? [NSImage])?.first,
+            let tiff = image.tiffRepresentation,
+            let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:])
+        else { return nil }
+        let f = DateFormatter()  // local time; POSIX so a forced 12-hour clock cannot rewrite the pattern
         f.locale = Locale(identifier: "en_US_POSIX")
         f.dateFormat = "yyyy-MM-dd HH.mm.ss"
         return (png, String(localized: "Pasted image \(f.string(from: .now)).png"))
@@ -270,10 +301,17 @@ struct Wrap: Layout {
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         let width = proposal.width ?? .infinity
-        var x: CGFloat = 0, y: CGFloat = 0, rowHeight: CGFloat = 0, maxX: CGFloat = 0
+        var x: CGFloat = 0
+        var y: CGFloat = 0
+        var rowHeight: CGFloat = 0
+        var maxX: CGFloat = 0
         for s in subviews {
             let size = s.sizeThatFits(.unspecified)
-            if x > 0, x + size.width > width { x = 0; y += rowHeight + spacing; rowHeight = 0 }
+            if x > 0, x + size.width > width {
+                x = 0
+                y += rowHeight + spacing
+                rowHeight = 0
+            }
             x += size.width + spacing
             rowHeight = max(rowHeight, size.height)
             maxX = max(maxX, x - spacing)
@@ -282,10 +320,16 @@ struct Wrap: Layout {
     }
 
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-        var x = bounds.minX, y = bounds.minY, rowHeight: CGFloat = 0
+        var x = bounds.minX
+        var y = bounds.minY
+        var rowHeight: CGFloat = 0
         for s in subviews {
             let size = s.sizeThatFits(.unspecified)
-            if x > bounds.minX, x + size.width > bounds.maxX { x = bounds.minX; y += rowHeight + spacing; rowHeight = 0 }
+            if x > bounds.minX, x + size.width > bounds.maxX {
+                x = bounds.minX
+                y += rowHeight + spacing
+                rowHeight = 0
+            }
             s.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(size))
             x += size.width + spacing
             rowHeight = max(rowHeight, size.height)
@@ -313,7 +357,10 @@ struct Chip: View {
 
 /// Searchable list of people assignable to an issue or within a project.
 struct PeoplePicker: View {
-    enum Scope { case issue(String), project(String) }
+    enum Scope {
+        case issue(String)
+        case project(String)
+    }
     let scope: Scope
     let current: JiraUser?
     var onPick: (JiraUser?) -> Void
@@ -326,21 +373,37 @@ struct PeoplePicker: View {
             TextField("Search people", text: $query).textFieldStyle(.roundedBorder)
             List {
                 if let me = jira?.me, me.accountId != current?.accountId {
-                    Button { onPick(me) } label: { Label("Assign to me", systemImage: "person.fill.checkmark") }
+                    Button {
+                        onPick(me)
+                    } label: {
+                        Label("Assign to me", systemImage: "person.fill.checkmark")
+                    }
                 }
                 if current != nil {
-                    Button { onPick(nil) } label: { Label("Unassigned", systemImage: "person.slash") }
+                    Button {
+                        onPick(nil)
+                    } label: {
+                        Label("Unassigned", systemImage: "person.slash")
+                    }
                 }
                 ForEach(users) { u in
-                    Button { onPick(u) } label: {
-                        HStack { Avatar(user: u, size: 20); Text(u.displayName); Spacer()
-                            if u.accountId == current?.accountId { Image(systemName: "checkmark").foregroundStyle(.secondary) } }
+                    Button {
+                        onPick(u)
+                    } label: {
+                        HStack {
+                            Avatar(user: u, size: 20)
+                            Text(u.displayName)
+                            Spacer()
+                            if u.accountId == current?.accountId {
+                                Image(systemName: "checkmark").foregroundStyle(.secondary)
+                            }
+                        }
                     }
                 }
             }
             .buttonStyle(.plain)
             .listStyle(.plain)
-            .scrollContentBackground(.hidden)   // the list's own white would hide the popover material
+            .scrollContentBackground(.hidden)  // the list's own white would hide the popover material
         }
         .padding(10)
         .frame(width: 280, height: 320)

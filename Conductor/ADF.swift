@@ -3,18 +3,29 @@ import SwiftUI
 // MARK: - Atlassian Document Format model
 
 enum JSONValue: Codable, Hashable, Sendable {
-    case string(String), number(Double), bool(Bool), null
-    case array([JSONValue]), object([String: JSONValue])
+    case string(String)
+    case number(Double)
+    case bool(Bool)
+    case null
+    case array([JSONValue])
+    case object([String: JSONValue])
 
     init(from decoder: Decoder) throws {
         let c = try decoder.singleValueContainer()
         // Strings first: ADF attributes are mostly strings, and every failed attempt throws.
-        if let s = try? c.decode(String.self) { self = .string(s) }
-        else if c.decodeNil() { self = .null }
-        else if let b = try? c.decode(Bool.self) { self = .bool(b) }
-        else if let n = try? c.decode(Double.self) { self = .number(n) }
-        else if let a = try? c.decode([JSONValue].self) { self = .array(a) }
-        else { self = .object(try c.decode([String: JSONValue].self)) }
+        if let s = try? c.decode(String.self) {
+            self = .string(s)
+        } else if c.decodeNil() {
+            self = .null
+        } else if let b = try? c.decode(Bool.self) {
+            self = .bool(b)
+        } else if let n = try? c.decode(Double.self) {
+            self = .number(n)
+        } else if let a = try? c.decode([JSONValue].self) {
+            self = .array(a)
+        } else {
+            self = .object(try c.decode([String: JSONValue].self))
+        }
     }
 
     func encode(to encoder: Encoder) throws {
@@ -29,9 +40,18 @@ enum JSONValue: Codable, Hashable, Sendable {
         }
     }
 
-    var string: String? { if case .string(let s) = self { return s }; return nil }
-    var number: Double? { if case .number(let n) = self { return n }; return nil }
-    var bool: Bool? { if case .bool(let b) = self { return b }; return nil }
+    var string: String? {
+        if case .string(let s) = self { return s }
+        return nil
+    }
+    var number: Double? {
+        if case .number(let n) = self { return n }
+        return nil
+    }
+    var bool: Bool? {
+        if case .bool(let b) = self { return b }
+        return nil
+    }
 }
 
 struct ADFMark: Codable, Hashable, Sendable {
@@ -77,7 +97,9 @@ extension ADFNode {
         switch type {
         case "text":
             var s = AttributedString(text ?? "")
-            var bold = false, italic = false, code = false
+            var bold = false
+            var italic = false
+            var code = false
             for m in marks ?? [] {
                 switch m.type {
                 case "strong": bold = true
@@ -113,20 +135,22 @@ extension ADFNode {
         case "status":
             var s = AttributedString(" \(attr("text")?.uppercased() ?? "") ")
             s.font = .caption.weight(.bold)
-            let tint: Color = switch attr("color") {   // Jira's lozenge colours
-            case "green": .green
-            case "red": .red
-            case "blue": .blue
-            case "yellow": .orange
-            case "purple": .purple
-            default: .secondary
-            }
+            let tint: Color =
+                switch attr("color") {  // Jira's lozenge colours
+                case "green": .green
+                case "red": .red
+                case "blue": .blue
+                case "yellow": .orange
+                case "purple": .purple
+                default: .secondary
+                }
             s.foregroundColor = tint
             s.backgroundColor = tint.opacity(0.15)
             return s
         case "date":
             if let ms = attrs?["timestamp"]?.string.flatMap(Double.init) {
-                return AttributedString(Date(timeIntervalSince1970: ms / 1000).formatted(date: .abbreviated, time: .omitted))
+                return AttributedString(
+                    Date(timeIntervalSince1970: ms / 1000).formatted(date: .abbreviated, time: .omitted))
             }
             return AttributedString()
         case "mediaInline":
@@ -142,7 +166,8 @@ extension Color {
         var h = hex.trimmingCharacters(in: CharacterSet(charactersIn: "#"))
         if h.count == 3 { h = h.map { "\($0)\($0)" }.joined() }
         let v = UInt64(h, radix: 16) ?? 0
-        self.init(red: Double((v >> 16) & 0xFF) / 255, green: Double((v >> 8) & 0xFF) / 255, blue: Double(v & 0xFF) / 255)
+        self.init(
+            red: Double((v >> 16) & 0xFF) / 255, green: Double((v >> 8) & 0xFF) / 255, blue: Double(v & 0xFF) / 255)
     }
 }
 
@@ -175,9 +200,11 @@ struct ADFBlock: View {
     var body: some View {
         switch node.type {
         case "paragraph":
-            Text(node.inlineAttributed(base: headerCell ? .body.weight(.semibold) : .body)).fixedSize(horizontal: false, vertical: true)
+            Text(node.inlineAttributed(base: headerCell ? .body.weight(.semibold) : .body)).fixedSize(
+                horizontal: false, vertical: true)
         case "heading":
-            Text(node.inlineAttributed(base: headingFont)).font(headingFont).padding(.top, 4).fixedSize(horizontal: false, vertical: true)
+            Text(node.inlineAttributed(base: headingFont)).font(headingFont).padding(.top, 4).fixedSize(
+                horizontal: false, vertical: true)
         case "bulletList":
             list(ordered: false)
         case "orderedList":
@@ -216,9 +243,9 @@ struct ADFBlock: View {
                     GridRow {
                         ForEach(Array((row.content ?? []).enumerated()), id: \.offset) { _, cell in
                             VStack(alignment: .leading, spacing: 6) { ADFBlocks(nodes: cell.content ?? []) }
-                                .environment(\.adfHeaderCell, cell.type == "tableHeader")   // text runs set their own font
+                                .environment(\.adfHeaderCell, cell.type == "tableHeader")  // text runs set their own font
                                 .padding(8)
-                                .frame(maxWidth: .infinity, alignment: .topLeading)   // no maxHeight: a scroll view would stretch every row
+                                .frame(maxWidth: .infinity, alignment: .topLeading)  // no maxHeight: a scroll view would stretch every row
                                 .background(cell.type == "tableHeader" ? Color.primary.opacity(0.06) : .clear)
                                 .border(Color.primary.opacity(0.12), width: 0.5)
                         }
@@ -228,7 +255,9 @@ struct ADFBlock: View {
         case "mediaSingle", "mediaGroup":
             HStack(alignment: .top, spacing: 8) {
                 ForEach(Array((node.content ?? []).enumerated()), id: \.offset) { _, m in
-                    if let a = attachments.first(where: { $0.filename == m.attr("alt") }), (a.mimeType ?? "").hasPrefix("image/") {
+                    if let a = attachments.first(where: { $0.filename == m.attr("alt") }),
+                        (a.mimeType ?? "").hasPrefix("image/")
+                    {
                         InlineImage(attachment: a)
                     } else {
                         Label(m.attr("alt") ?? String(localized: "Attached media"), systemImage: "photo")
@@ -344,21 +373,27 @@ struct InlineImage: View {
         .clipShape(.rect(cornerRadius: 10))
         .task(id: attachment.id) {
             let url = attachment.content
-            if let cached = ImageCache.shared.object(forKey: url as NSURL) { image = cached; return }
+            if let cached = ImageCache.shared.object(forKey: url as NSURL) {
+                image = cached
+                return
+            }
             if let data = await DiskCache.imageData(for: url), let img = await DiskCache.decodeImage(data) {
                 ImageCache.shared.setObject(img, forKey: url as NSURL)
                 image = img
                 return
             }
             guard let client = session.client(for: url), let data = try? await client.data(for: url),
-                  let img = await DiskCache.decodeImage(data) else { return }
+                let img = await DiskCache.decodeImage(data)
+            else { return }
             DiskCache.saveImage(data, for: url)
             ImageCache.shared.setObject(img, forKey: url as NSURL)
             image = img
         }
         .onTapGesture {
             guard let c = jira?.client, let previewURL else { return }
-            Task { if let url = await AttachmentOpener.download(attachment, client: c) { previewURL.wrappedValue = url } }
+            Task {
+                if let url = await AttachmentOpener.download(attachment, client: c) { previewURL.wrappedValue = url }
+            }
         }
         .onHover { inside in inside ? NSCursor.pointingHand.push() : NSCursor.pop() }
         .help("\(attachment.filename) — click to preview")

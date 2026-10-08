@@ -26,52 +26,91 @@ extension ADFNode {
                 let lang = String(t.dropFirst(3)).trimmingCharacters(in: .whitespaces)
                 var code: [String] = []
                 i += 1
-                while i < lines.count, !lines[i].trimmingCharacters(in: .whitespaces).hasPrefix("```") { code.append(lines[i]); i += 1 }
+                while i < lines.count, !lines[i].trimmingCharacters(in: .whitespaces).hasPrefix("```") {
+                    code.append(lines[i])
+                    i += 1
+                }
                 i += 1
-                blocks.append(ADFNode(type: "codeBlock",
-                                      attrs: lang.isEmpty ? nil : ["language": .string(lang)],
-                                      content: code.isEmpty ? [] : [ADFNode(type: "text", text: code.joined(separator: "\n"))]))
+                blocks.append(
+                    ADFNode(
+                        type: "codeBlock",
+                        attrs: lang.isEmpty ? nil : ["language": .string(lang)],
+                        content: code.isEmpty ? [] : [ADFNode(type: "text", text: code.joined(separator: "\n"))]))
                 continue
             }
-            if t.isEmpty { flush(); i += 1; continue }
-            if t == "---" || t == "***" { flush(); blocks.append(ADFNode(type: "rule")); i += 1; continue }
+            if t.isEmpty {
+                flush()
+                i += 1
+                continue
+            }
+            if t == "---" || t == "***" {
+                flush()
+                blocks.append(ADFNode(type: "rule"))
+                i += 1
+                continue
+            }
             if let m = t.firstMatch(of: /^(#{1,6})\s+(.+)$/) {
                 flush()
-                blocks.append(ADFNode(type: "heading", attrs: ["level": .number(Double(m.1.count))], content: inlineNodes(String(m.2), mentions: mentions)))
-                i += 1; continue
+                blocks.append(
+                    ADFNode(
+                        type: "heading", attrs: ["level": .number(Double(m.1.count))],
+                        content: inlineNodes(String(m.2), mentions: mentions)))
+                i += 1
+                continue
             }
             if t.hasPrefix(">") {
                 flush()
                 var quote: [String] = []
                 while i < lines.count, lines[i].trimmingCharacters(in: .whitespaces).hasPrefix(">") {
-                    quote.append(String(lines[i].trimmingCharacters(in: .whitespaces).dropFirst()).trimmingCharacters(in: .whitespaces))
+                    quote.append(
+                        String(lines[i].trimmingCharacters(in: .whitespaces).dropFirst()).trimmingCharacters(
+                            in: .whitespaces))
                     i += 1
                 }
-                blocks.append(ADFNode(type: "blockquote", content: [ADFNode(type: "paragraph", content: joinedInline(quote, mentions: mentions))]))
+                blocks.append(
+                    ADFNode(
+                        type: "blockquote",
+                        content: [ADFNode(type: "paragraph", content: joinedInline(quote, mentions: mentions))]))
                 continue
             }
             // A pipe table: a header row, a |---| rule, then rows. The one block the editor shows that way.
-            if t.hasPrefix("|"), i + 1 < lines.count, lines[i + 1].trimmingCharacters(in: .whitespaces).firstMatch(of: /^\|(\s*:?-+:?\s*\|)+$/) != nil {
+            if t.hasPrefix("|"), i + 1 < lines.count,
+                lines[i + 1].trimmingCharacters(in: .whitespaces).firstMatch(of: /^\|(\s*:?-+:?\s*\|)+$/) != nil
+            {
                 flush()
                 var rows: [ADFNode] = []
                 var r = 0
                 while i < lines.count, lines[i].trimmingCharacters(in: .whitespaces).hasPrefix("|") {
                     let row = lines[i].trimmingCharacters(in: .whitespaces)
                     i += 1
-                    if r == 1 { r += 1; continue }   // the rule line
-                    let cells = row.dropFirst().dropLast(row.hasSuffix("|") ? 1 : 0).split(separator: "|", omittingEmptySubsequences: false)
-                        .map { $0.trimmingCharacters(in: .whitespaces) }
-                    rows.append(ADFNode(type: "tableRow", content: cells.map {
-                        ADFNode(type: r == 0 ? "tableHeader" : "tableCell", content: [ADFNode(type: "paragraph", content: inlineNodes($0, mentions: mentions))])
-                    }))
+                    if r == 1 {
+                        r += 1
+                        continue
+                    }  // the rule line
+                    let cells = row.dropFirst().dropLast(row.hasSuffix("|") ? 1 : 0).split(
+                        separator: "|", omittingEmptySubsequences: false
+                    )
+                    .map { $0.trimmingCharacters(in: .whitespaces) }
+                    rows.append(
+                        ADFNode(
+                            type: "tableRow",
+                            content: cells.map {
+                                ADFNode(
+                                    type: r == 0 ? "tableHeader" : "tableCell",
+                                    content: [ADFNode(type: "paragraph", content: inlineNodes($0, mentions: mentions))])
+                            }))
                     r += 1
                 }
-                blocks.append(ADFNode(type: "table", attrs: ["isNumberColumnEnabled": .bool(false), "layout": .string("default")], content: rows))
+                blocks.append(
+                    ADFNode(
+                        type: "table", attrs: ["isNumberColumnEnabled": .bool(false), "layout": .string("default")],
+                        content: rows))
                 continue
             }
             if let marker = listMarker(line) {
                 flush()
-                let (node, next) = parseList(lines, from: i, ordered: marker.ordered, indent: indent(of: line), mentions: mentions)
+                let (node, next) = parseList(
+                    lines, from: i, ordered: marker.ordered, indent: indent(of: line), mentions: mentions)
                 blocks.append(node)
                 i = next
                 continue
@@ -101,14 +140,19 @@ extension ADFNode {
 
     private static func indent(of line: String) -> Int { line.prefix { $0 == " " || $0 == "\t" }.count }
 
-    private static func parseList(_ lines: [String], from start: Int, ordered: Bool, indent level: Int, mentions: [String: String]) -> (ADFNode, Int) {
+    private static func parseList(
+        _ lines: [String], from start: Int, ordered: Bool, indent level: Int, mentions: [String: String]
+    ) -> (ADFNode, Int) {
         var items: [ADFNode] = []
         var i = start
-        while i < lines.count, let marker = listMarker(lines[i]), marker.ordered == ordered, indent(of: lines[i]) == level {
+        while i < lines.count, let marker = listMarker(lines[i]), marker.ordered == ordered,
+            indent(of: lines[i]) == level
+        {
             var content = [ADFNode(type: "paragraph", content: inlineNodes(marker.text, mentions: mentions))]
             i += 1
             if i < lines.count, let nested = listMarker(lines[i]), indent(of: lines[i]) > level {
-                let (child, next) = parseList(lines, from: i, ordered: nested.ordered, indent: indent(of: lines[i]), mentions: mentions)
+                let (child, next) = parseList(
+                    lines, from: i, ordered: nested.ordered, indent: indent(of: lines[i]), mentions: mentions)
                 content.append(child)
                 i = next
             }
@@ -139,16 +183,30 @@ extension ADFNode {
             if let m = rest.firstMatch(of: /\*(?!\*)([^*]+)\*/) { consider(m.range) { marked(String(m.1), "em") } }
             if let m = rest.firstMatch(of: /\b_([^_]+)_\b/) { consider(m.range) { marked(String(m.1), "em") } }
             if let m = rest.firstMatch(of: /\[([^\]]+)\]\(([^)\s]+)\)/) {
-                consider(m.range) { ADFNode(type: "text", text: String(m.1), marks: [ADFMark(type: "link", attrs: ["href": .string(String(m.2))])]) }
+                consider(m.range) {
+                    ADFNode(
+                        type: "text", text: String(m.1),
+                        marks: [ADFMark(type: "link", attrs: ["href": .string(String(m.2))])])
+                }
             }
             if let m = rest.firstMatch(of: /https?:\/\/[^\s<>)\]]+/) {
-                consider(m.range) { let u = String(m.0); return ADFNode(type: "text", text: u, marks: [ADFMark(type: "link", attrs: ["href": .string(u)])]) }
+                consider(m.range) {
+                    let u = String(m.0)
+                    return ADFNode(type: "text", text: u, marks: [ADFMark(type: "link", attrs: ["href": .string(u)])])
+                }
             }
             for name in names {
-                consider(rest.range(of: "@" + name)) { ADFNode(type: "mention", attrs: ["id": .string(mentions[name]!), "text": .string("@" + name)]) }
+                consider(rest.range(of: "@" + name)) {
+                    ADFNode(type: "mention", attrs: ["id": .string(mentions[name]!), "text": .string("@" + name)])
+                }
             }
-            guard let b = best else { nodes.append(ADFNode(type: "text", text: String(rest))); break }
-            if b.range.lowerBound > rest.startIndex { nodes.append(ADFNode(type: "text", text: String(rest[rest.startIndex..<b.range.lowerBound]))) }
+            guard let b = best else {
+                nodes.append(ADFNode(type: "text", text: String(rest)))
+                break
+            }
+            if b.range.lowerBound > rest.startIndex {
+                nodes.append(ADFNode(type: "text", text: String(rest[rest.startIndex..<b.range.lowerBound])))
+            }
             nodes.append(b.node)
             rest = rest[b.range.upperBound...]
         }
@@ -164,7 +222,10 @@ extension ADFNode {
 
     /// Node types the Markdown round-trip would flatten or drop.
     var hasLossyNodes: Bool {
-        let lossy: Set<String> = ["media", "mediaSingle", "mediaGroup", "mediaInline", "panel", "expand", "nestedExpand", "layoutSection", "taskList", "decisionList"]
+        let lossy: Set<String> = [
+            "media", "mediaSingle", "mediaGroup", "mediaInline", "panel", "expand", "nestedExpand", "layoutSection",
+            "taskList", "decisionList",
+        ]
         if lossy.contains(type) { return true }
         return (content ?? []).contains { $0.hasLossyNodes }
     }
@@ -181,24 +242,32 @@ extension ADFNode {
             for (i, item) in (content ?? []).enumerated() {
                 let marker = type == "orderedList" ? "\(i + 1). " : "- "
                 let parts = (item.content ?? []).map { $0.blockMarkdown(indent: indent + "  ", mentions: &mentions) }
-                guard let first = parts.first else { lines.append(indent + marker); continue }
+                guard let first = parts.first else {
+                    lines.append(indent + marker)
+                    continue
+                }
                 lines.append(indent + marker + first.dropFirst(indent.count + 2))
                 lines += parts.dropFirst()
             }
             return lines.joined(separator: "\n")
         case "codeBlock":
-            let body = plainText.split(separator: "\n", omittingEmptySubsequences: false).map { indent + $0 }.joined(separator: "\n")
+            let body = plainText.split(separator: "\n", omittingEmptySubsequences: false).map { indent + $0 }.joined(
+                separator: "\n")
             return indent + "```" + (attr("language") ?? "") + "\n" + body + "\n" + indent + "```"
         case "blockquote":
-            let inner = (content ?? []).map { $0.blockMarkdown(indent: "", mentions: &mentions) }.joined(separator: "\n\n")
-            return inner.split(separator: "\n", omittingEmptySubsequences: false).map { indent + "> " + $0 }.joined(separator: "\n")
+            let inner = (content ?? []).map { $0.blockMarkdown(indent: "", mentions: &mentions) }.joined(
+                separator: "\n\n")
+            return inner.split(separator: "\n", omittingEmptySubsequences: false).map { indent + "> " + $0 }.joined(
+                separator: "\n")
         case "rule":
             return indent + "---"
         case "table":
             var rows: [String] = []
             for (r, row) in (content ?? []).enumerated() {
                 let cells = (row.content ?? []).map { cell in
-                    (cell.content ?? []).map { $0.blockMarkdown(indent: "", mentions: &mentions) }.joined(separator: " ").replacingOccurrences(of: "\n", with: " ")
+                    (cell.content ?? []).map { $0.blockMarkdown(indent: "", mentions: &mentions) }.joined(
+                        separator: " "
+                    ).replacingOccurrences(of: "\n", with: " ")
                 }
                 rows.append(indent + "| " + cells.joined(separator: " | ") + " |")
                 if r == 0 { rows.append(indent + "|" + cells.map { _ in " --- |" }.joined()) }

@@ -1,5 +1,5 @@
-import SwiftUI
 import CoreSpotlight
+import SwiftUI
 
 struct BoardTarget: Hashable, Codable {
     let accountID: UUID
@@ -31,7 +31,11 @@ struct ConductorApp: App {
             CommandGroup(replacing: .newItem) {
                 Button("New Issue…") {
                     // The sheet hangs off the list window; make sure there is one.
-                    if !NSApp.windows.contains(where: { $0.identifier?.rawValue.hasPrefix("main") == true && $0.isVisible }) { openWindow(id: "main") }
+                    if !NSApp.windows.contains(where: {
+                        $0.identifier?.rawValue.hasPrefix("main") == true && $0.isVisible
+                    }) {
+                        openWindow(id: "main")
+                    }
                     session.createIssueRequested = true
                 }
                 .keyboardShortcut("n")
@@ -44,7 +48,7 @@ struct ConductorApp: App {
             CommandGroup(after: .appSettings) {
                 Button("Check for Updates…") { UpdateChecker.shared.check(interactive: true) }
             }
-            CommandGroup(replacing: .help) {}   // there is no help book; the system item would only say so
+            CommandGroup(replacing: .help) {}  // there is no help book; the system item would only say so
             SidebarCommands()
             ToolbarCommands()
             AppCommands(session: session)
@@ -71,7 +75,7 @@ struct ConductorApp: App {
 /// Sidebar, the one list and a preview of the selected issue. Double-click opens an issue in a window of its own.
 struct RootView: View {
     #if DEBUG
-    @MainActor static var debugHooksRan = false
+        @MainActor static var debugHooksRan = false
     #endif
     @Environment(Session.self) private var session
     @Environment(\.openWindow) private var openWindow
@@ -80,21 +84,29 @@ struct RootView: View {
     @SceneStorage("filters") private var storedFilters = ""
     @State private var filters = ListFilters()
     @State private var selection: IssueTarget?
+    @FocusedValue(\.issueActions) private var issueActions
     @State private var restored = false
 
     private var currentProject: (Project, AccountState)? {
         guard let id = filters.account, let st = session.state(id), let key = filters.project,
-              let p = st.projects.first(where: { $0.key == key }) else { return nil }
+            let p = st.projects.first(where: { $0.key == key })
+        else { return nil }
         return (p, st)
     }
 
     var body: some View {
         Group {
             if session.isRestoring {
-                ZStack { Backdrop(); ProgressView() }
+                ZStack {
+                    Backdrop()
+                    ProgressView()
+                }
             } else if session.isSignedIn {
                 NavigationSplitView {
-                    SidebarView(selection: Binding(get: { session.preset(matching: filters)?.filters ?? filters }, set: { if let f = $0 { filters = f } }))
+                    SidebarView(
+                        selection: Binding(
+                            get: { session.preset(matching: filters)?.filters ?? filters },
+                            set: { if let f = $0 { filters = f } }))
                 } content: {
                     IssueListView(filters: $filters, selection: $selection)
                         .navigationSplitViewColumnWidth(min: 340, ideal: 420)
@@ -106,8 +118,7 @@ struct RootView: View {
                             .frame(maxWidth: .infinity, maxHeight: .infinity).background(Backdrop())
                     }
                 }
-                // Escape empties the preview column; a text field or search that is editing takes the key first.
-                .onExitCommand { selection = nil }
+                .background(WindowEventMonitor(mask: .keyDown) { escape($0) })
                 .sheet(isPresented: Bindable(session).createIssueRequested) {
                     CreateIssueView(defaultProject: currentProject) { openWindow(id: "issue", value: $0) }
                 }
@@ -124,35 +135,53 @@ struct RootView: View {
         .onChange(of: session.states.count) { restoreOnce() }
         .onChange(of: session.isRestoring) { restoreOnce() }
         .onChange(of: filters) { _, new in
-            selection = nil   // another list: the preview would otherwise show an issue that is not in it
+            selection = nil  // another list: the preview would otherwise show an issue that is not in it
             storedFilters = (try? JSONEncoder().encode(new)).flatMap { String(data: $0, encoding: .utf8) } ?? ""
             session.lastFilters = new
         }
         .onChange(of: session.navigationRequest) { _, req in
-            if let req { filters = req; session.navigationRequest = nil }
+            if let req {
+                filters = req
+                session.navigationRequest = nil
+            }
         }
         .onChange(of: session.pendingOpen) { _, target in if let target { open(target) } }
         .onOpenURL { session.open(url: $0) }
         .onContinueUserActivity(CSSearchableItemActionType) { activity in
-            if let id = activity.userInfo?[CSSearchableItemActivityIdentifier] as? String { session.open(spotlightID: id) }
-        }
-        #if DEBUG
-        .task {
-            // CONDUCTOR_OPEN=KEY opens that issue in the first account; CONDUCTOR_SHOW=create|board:KEY opens a sheet or window.
-            let env = ProcessInfo.processInfo.environment
-            // Once per process: a new main window after closing one must not replay the launch request.
-            guard env["CONDUCTOR_OPEN"] != nil || env["CONDUCTOR_SHOW"] != nil, !Self.debugHooksRan else { return }
-            Self.debugHooksRan = true
-            while !session.isSignedIn { try? await Task.sleep(for: .milliseconds(200)) }
-            try? await Task.sleep(for: .seconds(1))
-            if let key = env["CONDUCTOR_OPEN"], let st = session.states.first { openWindow(id: "issue", value: IssueTarget(accountID: st.id, key: key)) }
-            if env["CONDUCTOR_SHOW"] == "create" { session.createIssueRequested = true }
-            if env["CONDUCTOR_SHOW"] == "settings" { openSettings() }
-            if let show = env["CONDUCTOR_SHOW"], show.hasPrefix("board:"), let st = session.states.first {
-                openWindow(id: "board", value: BoardTarget(accountID: st.id, projectKey: String(show.dropFirst(6))))
+            if let id = activity.userInfo?[CSSearchableItemActivityIdentifier] as? String {
+                session.open(spotlightID: id)
             }
         }
+        #if DEBUG
+            .task {
+                // CONDUCTOR_OPEN=KEY opens that issue in the first account; CONDUCTOR_SHOW=create|board:KEY opens a sheet or window.
+                let env = ProcessInfo.processInfo.environment
+                // Once per process: a new main window after closing one must not replay the launch request.
+                guard env["CONDUCTOR_OPEN"] != nil || env["CONDUCTOR_SHOW"] != nil, !Self.debugHooksRan else { return }
+                Self.debugHooksRan = true
+                while !session.isSignedIn { try? await Task.sleep(for: .milliseconds(200)) }
+                try? await Task.sleep(for: .seconds(1))
+                if let key = env["CONDUCTOR_OPEN"], let st = session.states.first {
+                    openWindow(id: "issue", value: IssueTarget(accountID: st.id, key: key))
+                }
+                if env["CONDUCTOR_SHOW"] == "create" { session.createIssueRequested = true }
+                if env["CONDUCTOR_SHOW"] == "settings" { openSettings() }
+                if let show = env["CONDUCTOR_SHOW"], show.hasPrefix("board:"), let st = session.states.first {
+                    openWindow(id: "board", value: BoardTarget(accountID: st.id, projectKey: String(show.dropFirst(6))))
+                }
+            }
         #endif
+    }
+
+    /// Escape empties the preview column wherever the focus is, unless something nearer has a use for it: a field
+    /// being edited cancels that edit, a search with text clears it, and a comment draft stays as it is.
+    private func escape(_ e: NSEvent) -> NSEvent? {
+        guard e.keyCode == 53, e.modifierFlags.intersection(.deviceIndependentFlagsMask).isEmpty, selection != nil
+        else { return e }
+        if issueActions?.isEditing == true { return e }
+        if let tv = e.window?.firstResponder as? NSTextView, !tv.string.isEmpty { return e }
+        selection = nil
+        return nil
     }
 
     /// Requests from Spotlight, notifications and links land in an issue window.
@@ -169,8 +198,10 @@ struct RootView: View {
             restored = true
             // A window the system restored keeps its list; one opened with ⌘0 continues the last list; a launch
             // starts on the "Open at launch" list.
-            if let data = storedFilters.data(using: .utf8), let f = try? JSONDecoder().decode(ListFilters.self, from: data),
-               f.account.map({ session.state($0) != nil }) ?? true {
+            if let data = storedFilters.data(using: .utf8),
+                let f = try? JSONDecoder().decode(ListFilters.self, from: data),
+                f.account.map({ session.state($0) != nil }) ?? true
+            {
                 filters = f
             } else if let f = session.lastFilters, f.account.map({ session.state($0) != nil }) ?? true {
                 filters = f
@@ -179,7 +210,10 @@ struct RootView: View {
             }
         }
         // Requests made before this window existed, e.g. from Spotlight or a notification after the window was closed.
-        if let req = session.navigationRequest { filters = req; session.navigationRequest = nil }
+        if let req = session.navigationRequest {
+            filters = req
+            session.navigationRequest = nil
+        }
         if let t = session.pendingOpen { open(t) }
         // An account that signed out takes its list with it.
         if let id = filters.account, session.state(id) == nil, let f = session.filters(for: .assigned) { filters = f }

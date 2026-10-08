@@ -34,7 +34,9 @@ final class AccountState: Identifiable {
     @ObservationIgnored var editMetaByWorkflow: [String: EditMeta] = [:]
     @ObservationIgnored private var warming: Set<String> = []
 
-    static func workflowKey(_ i: Issue) -> String { "\(i.fields.project?.key ?? "")|\(i.fields.issuetype.id)|\(i.fields.status.id)" }
+    static func workflowKey(_ i: Issue) -> String {
+        "\(i.fields.project?.key ?? "")|\(i.fields.issuetype.id)|\(i.fields.status.id)"
+    }
 
     /// Fetches the transitions of one representative issue per workflow not yet known. Sequential: it runs behind a list.
     func warmTransitions(_ issues: [Issue]) {
@@ -68,9 +70,15 @@ final class AccountState: Identifiable {
     func warm() async {
         guard warmProgress == nil else { return }
         warmProgress = 0
-        defer { warmProgress = nil; warmLabel = "" }
+        defer {
+            warmProgress = nil
+            warmLabel = ""
+        }
         var scopes = ["(assignee = currentUser() OR reporter = currentUser()) AND statusCategory != Done"]
-        if !starred.isEmpty { scopes.append("project in (\(starred.map { "\"\($0)\"" }.joined(separator: ", "))) AND statusCategory != Done") }
+        if !starred.isEmpty {
+            scopes.append(
+                "project in (\(starred.map { "\"\($0)\"" }.joined(separator: ", "))) AND statusCategory != Done")
+        }
         let jql = "(" + scopes.joined(separator: ") OR (") + ") ORDER BY updated DESC"
         // ponytail: a count request for the bar; the page loop below does the work and tolerates the count being off.
         let total = max(1, (try? await client.approximateCount(jql: jql)) ?? 100)
@@ -81,7 +89,11 @@ final class AccountState: Identifiable {
             guard let page = try? await client.search(jql: jql, nextPageToken: token) else { break }
             // Rows unchanged since the last pass already have their details on disk.
             let stale = page.issues.filter { prefetched[$0.key] != $0.fields.updated }
-            if !stale.isEmpty, let full = try? await client.search(jql: "issuekey in (" + stale.map { "\"\($0.key)\"" }.joined(separator: ",") + ")", fields: client.detailFields) {
+            if !stale.isEmpty,
+                let full = try? await client.search(
+                    jql: "issuekey in (" + stale.map { "\"\($0.key)\"" }.joined(separator: ",") + ")",
+                    fields: client.detailFields)
+            {
                 for i in full.issues {
                     DiskCache.saveAsync(i, account: account, name: "issue-\(i.key)")
                     peek[i.key] = i
@@ -100,7 +112,10 @@ final class AccountState: Identifiable {
 
         // Workflows: one representative issue per project, type and status.
         var byWorkflow: [String: Issue] = [:]
-        for i in issues where transitionsByWorkflow[Self.workflowKey(i)] == nil || editMetaByWorkflow[Self.workflowKey(i)] == nil { byWorkflow[Self.workflowKey(i)] = i }
+        for i in issues
+        where transitionsByWorkflow[Self.workflowKey(i)] == nil || editMetaByWorkflow[Self.workflowKey(i)] == nil {
+            byWorkflow[Self.workflowKey(i)] = i
+        }
         warmLabel = String(localized: "Reading workflows…")
         for (n, i) in byWorkflow.values.enumerated() {
             await warmWorkflow(of: i)
@@ -109,20 +124,29 @@ final class AccountState: Identifiable {
 
         // Children of epics, one query per page rather than one per epic.
         let epics = issues.filter { ($0.fields.issuetype.hierarchyLevel ?? 0) >= 1 }.map(\.key)
-        if !epics.isEmpty, let kids = try? await client.search(jql: "parent in (" + epics.map { "\"\($0)\"" }.joined(separator: ",") + ") ORDER BY created ASC") {
-            let grouped = Dictionary(grouping: kids.issues.filter { !$0.fields.issuetype.isSubtask }, by: { $0.fields.parent?.key ?? "" })
+        if !epics.isEmpty,
+            let kids = try? await client.search(
+                jql: "parent in (" + epics.map { "\"\($0)\"" }.joined(separator: ",") + ") ORDER BY created ASC")
+        {
+            let grouped = Dictionary(
+                grouping: kids.issues.filter { !$0.fields.issuetype.isSubtask }, by: { $0.fields.parent?.key ?? "" })
             for key in epics { DiskCache.saveAsync(grouped[key] ?? [], account: account, name: "children-\(key)") }
         }
         _ = await linkTypes()
-        for project in Set(issues.compactMap { $0.fields.project?.key }).union(starred) where client.sprintField != nil { _ = await sprints(project: project) }
+        for project in Set(issues.compactMap { $0.fields.project?.key }).union(starred) where client.sprintField != nil
+        { _ = await sprints(project: project) }
         warmProgress = 0.9
 
         // Icons and avatars, into the disk and memory caches, so no row or page ever draws a placeholder first.
         warmLabel = String(localized: "Fetching icons…")
         var urls = Set<URL>()
         for i in issues {
-            urls.formUnion([i.fields.issuetype.iconUrl, i.fields.priority?.iconUrl, i.fields.assignee?.avatar, i.fields.reporter?.avatar,
-                            i.fields.parent?.fields.issuetype?.iconUrl, i.fields.project?.avatar].compactMap { $0 })
+            urls.formUnion(
+                [
+                    i.fields.issuetype.iconUrl, i.fields.priority?.iconUrl, i.fields.assignee?.avatar,
+                    i.fields.reporter?.avatar,
+                    i.fields.parent?.fields.issuetype?.iconUrl, i.fields.project?.avatar,
+                ].compactMap { $0 })
             for s in i.fields.subtasks ?? [] { if let u = s.fields.issuetype?.iconUrl { urls.insert(u) } }
         }
         for p in projects { if let u = p.avatar { urls.insert(u) } }
@@ -130,7 +154,9 @@ final class AccountState: Identifiable {
         for url in urls where !DiskCache.hasImage(for: url) {
             guard let data = try? await client.data(for: url) else { continue }
             DiskCache.saveImage(data, for: url)
-            if let img = await DiskCache.decodeImage(data, maxPixels: 256) { ImageCache.shared.setObject(img, forKey: url as NSURL) }
+            if let img = await DiskCache.decodeImage(data, maxPixels: 256) {
+                ImageCache.shared.setObject(img, forKey: url as NSURL)
+            }
         }
         warmProgress = 1
     }
@@ -146,10 +172,14 @@ final class AccountState: Identifiable {
     /// else the site's first label. Jira's own site title is just "Jira" on most sites.
     var title: String {
         if !customTitle.isEmpty { return customTitle }
-        let publicMail: Set<String> = ["gmail", "icloud", "me", "outlook", "hotmail", "live", "yahoo", "proton", "protonmail", "fastmail", "hey"]
+        let publicMail: Set<String> = [
+            "gmail", "icloud", "me", "outlook", "hotmail", "live", "yahoo", "proton", "protonmail", "fastmail", "hey",
+        ]
         let domain = account.email.split(separator: "@").last.map(String.init) ?? ""
         var label = domain.split(separator: ".").dropLast().last.map(String.init) ?? ""
-        if label.isEmpty || publicMail.contains(label.lowercased()) { label = host.split(separator: ".").first.map(String.init) ?? host }
+        if label.isEmpty || publicMail.contains(label.lowercased()) {
+            label = host.split(separator: ".").first.map(String.init) ?? host
+        }
         return label.prefix(1).uppercased() + label.dropFirst()
     }
     var starredProjects: [Project] { projects.filter { starred.contains($0.key) } }
@@ -162,7 +192,6 @@ final class AccountState: Identifiable {
     /// The sidebar shows the bar only for an account's first download. The catch-up on later launches takes a
     /// few seconds and changes nothing on screen, so it must not grow and shrink the sidebar under every launch.
     private(set) var warmIsFirst = false
-
 
     init(account: Account) {
         self.account = account
@@ -192,7 +221,8 @@ final class AccountState: Identifiable {
         // Edit screens are the biggest file by far (a megabyte on a busy site) and only an issue page reads them.
         let account = account
         Task { @MainActor in
-            let disk: [String: EditMeta] = await DiskCache.loadAsync(account: account, name: "workflows-editmeta") ?? [:]
+            let disk: [String: EditMeta] =
+                await DiskCache.loadAsync(account: account, name: "workflows-editmeta") ?? [:]
             editMetaByWorkflow = disk.merging(editMetaByWorkflow) { _, fresh in fresh }
         }
         return me != nil
@@ -227,8 +257,14 @@ final class AccountState: Identifiable {
         async let f = client.favouriteFilters()
         async let t = client.issueTypes()
         async let a = client.jqlAutocomplete()
-        if let fresh = try? await p { projects = fresh; DiskCache.saveAsync(fresh, account: account, name: "projects") }
-        if let fresh = try? await f { filters = fresh; DiskCache.saveAsync(fresh, account: account, name: "filters") }
+        if let fresh = try? await p {
+            projects = fresh
+            DiskCache.saveAsync(fresh, account: account, name: "projects")
+        }
+        if let fresh = try? await f {
+            filters = fresh
+            DiskCache.saveAsync(fresh, account: account, name: "filters")
+        }
         starred = Set(projects.filter { $0.favourite == true }.map(\.key))
         if let fresh = try? await t {
             issueTypeNames = Array(Set(fresh.map(\.name))).sorted()
@@ -246,7 +282,9 @@ final class AccountState: Identifiable {
             let jql = smart.filters(account: id).jql
             return Task { @MainActor in
                 guard let page = try? await IssueListStore.fetch(jql: jql, state: self, cache: true) else { return }
-                if smart == .assigned { IssueListStore.prefetchDetails(page.issues.map { ListRow(issue: $0, state: self) }) }
+                if smart == .assigned {
+                    IssueListStore.prefetchDetails(page.issues.map { ListRow(issue: $0, state: self) })
+                }
             }
         }
         for t in tasks { await t.value }
@@ -257,9 +295,15 @@ final class AccountState: Identifiable {
 
     func linkTypes() async -> [LinkType] {
         if let linkTypesCache { return linkTypesCache }
-        if let disk: [LinkType] = await DiskCache.loadAsync(account: account, name: "linkTypes") { linkTypesCache = disk; return disk }
+        if let disk: [LinkType] = await DiskCache.loadAsync(account: account, name: "linkTypes") {
+            linkTypesCache = disk
+            return disk
+        }
         let fresh = (try? await client.linkTypes()) ?? []
-        if !fresh.isEmpty { linkTypesCache = fresh; DiskCache.saveAsync(fresh, account: account, name: "linkTypes") }
+        if !fresh.isEmpty {
+            linkTypesCache = fresh
+            DiskCache.saveAsync(fresh, account: account, name: "linkTypes")
+        }
         return fresh
     }
 
@@ -278,7 +322,9 @@ final class AccountState: Identifiable {
     @discardableResult
     private func fetchSprints(project: String) async -> [Sprint] {
         guard let boards = try? await client.boards(project: project) else { return sprintsByProject[project] ?? [] }
-        let tasks = boards.filter { $0.type == "scrum" }.map { b in Task { @MainActor in (try? await self.client.sprints(board: b.id)) ?? [] } }
+        let tasks = boards.filter { $0.type == "scrum" }.map { b in
+            Task { @MainActor in (try? await self.client.sprints(board: b.id)) ?? [] }
+        }
         var all: [Sprint] = []
         for t in tasks { all += await t.value }
         var seen = Set<Int>()
@@ -301,8 +347,6 @@ final class Session {
     private(set) var stored: [Account] = []
     private(set) var unreachable: [UUID: String] = [:]
     private(set) var isRestoring = true
-    /// Recently viewed, across accounts, newest first. Jira's own history can't be merged across sites.
-    private(set) var history: [IssueTarget] = []
 
     /// One-shot requests from menu commands, URLs and other windows; the root view consumes them.
     var createIssueRequested = false
@@ -330,24 +374,25 @@ final class Session {
     /// Accounts and their caches are read before the first frame, so the window opens showing the last session's
     /// sidebar and list rather than a spinner; the network checks them afterwards in `restore`.
     init() {
-        history = (try? JSONDecoder().decode([IssueTarget].self, from: UserDefaults.standard.data(forKey: "history") ?? Data())) ?? []
         stored = Keychain.load()
         #if DEBUG
-        // Dev convenience: CONDUCTOR_SITE/EMAIL/TOKEN (and _2, _3…) sign in without the form. They are merged
-        // into the Keychain and saved, so a build run from Xcode without them finds the same accounts: every
-        // Debug build is signed with the same team and reads the same data protection keychain item.
-        let env = ProcessInfo.processInfo.environment
-        let envAccounts: [Account] = ["", "_2", "_3"].compactMap { n in
-            guard let site = env["CONDUCTOR_SITE\(n)"].flatMap(Account.normalizeSite), let email = env["CONDUCTOR_EMAIL\(n)"], let token = env["CONDUCTOR_TOKEN\(n)"] else { return nil }
-            return Account(site: site, email: email, token: token)
-        }
-        if !envAccounts.isEmpty {
-            // An env account replaces its stored twin (same id: host + email) in place, so the sidebar order holds.
-            for a in envAccounts {
-                if let i = stored.firstIndex(where: { $0.id == a.id }) { stored[i] = a } else { stored.append(a) }
+            // Dev convenience: CONDUCTOR_SITE/EMAIL/TOKEN (and _2, _3…) sign in without the form. They are merged
+            // into the Keychain and saved, so a build run from Xcode without them finds the same accounts: every
+            // Debug build is signed with the same team and reads the same data protection keychain item.
+            let env = ProcessInfo.processInfo.environment
+            let envAccounts: [Account] = ["", "_2", "_3"].compactMap { n in
+                guard let site = env["CONDUCTOR_SITE\(n)"].flatMap(Account.normalizeSite),
+                    let email = env["CONDUCTOR_EMAIL\(n)"], let token = env["CONDUCTOR_TOKEN\(n)"]
+                else { return nil }
+                return Account(site: site, email: email, token: token)
             }
-            Keychain.save(stored)
-        }
+            if !envAccounts.isEmpty {
+                // An env account replaces its stored twin (same id: host + email) in place, so the sidebar order holds.
+                for a in envAccounts {
+                    if let i = stored.firstIndex(where: { $0.id == a.id }) { stored[i] = a } else { stored.append(a) }
+                }
+                Keychain.save(stored)
+            }
         #endif
         // One thread per account: each reads a dozen small files and its recent lists.
         let accounts = stored
@@ -376,9 +421,15 @@ final class Session {
         watchConnectivity()
         defer { isRestoring = false }
         let pending = connecting.map { st in
-            (st, Task<(any Error)?, Never> { @MainActor in
-                do { try await st.load(); return nil } catch { return error }
-            })
+            (
+                st,
+                Task<(any Error)?, Never> { @MainActor in
+                    do {
+                        try await st.load()
+                        return nil
+                    } catch { return error }
+                }
+            )
         }
         connecting = []
         for (st, task) in pending {
@@ -434,12 +485,16 @@ final class Session {
         states.removeAll { $0.id == account.id }
         stored.removeAll { $0.id == account.id }
         unreachable[account.id] = nil
-        history.removeAll { $0.accountID == account.id }
         Keychain.save(stored)
     }
 
     func refreshAll() async {
-        let tasks = states.map { st in Task { @MainActor in await st.refreshCatalog(); await st.prefetchLists() } }
+        let tasks = states.map { st in
+            Task { @MainActor in
+                await st.refreshCatalog()
+                await st.prefetchLists()
+            }
+        }
         for t in tasks { await t.value }
     }
 
@@ -463,7 +518,9 @@ final class Session {
     // MARK: Sidebar presets
 
     /// Filters the user saved from the list, shown in the sidebar under their account (or All Accounts).
-    private(set) var customPresets: [CustomPreset] = (try? JSONDecoder().decode([CustomPreset].self, from: UserDefaults.standard.data(forKey: "customPresets") ?? Data())) ?? []
+    private(set) var customPresets: [CustomPreset] =
+        (try? JSONDecoder().decode(
+            [CustomPreset].self, from: UserDefaults.standard.data(forKey: "customPresets") ?? Data())) ?? []
     /// Built-in entries the user hid; Settings brings them all back.
     private(set) var hiddenPresets: Set<String> = Set(UserDefaults.standard.stringArray(forKey: "hiddenPresets") ?? [])
 
@@ -479,7 +536,10 @@ final class Session {
         let prefix = id?.uuidString ?? "all"
         // Recently Viewed stays per account: Jira's history can't be merged across sites.
         var list = Smart.allCases.filter { st != nil || $0 != .recent }
-            .map { Preset(id: "\(prefix):\($0.rawValue)", name: $0.title, symbol: $0.symbol, filters: $0.filters(account: id)) }
+            .map {
+                Preset(
+                    id: "\(prefix):\($0.rawValue)", name: $0.title, symbol: $0.symbol, filters: $0.filters(account: id))
+            }
         list += customPresets.filter { $0.filters.account == id }
             .map { Preset(id: $0.id.uuidString, name: $0.name, symbol: "bookmark", filters: $0.filters, custom: true) }
         if let st {
@@ -487,8 +547,10 @@ final class Session {
                 var fl = ListFilters()
                 fl.account = st.id
                 fl.jiraFilter = f
-                fl.status = .any   // the filter's own JQL decides what shows
-                return Preset(id: "\(prefix):filter:\(f.id)", name: f.name, symbol: "line.3.horizontal.decrease.circle", filters: fl)
+                fl.status = .any  // the filter's own JQL decides what shows
+                return Preset(
+                    id: "\(prefix):filter:\(f.id)", name: f.name, symbol: "line.3.horizontal.decrease.circle",
+                    filters: fl)
             }
         }
         return list.filter { !hiddenPresets.contains($0.id) }
@@ -496,15 +558,23 @@ final class Session {
 
     /// The sidebar entry these filters came from, for the window title.
     func title(for f: ListFilters) -> String {
-        if let key = f.project, let st = f.account.flatMap(state) { return st.projects.first { $0.key == key }?.name ?? key }
+        if let key = f.project, let st = f.account.flatMap(state) {
+            return st.projects.first { $0.key == key }?.name ?? key
+        }
         return preset(matching: f)?.name ?? String(localized: "Issues")
     }
 
     /// The sidebar entry these filters came from. The status chip is left out of the comparison: a preset is
     /// built with whatever the Hide Done default is at the time, and flipping that setting must not unname a list.
     func preset(matching f: ListFilters) -> Preset? {
-        var want = f; want.status = .any; want.text = ""
-        return (presets(account: nil) + states.flatMap { presets(account: $0) }).first { var p = $0.filters; p.status = .any; return p == want }
+        var want = f
+        want.status = .any
+        want.text = ""
+        return (presets(account: nil) + states.flatMap { presets(account: $0) }).first {
+            var p = $0.filters
+            p.status = .any
+            return p == want
+        }
     }
 
     func addPreset(name: String, filters: ListFilters) {
@@ -534,13 +604,8 @@ final class Session {
         UserDefaults.standard.removeObject(forKey: "hiddenPresets")
     }
 
-    private func savePresets() { UserDefaults.standard.set(try? JSONEncoder().encode(customPresets), forKey: "customPresets") }
-
-    func recordView(_ target: IssueTarget) {
-        history.removeAll { $0 == target }
-        history.insert(target, at: 0)
-        history = Array(history.prefix(100))
-        UserDefaults.standard.set(try? JSONEncoder().encode(history), forKey: "history")
+    private func savePresets() {
+        UserDefaults.standard.set(try? JSONEncoder().encode(customPresets), forKey: "customPresets")
     }
 
     // MARK: Recent searches
@@ -564,14 +629,22 @@ final class Session {
         var target = url
         if url.scheme == "conductor" {
             if url.host() == "issue" {
-                if let st = states.first { pendingOpen = IssueTarget(accountID: st.id, key: url.lastPathComponent.uppercased()) }
+                if let st = states.first {
+                    pendingOpen = IssueTarget(accountID: st.id, key: url.lastPathComponent.uppercased())
+                }
                 return
             }
-            guard let raw = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "url" })?.value,
-                  let inner = URL(string: raw) else { return }
+            guard
+                let raw = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first(where: {
+                    $0.name == "url"
+                })?.value,
+                let inner = URL(string: raw)
+            else { return }
             target = inner
         }
-        guard let key = Self.issueKey(in: target), let st = state(host: target.host() ?? "") ?? states.first else { return }
+        guard let key = Self.issueKey(in: target), let st = state(host: target.host() ?? "") ?? states.first else {
+            return
+        }
         pendingOpen = IssueTarget(accountID: st.id, key: key)
     }
 
@@ -586,7 +659,11 @@ final class Session {
     nonisolated static func issueKey(in url: URL) -> String? {
         let parts = url.pathComponents
         if let i = parts.firstIndex(of: "browse"), i + 1 < parts.count { return parts[i + 1].uppercased() }
-        if let v = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "selectedIssue" })?.value { return v.uppercased() }
+        if let v = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first(where: {
+            $0.name == "selectedIssue"
+        })?.value {
+            return v.uppercased()
+        }
         return nil
     }
 }
@@ -632,8 +709,12 @@ extension EnvironmentValues {
 /// The boring system colours, which is the point: they read well on glass in both appearances.
 enum Palette {
     /// Menu order; defaults are dealt from `dealOrder` so neighbouring accounts contrast.
-    static let names = ["blue", "indigo", "purple", "pink", "red", "orange", "yellow", "green", "mint", "teal", "cyan", "brown", "gray"]
-    private static let dealOrder = ["blue", "green", "orange", "purple", "pink", "teal", "red", "yellow", "indigo", "mint", "cyan", "brown", "gray"]
+    static let names = [
+        "blue", "indigo", "purple", "pink", "red", "orange", "yellow", "green", "mint", "teal", "cyan", "brown", "gray",
+    ]
+    private static let dealOrder = [
+        "blue", "green", "orange", "purple", "pink", "teal", "red", "yellow", "indigo", "mint", "cyan", "brown", "gray",
+    ]
 
     static func title(_ name: String) -> String {
         switch name {
@@ -687,7 +768,6 @@ enum Palette {
     }
 }
 
-
 // MARK: - Connectivity
 
 /// Whether Jira is reachable, judged from every request's outcome. Reads fail quietly while offline
@@ -713,7 +793,9 @@ extension Error {
     /// A transport failure, as opposed to something Jira answered.
     var isOffline: Bool {
         guard let e = self as? URLError else { return false }
-        return [.timedOut, .notConnectedToInternet, .networkConnectionLost, .cannotConnectToHost, .cannotFindHost,
-                .dnsLookupFailed, .secureConnectionFailed, .internationalRoamingOff].contains(e.code)
+        return [
+            .timedOut, .notConnectedToInternet, .networkConnectionLost, .cannotConnectToHost, .cannotFindHost,
+            .dnsLookupFailed, .secureConnectionFailed, .internationalRoamingOff,
+        ].contains(e.code)
     }
 }

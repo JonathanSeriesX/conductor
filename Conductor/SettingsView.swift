@@ -16,7 +16,8 @@ struct SettingsView: View {
                     ForEach(Smart.allCases, id: \.rawValue) { Text($0.title).tag($0.rawValue) }
                 }
                 Toggle("Hide Done issues by default", isOn: $hideDone)
-                Text("New lists start on the Open status chip; switch any list to Any status or Done from the chip.").font(.caption).foregroundStyle(.secondary)
+                Text("New lists start on the Open status chip; switch any list to Any status or Done from the chip.")
+                    .font(.caption).foregroundStyle(.secondary)
                 if !session.hiddenPresets.isEmpty {
                     Button("Show \(session.hiddenPresets.count) Hidden Sidebar Items") { session.showHiddenPresets() }
                 }
@@ -40,9 +41,13 @@ struct SettingsView: View {
             Section("Search") {
                 Button("Clear Recent Searches") { session.clearRecentSearches() }
                 HStack {
-                    Button("Clear Cache and Spotlight Index") { DiskCache.clear(); cacheSize = 0 }
+                    Button("Clear Cache and Spotlight Index") {
+                        DiskCache.clear()
+                        cacheSize = 0
+                    }
                     Spacer()
-                    Text(ByteCountFormatter.string(fromByteCount: cacheSize, countStyle: .file)).foregroundStyle(.secondary)
+                    Text(ByteCountFormatter.string(fromByteCount: cacheSize, countStyle: .file)).foregroundStyle(
+                        .secondary)
                 }
                 .task { cacheSize = await DiskCache.size() }
                 Text("Issues you open or list are indexed for Spotlight and kept on disk so the app opens instantly.")

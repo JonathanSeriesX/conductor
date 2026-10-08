@@ -17,7 +17,7 @@ struct Project: Codable, Hashable, Sendable, Identifiable {
     let name: String
     let projectTypeKey: String?
     let avatarUrls: [String: URL]?
-    let favourite: Bool?   // Jira's own star, read-only through the public API
+    let favourite: Bool?  // Jira's own star, read-only through the public API
     var avatar: URL? { avatarUrls?["48x48"] }
 }
 
@@ -27,7 +27,7 @@ struct ProjectPage: Codable, Sendable {
 }
 
 struct StatusCategory: Codable, Hashable, Sendable {
-    let key: String   // new | indeterminate | done
+    let key: String  // new | indeterminate | done
     let name: String
 }
 
@@ -60,7 +60,10 @@ struct Sprint: Codable, Hashable, Sendable, Identifiable {
     let originBoardId: Int?
 }
 
-struct SprintPage: Codable, Sendable { let values: [Sprint]; let isLast: Bool? }
+struct SprintPage: Codable, Sendable {
+    let values: [Sprint]
+    let isLast: Bool?
+}
 
 struct Attachment: Codable, Hashable, Sendable, Identifiable {
     let id: String
@@ -134,7 +137,7 @@ struct Issue: Codable, Hashable, Sendable, Identifiable {
         let worklog: WorklogPage?
         let timetracking: TimeTracking?
         let watches: Watches?
-        let duedate: String?   // "2026-10-31", no time or zone
+        let duedate: String?  // "2026-10-31", no time or zone
         let components: [NamedRef]?
         let fixVersions: [NamedRef]?
     }
@@ -258,7 +261,10 @@ struct Worklog: Codable, Hashable, Sendable, Identifiable {
     let timeSpentSeconds: Int
 }
 
-struct WorklogPage: Codable, Hashable, Sendable { let worklogs: [Worklog]; let total: Int }
+struct WorklogPage: Codable, Hashable, Sendable {
+    let worklogs: [Worklog]
+    let total: Int
+}
 
 struct TimeTracking: Codable, Hashable, Sendable {
     let originalEstimate: String?
@@ -269,7 +275,10 @@ struct TimeTracking: Codable, Hashable, Sendable {
     let timeSpentSeconds: Int?
 }
 
-struct Watches: Codable, Hashable, Sendable { let watchCount: Int; let isWatching: Bool }
+struct Watches: Codable, Hashable, Sendable {
+    let watchCount: Int
+    let isWatching: Bool
+}
 
 // MARK: - Create / edit metadata
 
@@ -300,7 +309,10 @@ struct EditField: Codable, Hashable, Sendable {
 
 struct EditMeta: Codable, Sendable { let fields: [String: EditField] }
 
-struct CreatedIssue: Codable, Sendable { let id: String; let key: String }
+struct CreatedIssue: Codable, Sendable {
+    let id: String
+    let key: String
+}
 
 struct IssuePickerResult: Codable, Sendable {
     struct Section: Codable, Sendable { let issues: [Item] }
@@ -321,10 +333,13 @@ struct IssuePickerResult: Codable, Sendable {
 struct Board: Codable, Hashable, Sendable, Identifiable {
     let id: Int
     let name: String
-    let type: String   // scrum | kanban | simple
+    let type: String  // scrum | kanban | simple
 }
 
-struct BoardPage: Codable, Sendable { let values: [Board]; let isLast: Bool? }
+struct BoardPage: Codable, Sendable {
+    let values: [Board]
+    let isLast: Bool?
+}
 
 struct BoardConfiguration: Codable, Sendable {
     struct Column: Codable, Hashable, Sendable, Identifiable {
@@ -359,14 +374,25 @@ struct AgileIssuePage: Codable, Sendable {
 // MARK: - JQL assist
 
 struct JQLAutocomplete: Codable, Sendable {
-    struct Field: Codable, Sendable { let value: String; let displayName: String; let operators: [String]?; let auto: String? }
-    struct Function: Codable, Sendable { let value: String; let displayName: String }
+    struct Field: Codable, Sendable {
+        let value: String
+        let displayName: String
+        let operators: [String]?
+        let auto: String?
+    }
+    struct Function: Codable, Sendable {
+        let value: String
+        let displayName: String
+    }
     let visibleFieldNames: [Field]
     let visibleFunctionNames: [Function]
 }
 
 struct JQLSuggestions: Codable, Sendable {
-    struct Result: Codable, Sendable { let value: String; let displayName: String }
+    struct Result: Codable, Sendable {
+        let value: String
+        let displayName: String
+    }
     let results: [Result]
 }
 
@@ -375,5 +401,8 @@ extension JSONValue {
     init(_ value: some Encodable) throws {
         self = try JSONDecoder().decode(JSONValue.self, from: JSONEncoder().encode(value))
     }
-    var object: [String: JSONValue]? { if case .object(let o) = self { return o }; return nil }
+    var object: [String: JSONValue]? {
+        if case .object(let o) = self { return o }
+        return nil
+    }
 }
