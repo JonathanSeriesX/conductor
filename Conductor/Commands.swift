@@ -261,8 +261,16 @@ struct IssueWindow: View {
         .background(
             embedded
                 ? nil
-                : WindowEventMonitor(mask: .keyDown) {
-                    ShortcutScheme.handle($0, issue: issueActions, session: session)
+                : WindowEventMonitor(mask: .keyDown) { e in
+                    // Escape in the comment box gives the keyboard up; editors with a Cancel keep theirs.
+                    if e.keyCode == 53, e.modifierFlags.intersection(.deviceIndependentFlagsMask).isEmpty,
+                        issueActions?.isEditing != true, let tv = e.window?.firstResponder as? NSTextView,
+                        !tv.isFieldEditor
+                    {
+                        e.window?.focusList()
+                        return nil
+                    }
+                    return ShortcutScheme.handle(e, issue: issueActions, session: session)
                 }
         )
     }

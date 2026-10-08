@@ -1026,14 +1026,9 @@ struct IssueDetailView: View {
                     }
                     Spacer()
                     if w.author?.accountId == jira?.me?.accountId {
-                        Button {
-                            confirmDelete(String(localized: "Delete this work log?")) {
-                                run { try await $0.deleteWorklog(key, id: w.id) }
-                            }
-                        } label: {
-                            Label("Delete", systemImage: "trash").labelStyle(.iconOnly)
+                        DeleteButton(title: "Delete this work log?", help: "Delete work log") {
+                            run { try await $0.deleteWorklog(key, id: w.id) }
                         }
-                        .buttonStyle(.plain).foregroundStyle(.tertiary).help("Delete work log")
                     }
                 }
             }
@@ -1069,14 +1064,9 @@ struct IssueDetailView: View {
                                     Label("Edit", systemImage: "pencil").labelStyle(.iconOnly)
                                 }
                                 .buttonStyle(.plain).foregroundStyle(.tertiary).help("Edit comment")
-                                Button {
-                                    confirmDelete(String(localized: "Delete this comment?")) {
-                                        run { try await $0.deleteComment(key, id: c.id) }
-                                    }
-                                } label: {
-                                    Label("Delete", systemImage: "trash").labelStyle(.iconOnly)
+                                DeleteButton(title: "Delete this comment?", help: "Delete comment") {
+                                    run { try await $0.deleteComment(key, id: c.id) }
                                 }
-                                .buttonStyle(.plain).foregroundStyle(.tertiary).help("Delete comment")
                             }
                         }
                         if editingComment?.id == c.id {
@@ -1490,6 +1480,8 @@ struct CommentComposer: View {
             if await send(doc) {
                 text = ""
                 mentions = [:]
+                focus.wrappedValue = false
+                NSApp.keyWindow?.focusList()
             }
         }
     }
@@ -1666,6 +1658,41 @@ struct LabelsEditor: View {
         guard !l.isEmpty else { return }
         if !labels.contains(l) { labels.append(l) }
         draft = ""
+    }
+}
+
+/// A bin that asks first, right where it is: Return deletes, Escape keeps. The attachment and link menus still
+/// use the confirmation dialog, since a menu item has no place to hang a popover from.
+struct DeleteButton: View {
+    let title: LocalizedStringKey
+    let help: LocalizedStringKey
+    let perform: () -> Void
+    @State private var confirming = false
+
+    var body: some View {
+        Button {
+            confirming = true
+        } label: {
+            Label("Delete", systemImage: "trash").labelStyle(.iconOnly)
+        }
+        .buttonStyle(.plain).foregroundStyle(.tertiary).help(help)
+        .popover(isPresented: $confirming, arrowEdge: .bottom) {
+            VStack(alignment: .leading, spacing: 10) {
+                Text(title).font(.headline)
+                Text("This can't be undone.").foregroundStyle(.secondary)
+                HStack {
+                    Spacer()
+                    Button("Cancel") { confirming = false }.glassButton().keyboardShortcut(.cancelAction)
+                    Button("Delete", role: .destructive) {
+                        confirming = false
+                        perform()
+                    }
+                    .glassButton(prominent: true).keyboardShortcut(.defaultAction)
+                }
+            }
+            .padding(14)
+            .frame(width: 260)
+        }
     }
 }
 
