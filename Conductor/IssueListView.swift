@@ -212,11 +212,12 @@ final class IssueListStore {
 
 struct IssueListView: View {
     @Binding var filters: ListFilters
+    /// The previewed issue; the main window owns it so Escape can clear it from anywhere.
+    @Binding var selection: IssueTarget?
     @Environment(Session.self) private var session
     @Environment(\.openWindow) private var openWindow
     @Environment(\.layoutDirection) private var layoutDirection
     @State private var store = IssueListStore()
-    @State private var selection: IssueTarget?
     @State private var suggestions: [(display: String, completion: String)] = []
     @State private var savingFilter = false
     @State private var filterName = ""
@@ -418,40 +419,65 @@ struct IssueListView: View {
         filters.type = nil
     }
 
+    /// One filter: its chip, shown while the filter is set, and its submenu under the Filter chip while it is not.
+    private struct Chip {
+        let id: String
+        let name: String
+        let title: String
+        let active: Bool
+        let items: [ChipItem]
+    }
+
+    private var chipList: [Chip] {
+        var list: [Chip] = []
+        if session.states.count > 1 {
+            list.append(Chip(id: "account", name: String(localized: "Account"), title: filters.account.flatMap(session.state)?.title ?? String(localized: "All accounts"), active: filters.account != nil,
+                             items: [ChipItem(String(localized: "All accounts"), selected: filters.account == nil) { setAccount(nil) }, .separator]
+                                 + session.states.map { st in ChipItem(st.title, selected: filters.account == st.id) { setAccount(st.id) } }))
+        }
+        if let st = filters.account.flatMap(session.state) {
+            let projects = st.starredProjects + st.projects.filter { !st.starred.contains($0.key) }
+            list.append(Chip(id: "project", name: String(localized: "Project"), title: projects.first { $0.key == filters.project }?.name ?? filters.project ?? String(localized: "Any project"), active: filters.project != nil,
+                             items: [ChipItem(String(localized: "Any project"), selected: filters.project == nil) { filters.project = nil }, .separator]
+                                 + projects.map { p in ChipItem(p.name, selected: filters.project == p.key) { filters.project = p.key } }))
+        }
+        if let f = filters.jiraFilter {
+            list.append(Chip(id: "jiraFilter", name: f.name, title: f.name, active: true,
+                             items: [ChipItem(String(localized: "Clear filter"), selected: false) { filters.jiraFilter = nil }]))
+        }
+        list.append(Chip(id: "scope", name: String(localized: "Scope"), title: filters.scope.title, active: filters.scope != .all,
+                         items: ListFilters.Scope.allCases.map { s in ChipItem(s.title, selected: filters.scope == s) { filters.scope = s } }))
+        list.append(Chip(id: "status", name: String(localized: "Status"), title: filters.status.title, active: filters.status != .any,
+                         items: ListFilters.Status.allCases.map { s in ChipItem(s.title, selected: filters.status == s) { filters.status = s } }))
+        list.append(Chip(id: "assignee", name: String(localized: "Assignee"), title: filters.assignee.title, active: filters.assignee != .any,
+                         items: ListFilters.Assignee.allCases.map { a in ChipItem(a.title, selected: filters.assignee == a) { filters.assignee = a } }))
+        list.append(Chip(id: "reporter", name: String(localized: "Reporter"), title: filters.reporter.title, active: filters.reporter != .any,
+                         items: ListFilters.Reporter.allCases.map { r in ChipItem(r.title, selected: filters.reporter == r) { filters.reporter = r } }))
+        if let st = filters.account.flatMap(session.state) { // issue types differ per site, so the chip only makes sense inside one account
+            list.append(Chip(id: "type", name: String(localized: "Type"), title: filters.type ?? String(localized: "Any type"), active: filters.type != nil,
+                             items: [ChipItem(String(localized: "Any type"), selected: filters.type == nil) { filters.type = nil }, .separator]
+                                 + st.issueTypeNames.map { t in ChipItem(t, selected: filters.type == t) { filters.type = t } }))
+        }
+        list.append(Chip(id: "updated", name: String(localized: "Updated"), title: filters.updated.title, active: filters.updated != .any,
+                         items: ListFilters.Updated.allCases.map { u in ChipItem(u.title, selected: filters.updated == u) { filters.updated = u } }))
+        return list
+    }
+
+    /// Only the filters that are set get a chip; the rest wait under one Filter chip, so the column stays narrow.
     private var chips: some View {
-        HStack(spacing: 6) {
+        let all = chipList
+        let more = all.filter { !$0.active }
+        return HStack(spacing: 6) {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 6) {
-                    if session.states.count > 1 {
-                        FilterChip(id: "account", title: filters.account.flatMap(session.state)?.title ?? String(localized: "All accounts"), active: filters.account != nil, menus: chipMenus,
-                                   items: [ChipItem(String(localized: "All accounts"), selected: filters.account == nil) { setAccount(nil) }, .separator]
-                                       + session.states.map { st in ChipItem(st.title, selected: filters.account == st.id) { setAccount(st.id) } })
+                    ForEach(all.filter(\.active), id: \.id) { c in
+                        FilterChip(id: c.id, title: c.title, active: true, menus: chipMenus, items: c.items)
                     }
-                    if let st = filters.account.flatMap(session.state) {
-                        let projects = st.starredProjects + st.projects.filter { !st.starred.contains($0.key) }
-                        FilterChip(id: "project", title: projects.first { $0.key == filters.project }?.name ?? filters.project ?? String(localized: "Any project"), active: filters.project != nil, menus: chipMenus,
-                                   items: [ChipItem(String(localized: "Any project"), selected: filters.project == nil) { filters.project = nil }, .separator]
-                                       + projects.map { p in ChipItem(p.name, selected: filters.project == p.key) { filters.project = p.key } })
+                    if !more.isEmpty {
+                        FilterChip(id: "add", title: String(localized: "Filter"), symbol: "plus", active: false, menus: chipMenus,
+                                   items: more.map { ChipItem($0.name, children: $0.items) })
+                            .help("Add a filter")
                     }
-                    if let f = filters.jiraFilter {
-                        FilterChip(id: "jiraFilter", title: f.name, active: true, menus: chipMenus,
-                                   items: [ChipItem(String(localized: "Clear filter"), selected: false) { filters.jiraFilter = nil }])
-                    }
-                    FilterChip(id: "scope", title: filters.scope.title, active: filters.scope != .all, menus: chipMenus,
-                               items: ListFilters.Scope.allCases.map { s in ChipItem(s.title, selected: filters.scope == s) { filters.scope = s } })
-                    FilterChip(id: "status", title: filters.status.title, active: filters.status != .any, menus: chipMenus,
-                               items: ListFilters.Status.allCases.map { s in ChipItem(s.title, selected: filters.status == s) { filters.status = s } })
-                    FilterChip(id: "assignee", title: filters.assignee.title, active: filters.assignee != .any, menus: chipMenus,
-                               items: ListFilters.Assignee.allCases.map { a in ChipItem(a.title, selected: filters.assignee == a) { filters.assignee = a } })
-                    FilterChip(id: "reporter", title: filters.reporter.title, active: filters.reporter != .any, menus: chipMenus,
-                               items: ListFilters.Reporter.allCases.map { r in ChipItem(r.title, selected: filters.reporter == r) { filters.reporter = r } })
-                    if let st = filters.account.flatMap(session.state) { // issue types differ per site, so the chip only makes sense inside one account
-                        FilterChip(id: "type", title: filters.type ?? String(localized: "Any type"), active: filters.type != nil, menus: chipMenus,
-                                   items: [ChipItem(String(localized: "Any type"), selected: filters.type == nil) { filters.type = nil }, .separator]
-                                       + st.issueTypeNames.map { t in ChipItem(t, selected: filters.type == t) { filters.type = t } })
-                    }
-                    FilterChip(id: "updated", title: filters.updated.title, active: filters.updated != .any, menus: chipMenus,
-                               items: ListFilters.Updated.allCases.map { u in ChipItem(u.title, selected: filters.updated == u) { filters.updated = u } })
                     if filters != cleared {
                         Button { filters = cleared } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }
                             .buttonStyle(.plain).help("Clear filters")
@@ -635,7 +661,10 @@ struct ChipItem {
     let title: String
     let selected: Bool
     let action: (() -> Void)?
+    /// A submenu instead of an action.
+    var children: [ChipItem] = []
     init(_ title: String, selected: Bool, action: @escaping () -> Void) { self.title = title; self.selected = selected; self.action = action }
+    init(_ title: String, children: [ChipItem]) { self.title = title; selected = false; action = nil; self.children = children }
     private init() { title = ""; selected = false; action = nil }
     static var separator: ChipItem { ChipItem() }
 }
@@ -661,21 +690,26 @@ final class ChipMenuController: NSObject, NSMenuDelegate {
 
     private func open(_ id: String) {
         guard let anchor = anchors[id], let list = items[id] else { return }
-        let menu = NSMenu()
-        menu.delegate = self
         actions = [:]
-        for item in list {
-            if item.action == nil { menu.addItem(.separator()); continue }
-            let mi = NSMenuItem(title: item.title, action: #selector(fire(_:)), keyEquivalent: "")
-            mi.target = self
-            mi.state = item.selected ? .on : .off
-            actions[mi] = item.action
-            menu.addItem(mi)
-        }
+        let menu = build(list)
+        menu.delegate = self
         openID = id
         // Under the chip's leading edge: a right-to-left menu hangs from the point by its top-right corner.
         let rtl = menu.userInterfaceLayoutDirection == .rightToLeft
         menu.popUp(positioning: nil, at: NSPoint(x: rtl ? anchor.bounds.width : 0, y: -4), in: anchor)
+    }
+
+    private func build(_ list: [ChipItem]) -> NSMenu {
+        let menu = NSMenu()
+        for item in list {
+            if item.action == nil, item.children.isEmpty { menu.addItem(.separator()); continue }
+            let mi = NSMenuItem(title: item.title, action: item.action == nil ? nil : #selector(fire(_:)), keyEquivalent: "")
+            mi.target = self
+            mi.state = item.selected ? .on : .off
+            if let action = item.action { actions[mi] = action } else { mi.submenu = build(item.children) }
+            menu.addItem(mi)
+        }
+        return menu
     }
 
     @objc private func fire(_ sender: NSMenuItem) { actions[sender]?() }

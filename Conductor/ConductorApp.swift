@@ -25,7 +25,7 @@ struct ConductorApp: App {
         .windowToolbarStyle(.unified)
         // Always present a window at launch, even when restored state has none (e.g. after a test-host run).
         .defaultLaunchBehavior(.presented)
-        .defaultSize(width: 1100, height: 820)
+        .defaultSize(width: 1400, height: 820)
         .handlesExternalEvents(matching: ["*"])
         .commands {
             CommandGroup(replacing: .newItem) {
@@ -51,7 +51,7 @@ struct ConductorApp: App {
         }
 
         WindowGroup("Issue", id: "issue", for: IssueTarget.self) { $target in
-            if let target { IssueWindow(target: target).environment(session) }
+            if let target { IssueWindow(target: target).environment(session).frame(minWidth: 640, minHeight: 480) }
         }
         .defaultSize(width: 980, height: 820)
 
@@ -68,7 +68,7 @@ struct ConductorApp: App {
     }
 }
 
-/// Sidebar and the one list. Issues open in windows of their own.
+/// Sidebar, the one list and a preview of the selected issue. Double-click opens an issue in a window of its own.
 struct RootView: View {
     #if DEBUG
     @MainActor static var debugHooksRan = false
@@ -79,6 +79,7 @@ struct RootView: View {
     @AppStorage("defaultSource") private var defaultSource = "assigned"
     @SceneStorage("filters") private var storedFilters = ""
     @State private var filters = ListFilters()
+    @State private var selection: IssueTarget?
     @State private var restored = false
 
     private var currentProject: (Project, AccountState)? {
@@ -94,9 +95,19 @@ struct RootView: View {
             } else if session.isSignedIn {
                 NavigationSplitView {
                     SidebarView(selection: Binding(get: { session.preset(matching: filters)?.filters ?? filters }, set: { if let f = $0 { filters = f } }))
+                } content: {
+                    IssueListView(filters: $filters, selection: $selection)
+                        .navigationSplitViewColumnWidth(min: 340, ideal: 420)
                 } detail: {
-                    IssueListView(filters: $filters)
+                    if let selection {
+                        IssueWindow(target: selection, embedded: true).id(selection)
+                    } else {
+                        ContentUnavailableView("No Issue Selected", systemImage: "doc.text")
+                            .frame(maxWidth: .infinity, maxHeight: .infinity).background(Backdrop())
+                    }
                 }
+                // Escape empties the preview column; a text field or search that is editing takes the key first.
+                .onExitCommand { selection = nil }
                 .sheet(isPresented: Bindable(session).createIssueRequested) {
                     CreateIssueView(defaultProject: currentProject) { openWindow(id: "issue", value: $0) }
                 }
@@ -113,6 +124,7 @@ struct RootView: View {
         .onChange(of: session.states.count) { restoreOnce() }
         .onChange(of: session.isRestoring) { restoreOnce() }
         .onChange(of: filters) { _, new in
+            selection = nil   // another list: the preview would otherwise show an issue that is not in it
             storedFilters = (try? JSONEncoder().encode(new)).flatMap { String(data: $0, encoding: .utf8) } ?? ""
             session.lastFilters = new
         }
