@@ -140,6 +140,8 @@ struct IssueDetailView: View {
     var open: (IssueTarget) -> Void
     /// Set by the window when there is an issue to go back to.
     var back: (() -> Void)? = nil
+    /// In the main window's preview column rather than a window of its own.
+    var embedded = false
     @Environment(Session.self) private var session
     @Environment(\.jira) private var jira
     @Environment(\.openWindow) private var openWindow
@@ -185,6 +187,8 @@ struct IssueDetailView: View {
     @FocusState private var editCommentFocused: Bool
     @FocusState private var commentFocused: Bool
     @State private var commentRequest = 0
+    /// Narrower than a full window (the main window's preview column): metadata goes under the body instead of beside it.
+    @State private var narrow = false
 
     var body: some View {
         Group {
@@ -240,32 +244,24 @@ struct IssueDetailView: View {
                 VStack(alignment: .leading, spacing: 16) {
                     header(issue)
                     GlassGroup(spacing: 16) {
-                        HStack(alignment: .top, spacing: 16) {
-                            VStack(alignment: .leading, spacing: 16) {
-                                descriptionCard(issue)
-                                if let atts = issue.fields.attachment, !atts.isEmpty {
-                                    GlassCard(title: "Attachments") { attachments(atts) }
+                        if narrow {
+                            cards(issue)
+                            metadata(issue)
+                            GlassCard(title: "Comments") { comments(issue) }.id("comments")
+                        } else {
+                            HStack(alignment: .top, spacing: 16) {
+                                VStack(alignment: .leading, spacing: 16) {
+                                    cards(issue)
+                                    GlassCard(title: "Comments") { comments(issue) }.id("comments")
                                 }
-                                if let subs = issue.fields.subtasks, !subs.isEmpty {
-                                    GlassCard(title: "Subtasks") { refs(subs) }
-                                }
-                                if !store.children.isEmpty {
-                                    GlassCard(title: "Child Issues") { children(store.children) }
-                                }
-                                if let links = issue.fields.issuelinks, !links.isEmpty {
-                                    GlassCard(title: "Linked Issues") { linksList(links) }
-                                }
-                                if let wl = issue.fields.worklog, !wl.worklogs.isEmpty {
-                                    GlassCard(title: "Work Log") { worklogs(wl.worklogs) }
-                                }
-                                GlassCard(title: "Comments") { comments(issue) }.id("comments")
+                                metadata(issue).frame(width: 250)
                             }
-                            metadata(issue).frame(width: 250)
                         }
                     }
                 }
                 .padding(20)
             }
+            .onGeometryChange(for: Bool.self) { $0.size.width < 800 } action: { narrow = $0 }
             // The toolbar has no background, so blur what scrolls under it instead of letting buttons sit on text.
             .softScrollEdge()
             .onChange(of: commentRequest) {
@@ -281,6 +277,26 @@ struct IssueDetailView: View {
         }
         .environment(\.adfAttachments, issue.fields.attachment ?? [])
         .environment(\.previewURL, $store.previewURL)
+    }
+
+    /// Everything between the description and the comments.
+    @ViewBuilder private func cards(_ issue: Issue) -> some View {
+        descriptionCard(issue)
+        if let atts = issue.fields.attachment, !atts.isEmpty {
+            GlassCard(title: "Attachments") { attachments(atts) }
+        }
+        if let subs = issue.fields.subtasks, !subs.isEmpty {
+            GlassCard(title: "Subtasks") { refs(subs) }
+        }
+        if !store.children.isEmpty {
+            GlassCard(title: "Child Issues") { children(store.children) }
+        }
+        if let links = issue.fields.issuelinks, !links.isEmpty {
+            GlassCard(title: "Linked Issues") { linksList(links) }
+        }
+        if let wl = issue.fields.worklog, !wl.worklogs.isEmpty {
+            GlassCard(title: "Work Log") { worklogs(wl.worklogs) }
+        }
     }
 
     private func header(_ issue: Issue) -> some View {
@@ -760,14 +776,16 @@ struct IssueDetailView: View {
     // MARK: Toolbar
 
     @ToolbarContentBuilder private var toolbar: some CustomizableToolbarContent {
-        ToolbarItem(id: "back", placement: .navigation) {
+        // A split view puts every column's .navigation items at the window's leading edge, over the list; the
+        // preview column's belong above the preview.
+        ToolbarItem(id: "back", placement: embedded ? .automatic : .navigation) {
             if let back {
                 Button(action: back) { Label("Back", systemImage: "chevron.backward") }
                     .help("Back to the previous issue (⌘[)")
                     .keyboardShortcut("[", modifiers: .command)
             }
         }
-        ToolbarItem(id: "title", placement: .navigation) {
+        ToolbarItem(id: "title", placement: embedded ? .automatic : .navigation) {
             // The list row's first line as the title: type icon, then the key in the same grey monospaced face.
             HStack(spacing: 8) {
                 RemoteImage(url: store.issue?.fields.issuetype.iconUrl, placeholder: "circle").frame(width: 16, height: 16)

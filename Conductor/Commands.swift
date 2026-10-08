@@ -114,8 +114,10 @@ struct AppCommands: Commands {
 }
 
 /// An issue in a window of its own, so two can sit side by side. Links inside it navigate in place.
+/// An issue with its own back trail: the content of an issue window and of the main window's preview column.
 struct IssueWindow: View {
     @State var target: IssueTarget
+    var embedded = false
     /// Issues this window showed before the current one, so a jump to a subtask or link can come back.
     @State private var trail: [IssueTarget] = []
     @Environment(Session.self) private var session
@@ -125,7 +127,7 @@ struct IssueWindow: View {
         Group {
             if let st = session.state(target.accountID) {
                 IssueDetailView(target: target, open: { trail.append(target); target = $0 },
-                                back: trail.isEmpty ? nil : { target = trail.removeLast() })
+                                back: trail.isEmpty ? nil : { target = trail.removeLast() }, embedded: embedded)
                     .environment(\.jira, st)
                     .id(target)
             } else if session.isRestoring {
@@ -145,7 +147,6 @@ struct IssueWindow: View {
         }
         .writingToolsBehavior(.disabled)
         .background(WindowCascader())
-        .frame(minWidth: 640, minHeight: 480)
         .onChange(of: target, initial: true) { session.recordView(target) }
     }
 }
