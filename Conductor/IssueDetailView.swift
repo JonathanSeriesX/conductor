@@ -131,6 +131,9 @@ struct IssueDetailView: View {
     @State private var descriptionMentions: [String: String] = [:]
     /// What the editors opened with, so an untouched draft is never written back (the Markdown trip loses panels and media).
     @State private var descriptionOriginal = ""
+    @State private var summarySelection: TextSelection?
+    /// When a link in the description was last clicked, so that click does not also start editing.
+    @State private var linkOpened: Date?
     @State private var editOriginal = ""
     @State private var editingComment: Comment?
     @State private var editDraft = ""
@@ -253,7 +256,7 @@ struct IssueDetailView: View {
         VStack(alignment: .leading, spacing: 8) {
             // The key and type icon are the window title; the parent is a row in the sidebar.
             if summaryDraft != nil {
-                TextField("Summary", text: Binding($summaryDraft, or: ""), axis: .vertical)
+                TextField("Summary", text: Binding($summaryDraft, or: ""), selection: $summarySelection, axis: .vertical)
                     .font(.system(.largeTitle, design: .rounded, weight: .semibold))
                     .textFieldStyle(.plain)
                     .lineLimit(1...4)
@@ -264,14 +267,22 @@ struct IssueDetailView: View {
                     .background(.quaternary.opacity(0.4), in: .rect(cornerRadius: 10))
                     .padding(.horizontal, -8)
                     .task { focusSoon($summaryFocused) }
+                    .onChange(of: summaryFocused) { _, on in
+                        // Focus selects everything a moment after it lands; the caret goes to the end instead, where typing continues.
+                        guard on else { return }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                            if let d = summaryDraft { summarySelection = TextSelection(insertionPoint: d.endIndex) }
+                        }
+                    }
                 Text("↩ to save · esc to cancel").font(.caption2).foregroundStyle(.tertiary)
             } else {
-                // One click edits, as on the web. No pencil: the hover cursor says it.
+                // Selectable, and a click (not a drag) edits, as on the web. A simultaneous gesture, because
+                // selectable text keeps plain taps for itself.
                 Text(issue.fields.summary)
                     .font(.system(.largeTitle, design: .rounded, weight: .semibold))
+                    .textSelection(.enabled)
                     .contentShape(.rect)
-                    .onTapGesture { if store.canEdit("summary") { summaryDraft = issue.fields.summary } }
-                    .help(store.canEdit("summary") ? "Click to rename (⌘E)" : "")
+                    .simultaneousGesture(TapGesture().onEnded { if store.canEdit("summary") { summaryDraft = issue.fields.summary } })
             }
         }
     }
@@ -294,11 +305,19 @@ struct IssueDetailView: View {
                         .keyboardShortcut(descriptionFocused ? KeyboardShortcut(.return, modifiers: .command) : nil)
                 }
             } else if let d = issue.fields.description, !(d.content ?? []).isEmpty {
-                ADFView(node: d, selectable: !store.canEdit("description"))
+                ADFView(node: d)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .contentShape(.rect)
-                    .onTapGesture { if store.canEdit("description") { beginDescriptionEdit(issue) } }
-                    .help(store.canEdit("description") ? "Click to edit" : "")
+                    // A link click runs through openURL first; the tap that follows must not open the editor.
+                    .environment(\.openURL, OpenURLAction { url in linkOpened = .now; return .systemAction(url) })
+                    .simultaneousGesture(TapGesture().onEnded {
+                        guard store.canEdit("description") else { return }
+                        Task {
+                            try? await Task.sleep(for: .milliseconds(80))
+                            if let t = linkOpened, t.timeIntervalSinceNow > -0.5 { return }
+                            beginDescriptionEdit(issue)
+                        }
+                    })
             } else if store.isPartial {
                 ProgressView().controlSize(.small)
             } else if store.canEdit("description") {
@@ -724,7 +743,6 @@ struct IssueDetailView: View {
                     .accessibilityLabel(store.issue?.fields.issuetype.name ?? "Issue type")
                 Text(key).font(.body.monospaced()).foregroundStyle(.secondary)
             }
-            .help(store.issue?.fields.issuetype.name ?? "")
             .padding(.leading, 4)
         }
         .sharedBackgroundVisibility(.hidden)
