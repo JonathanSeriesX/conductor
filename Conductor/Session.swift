@@ -629,9 +629,8 @@ final class Session {
         var target = url
         if url.scheme == "conductor" {
             if url.host() == "issue" {
-                if let st = states.first {
-                    pendingOpen = IssueTarget(accountID: st.id, key: url.lastPathComponent.uppercased())
-                }
+                let key = url.lastPathComponent.uppercased()
+                if let st = state(forKey: key) { pendingOpen = IssueTarget(accountID: st.id, key: key) }
                 return
             }
             guard
@@ -646,6 +645,12 @@ final class Session {
             return
         }
         pendingOpen = IssueTarget(accountID: st.id, key: key)
+    }
+
+    /// The account whose projects include the key's ("ES-123" → ES), else the first one.
+    func state(forKey key: String) -> AccountState? {
+        let project = key.prefix { $0 != "-" }
+        return states.first { st in st.projects.contains { $0.key == project } } ?? states.first
     }
 
     /// Spotlight results carry "host|KEY".

@@ -767,24 +767,8 @@ struct IssueRow: View {
                     }
                     .font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
-                HStack(alignment: .top, spacing: 6) {
-                    Text(issue.fields.summary).lineLimit(2).strikethrough(issue.isDone).foregroundStyle(
-                        issue.isDone ? .secondary : .primary)
-                    if let toggle {
-                        Spacer(minLength: 0)
-                        Button(action: toggle) {
-                            Label(
-                                expanded ? "Hide subtasks" : "Show subtasks",
-                                systemImage: expanded ? "chevron.down" : "chevron.forward"
-                            )
-                            .labelStyle(.iconOnly)
-                            .font(.caption.weight(.semibold)).foregroundStyle(.secondary).frame(width: 22, height: 22)
-                            .contentShape(.rect)
-                        }
-                        .buttonStyle(.plain)
-                        .help(expanded ? "Hide subtasks" : "Show \(folded) subtasks from this list")
-                    }
-                }
+                Text(issue.fields.summary).lineLimit(2).strikethrough(issue.isDone).foregroundStyle(
+                    issue.isDone ? .secondary : .primary)
                 HStack(spacing: 8) {
                     Text(issue.key).font(.caption.monospaced()).foregroundStyle(.secondary)
                     if let site { SiteBadge(name: site.name, color: site.color) }
@@ -792,6 +776,20 @@ struct IssueRow: View {
                     if let p = issue.subtaskProgress {
                         Label("\(p.done) of \(p.total) done", systemImage: "checklist")
                             .font(.caption).foregroundStyle(p.done == p.total ? .green : .secondary).lineLimit(1)
+                            .layoutPriority(1)  // the spacer gives way before the count is cut
+                    }
+                    if let toggle {
+                        Button(action: toggle) {
+                            Label(
+                                expanded ? "Hide subtasks" : "Show subtasks",
+                                systemImage: expanded ? "chevron.down" : "chevron.forward"
+                            )
+                            .labelStyle(.iconOnly)
+                            .font(.caption.weight(.semibold)).foregroundStyle(.secondary).frame(width: 18, height: 18)
+                            .contentShape(.rect)
+                        }
+                        .buttonStyle(.plain)
+                        .help(expanded ? "Hide subtasks" : "Show \(folded) subtasks from this list")
                     }
                     Spacer(minLength: 0)
                     if let p = issue.fields.priority { PriorityIcon(priority: p) }
@@ -919,6 +917,7 @@ final class ChipMenuController: NSObject, NSMenuDelegate {
         actions = [:]
         let menu = build(list)
         menu.delegate = self
+        menu.identifier = NSUserInterfaceItemIdentifier("chip")  // MenuClickThrough leaves these to menuDidClose
         openID = id
         // Under the chip's leading edge: a right-to-left menu hangs from the point by its top-right corner.
         let rtl = menu.userInterfaceLayoutDirection == .rightToLeft

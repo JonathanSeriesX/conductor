@@ -371,26 +371,26 @@ struct PeoplePicker: View {
     var body: some View {
         VStack(spacing: 8) {
             TextField("Search people", text: $query).textFieldStyle(.roundedBorder)
-            List {
-                if let me = jira?.me, me.accountId != current?.accountId {
-                    Button {
-                        onPick(me)
-                    } label: {
-                        Label("Assign to me", systemImage: "person.fill.checkmark")
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    if let me = jira?.me, me.accountId != current?.accountId {
+                        row {
+                            onPick(me)
+                        } label: {
+                            Label("Assign to me", systemImage: "person.fill.checkmark")
+                        }
                     }
-                }
-                if current != nil {
-                    Button {
-                        onPick(nil)
-                    } label: {
-                        Label("Unassigned", systemImage: "person.slash")
+                    if current != nil {
+                        row {
+                            onPick(nil)
+                        } label: {
+                            Label("Unassigned", systemImage: "person.slash")
+                        }
                     }
-                }
-                ForEach(users) { u in
-                    Button {
-                        onPick(u)
-                    } label: {
-                        HStack {
+                    ForEach(users) { u in
+                        row {
+                            onPick(u)
+                        } label: {
                             Avatar(user: u, size: 20)
                             Text(u.displayName)
                             Spacer()
@@ -401,12 +401,10 @@ struct PeoplePicker: View {
                     }
                 }
             }
-            .buttonStyle(.plain)
-            .listStyle(.plain)
-            .scrollContentBackground(.hidden)  // the list's own white would hide the popover material
+            .frame(maxHeight: 320)
         }
         .padding(10)
-        .frame(width: 280, height: 320)
+        .frame(width: 280)
         .task(id: query) {
             try? await Task.sleep(for: .milliseconds(250))
             guard !Task.isCancelled, let c = jira?.client else { return }
@@ -415,5 +413,16 @@ struct PeoplePicker: View {
             case .project(let key): users = (try? await c.assignableUsers(project: key, query: query)) ?? []
             }
         }
+    }
+
+    /// One pick, the full width of the popover, with no list box around it.
+    private func row<V: View>(_ action: @escaping () -> Void, @ViewBuilder label: () -> V) -> some View {
+        Button(action: action) {
+            HStack(spacing: 8) { label() }
+                .padding(.horizontal, 8).padding(.vertical, 6)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
     }
 }

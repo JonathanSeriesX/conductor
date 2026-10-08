@@ -251,6 +251,41 @@ struct WindowEventMonitor: NSViewRepresentable {
     }
 }
 
+/// AppKit swallows the click that dismisses a menu. Here it goes on to whatever it landed on, so a right-click
+/// on a project followed by a click on the disclosure beside it needs no third click.
+@MainActor enum MenuClickThrough {
+    static func install() {
+        NotificationCenter.default.addObserver(forName: NSMenu.didEndTrackingNotification, object: nil, queue: .main) {
+            note in
+            // Chip menus hop to the chip under the mouse on their own (ChipMenuController).
+            let chip = (note.object as? NSMenu)?.identifier?.rawValue == "chip"
+            MainActor.assumeIsolated {
+                // Tracking ends on the mouse-up of the click that closed the menu. A click on an item ends
+                // over the menu's own window; one outside ends over whatever is under the mouse.
+                guard !chip, let e = NSApp.currentEvent, e.type == .leftMouseUp || e.type == .rightMouseUp
+                else { return }
+                let at = NSEvent.mouseLocation
+                let top = NSWindow.windowNumber(at: at, belowWindowWithWindowNumber: 0)
+                guard let window = NSApp.window(withWindowNumber: top), !window.className.contains("Menu")
+                else { return }
+                let down: NSEvent.EventType = e.type == .leftMouseUp ? .leftMouseDown : .rightMouseDown
+                let local = window.convertPoint(fromScreen: at)
+                DispatchQueue.main.async {
+                    for type in [down, e.type] {
+                        guard
+                            let replay = NSEvent.mouseEvent(
+                                with: type, location: local, modifierFlags: e.modifierFlags,
+                                timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: top, context: nil,
+                                eventNumber: 0, clickCount: 1, pressure: 1)
+                        else { continue }
+                        window.sendEvent(replay)
+                    }
+                }
+            }
+        }
+    }
+}
+
 extension Binding where Value: Sendable {
     /// `Binding($optional)` force-unwraps on every read, and SwiftUI reads a child's bindings once more after
     /// the value went nil (Save sets the draft to nil while the editor is still on screen), which crashed.

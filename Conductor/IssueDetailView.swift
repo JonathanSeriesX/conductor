@@ -311,7 +311,8 @@ struct IssueDetailView: View {
                         }
                     }
                 }
-                .padding(20)
+                .padding(.horizontal, 20).padding(.bottom, 20)
+                .padding(.top, embedded ? 10 : 20)  // the crumb sits on the line of the list's chips
             }
             // The toolbar has no background, so blur what scrolls under it instead of letting buttons sit on text.
             .softScrollEdge()
