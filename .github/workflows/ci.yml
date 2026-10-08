@@ -6,11 +6,9 @@ on:
 
 jobs:
   build-and-test:
-    runs-on: macos-26
+    runs-on: xcode-27
     steps:
-      - uses: actions/checkout@v4
-      - name: Select Xcode
-        run: sudo xcode-select -s /Applications/Xcode_26.0.app || ls /Applications | grep Xcode
+      - uses: actions/checkout@v7
       - name: Build and test
         run: |
           xcodebuild -project Conductor.xcodeproj -scheme Conductor -destination 'platform=macOS' \

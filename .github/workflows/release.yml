@@ -12,15 +12,13 @@ on:
 #   ASC_ISSUER_ID              the issuer ID shown above the keys list
 jobs:
   release:
-    runs-on: macos-26
+    runs-on: xcode-27
     permissions:
       contents: write
     env:
       APP: build/Build/Products/Release/Conductor.app
     steps:
-      - uses: actions/checkout@v4
-      - name: Select Xcode
-        run: sudo xcode-select -s /Applications/Xcode_26.0.app || ls /Applications | grep Xcode
+      - uses: actions/checkout@v7
       - name: Build
         run: |
           xcodebuild -project Conductor.xcodeproj -scheme Conductor -configuration Release \
@@ -65,7 +63,6 @@ jobs:
       - name: Package
         run: ditto -c -k --keepParent "$APP" Conductor-${GITHUB_REF_NAME#v}.zip
       - name: Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: Conductor-*.zip
-          generate_release_notes: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" Conductor-*.zip --generate-notes
