@@ -251,6 +251,36 @@ struct WindowEventMonitor: NSViewRepresentable {
     }
 }
 
+extension NSWindow {
+    /// Puts the keyboard on the issue list (the window's table), or on nothing when there is none.
+    func focusList() {
+        func table(in v: NSView) -> NSTableView? {
+            if let t = v as? NSTableView { return t }
+            for s in v.subviews { if let t = table(in: s) { return t } }
+            return nil
+        }
+        makeFirstResponder(contentView.flatMap(table))
+    }
+}
+
+/// A closed popover leaves the keyboard on the window's first key view, the search field, when it had a text
+/// field of its own. The list is where it came from.
+@MainActor enum PopoverFocusReturn {
+    static func install() {
+        NotificationCenter.default.addObserver(forName: NSPopover.didCloseNotification, object: nil, queue: .main) {
+            _ in
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let w = NSApp.keyWindow, let tv = w.firstResponder as? NSTextView, tv.isFieldEditor else {
+                        return
+                    }
+                    w.focusList()
+                }
+            }
+        }
+    }
+}
+
 /// AppKit swallows the click that dismisses a menu. Here it goes on to whatever it landed on, so a right-click
 /// on a project followed by a click on the disclosure beside it needs no third click.
 @MainActor enum MenuClickThrough {

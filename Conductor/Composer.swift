@@ -194,6 +194,12 @@ struct Composer: View {
             }
             .padding(6)
             .background(.quaternary.opacity(0.4), in: .rect(cornerRadius: 10))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .strokeBorder(Color.accentColor.opacity(isFocused ? 0.5 : 0), lineWidth: 3)
+                    .padding(-1.5)
+            )
+            .animation(.easeOut(duration: 0.1), value: isFocused)
             .overlay(alignment: .topLeading) {
                 if text.isEmpty {
                     Text(placeholder).foregroundStyle(.tertiary)
