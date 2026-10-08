@@ -22,7 +22,6 @@ struct Composer: View {
     @Environment(\.jira) private var jira
     @State private var candidates: [JiraUser] = []
     @State private var query = ""
-    @State private var selection: TextSelection?
     @State private var preview = false
     @State private var uploading = false
     @State private var error: String?
@@ -130,10 +129,31 @@ struct Composer: View {
         .disabled(preview)
     }
 
+    /// The editor's text view while it has the focus. The selection is read and set on it directly: a SwiftUI
+    /// selection binding re-applied its stale value whenever the page re-rendered mid-typing, reversing the text.
+    private var textView: NSTextView? {
+        guard let tv = NSApp.keyWindow?.firstResponder as? NSTextView, !tv.isFieldEditor, tv.string == text else {
+            return nil
+        }
+        return tv
+    }
+
     /// The selected range, or the caret, or the end of the text when the editor never had focus.
     private var range: Range<String.Index> {
-        if case .selection(let r) = selection?.indices, r.upperBound <= text.endIndex { return r }
+        if let tv = textView, let r = Range(tv.selectedRange(), in: text) { return r }
         return text.endIndex..<text.endIndex
+    }
+
+    /// Selects `r` once the text view shows `newText`, which SwiftUI hands it a moment after the binding changed.
+    private func select(_ r: Range<String.Index>, in newText: String, attempt: Int = 0) {
+        focusEditor()
+        DispatchQueue.main.asyncAfter(deadline: .now() + (attempt == 0 ? 0 : 0.05)) {
+            guard let tv = NSApp.keyWindow?.firstResponder as? NSTextView, tv.string == newText else {
+                if attempt < 10 { select(r, in: newText, attempt: attempt + 1) }
+                return
+            }
+            tv.setSelectedRange(NSRange(r, in: newText))
+        }
     }
 
     /// Wraps the selection in `left`/`right`, or inserts both with the caret between them.
@@ -143,8 +163,7 @@ struct Composer: View {
         let inner = String(text[r])
         text.replaceSubrange(r, with: left + inner + right)
         let from = text.index(text.startIndex, offsetBy: start + left.count)
-        selection = TextSelection(range: from..<text.index(from, offsetBy: inner.count))
-        focusEditor()
+        select(from..<text.index(from, offsetBy: inner.count), in: text)
     }
 
     /// Puts `marker` at the start of the line holding the caret.
@@ -154,16 +173,14 @@ struct Composer: View {
         let lineStart = text[..<r.lowerBound].lastIndex(of: "\n").map { text.index(after: $0) } ?? text.startIndex
         text.insert(contentsOf: marker, at: lineStart)
         let at = text.index(text.startIndex, offsetBy: caret + marker.count)
-        selection = TextSelection(insertionPoint: at)
-        focusEditor()
+        select(at..<at, in: text)
     }
 
     private func focusEditor() {
         if let focus { focus.wrappedValue = true } else { ownFocus = true }
     }
 
-    /// The character under `point`, asked of the text view once AppKit has made it first responder, then set
-    /// through the selection binding: SwiftUI owns the selection and would undo a direct change.
+    /// The character under `point`, asked of the text view once AppKit has made it first responder.
     private func placeCaret(at point: CGPoint, attempt: Int = 0) {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
             guard let tv = NSApp.keyWindow?.firstResponder as? NSTextView, tv.string == text else {
@@ -173,7 +190,7 @@ struct Composer: View {
             // The text view is flipped, so the rendered text's top-left offset maps straight onto it.
             let local = NSPoint(x: point.x + tv.textContainerInset.width, y: point.y + tv.textContainerInset.height)
             let utf16 = min(tv.characterIndexForInsertion(at: local), text.utf16.count)
-            selection = TextSelection(insertionPoint: text.utf16.index(text.utf16.startIndex, offsetBy: utf16))
+            tv.setSelectedRange(NSRange(location: utf16, length: 0))
         }
     }
 
@@ -187,7 +204,7 @@ struct Composer: View {
             .fixedSize(horizontal: false, vertical: true)  // ignore whatever height the page proposes
             .hidden()
             .overlay {
-                TextEditor(text: $text, selection: $selection)
+                TextEditor(text: $text)
                     .focused(focus ?? $ownFocus)
                     .font(.body)
                     .scrollContentBackground(.hidden)
@@ -269,11 +286,11 @@ struct Composer: View {
         let inserted = "@\(user.displayName) "
         let start = text.distance(from: text.startIndex, to: r.lowerBound)
         text.replaceSubrange(r, with: inserted)
-        // The caret stays where the "@" was unless it is moved past the name.
-        selection = TextSelection(insertionPoint: text.index(text.startIndex, offsetBy: start + inserted.count))
         candidates = []
         query = ""
-        focusEditor()
+        // The caret goes past the name.
+        let at = text.index(text.startIndex, offsetBy: start + inserted.count)
+        select(at..<at, in: text)
     }
 }
 
