@@ -280,7 +280,7 @@ struct IssueDetailView: View {
             #endif
         }
         .environment(\.adfAttachments, issue.fields.attachment ?? [])
-        .environment(\.previewAttachment) { preview($0) }
+        .environment(\.previewURL, $store.previewURL)
     }
 
     private func header(_ issue: Issue) -> some View {
