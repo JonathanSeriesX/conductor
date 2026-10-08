@@ -30,6 +30,23 @@ enum DiskCache {
         return try? JSONDecoder().decode(T.self, from: data)
     }
 
+    /// The first pages of the lists saved most recently, by file name: the sidebar's lists (refreshed every launch)
+    /// and whatever was open last, so the window can draw them in its first frame.
+    static func recentLists(account: Account, limit: Int = 12) -> [String: [Issue]] {
+        let folder = file(account, "x").deletingLastPathComponent()
+        let files = (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
+        let recent = files.filter { $0.lastPathComponent.hasPrefix("list-") }
+            .map { ($0, (try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast) }
+            .sorted { $0.1 > $1.1 }.prefix(limit)
+        var out: [String: [Issue]] = [:]
+        for (url, _) in recent {
+            if let data = try? Data(contentsOf: url), let issues = try? JSONDecoder().decode([Issue].self, from: data) {
+                out[url.deletingPathExtension().lastPathComponent] = issues
+            }
+        }
+        return out
+    }
+
     /// Same as `load`, but the read and decode happen off the main thread.
     static func loadAsync<T: Decodable & Sendable>(_ type: T.Type = T.self, account: Account, name: String) async -> T? {
         await Task.detached(priority: .userInitiated) { load(T.self, account: account, name: name) }.value
@@ -101,19 +118,22 @@ enum DiskCache {
 
 /// Spotlight knows every issue the app has seen: search "ES-123" or a summary from anywhere and land in Conductor.
 enum Spotlight {
+    /// Builds and submits the items on a background thread: a list fetch or the warm pass hands over hundreds.
     static func index(_ issues: [Issue], host: String) {
         guard !issues.isEmpty else { return }
-        let items = issues.map { issue -> CSSearchableItem in
-            let a = CSSearchableItemAttributeSet(contentType: .text)
-            a.title = "\(issue.key)  \(issue.fields.summary)"
-            a.contentDescription = [issue.fields.status.name, issue.fields.assignee?.displayName, issue.fields.project?.name].compactMap { $0 }.joined(separator: " · ")
-            a.keywords = [issue.key, issue.fields.project?.key ?? "", issue.fields.issuetype.name]
-            a.identifier = issue.key
-            let item = CSSearchableItem(uniqueIdentifier: "\(host)|\(issue.key)", domainIdentifier: host, attributeSet: a)
-            item.expirationDate = .distantFuture
-            return item
+        Task.detached(priority: .utility) {
+            let items = issues.map { issue -> CSSearchableItem in
+                let a = CSSearchableItemAttributeSet(contentType: .text)
+                a.title = "\(issue.key)  \(issue.fields.summary)"
+                a.contentDescription = [issue.fields.status.name, issue.fields.assignee?.displayName, issue.fields.project?.name].compactMap { $0 }.joined(separator: " · ")
+                a.keywords = [issue.key, issue.fields.project?.key ?? "", issue.fields.issuetype.name]
+                a.identifier = issue.key
+                let item = CSSearchableItem(uniqueIdentifier: "\(host)|\(issue.key)", domainIdentifier: host, attributeSet: a)
+                item.expirationDate = .distantFuture
+                return item
+            }
+            try? await CSSearchableIndex.default().indexSearchableItems(items)
         }
-        CSSearchableIndex.default().indexSearchableItems(items)
     }
 
     static func forget(host: String) {
