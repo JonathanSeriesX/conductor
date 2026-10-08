@@ -3,15 +3,20 @@ on:
   push:
     tags: ["v*"]
 
-# Builds a Release .app and attaches it zipped to a GitHub release.
-# Ad-hoc signed unless the Developer ID secrets below are set, in which case it is
-# signed with Developer ID, notarized and stapled.
-#   MAC_CERT_P12 (base64), MAC_CERT_PASSWORD, APPLE_ID, APPLE_TEAM_ID, APPLE_APP_PASSWORD
+# Builds a Release .app, signs it with Developer ID, notarizes and staples it, and attaches it zipped to a
+# GitHub release. Repository secrets (Settings > Secrets and variables > Actions):
+#   DEVELOPER_ID_P12           base64 of the "Developer ID Application" certificate + private key (.p12)
+#   DEVELOPER_ID_P12_PASSWORD  the .p12's export password
+#   ASC_KEY_P8                 contents of the App Store Connect API key, AuthKey_<id>.p8
+#   ASC_KEY_ID                 that key's ID
+#   ASC_ISSUER_ID              the issuer ID shown above the keys list
 jobs:
   release:
     runs-on: macos-26
     permissions:
       contents: write
+    env:
+      APP: build/Build/Products/Release/Conductor.app
     steps:
       - uses: actions/checkout@v4
       - name: Select Xcode
@@ -22,28 +27,43 @@ jobs:
             -derivedDataPath build CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= \
             CODE_SIGN_ENTITLEMENTS=Conductor/Conductor.entitlements CODE_SIGNING_ALLOWED=YES \
             MARKETING_VERSION=${GITHUB_REF_NAME#v} build
-      - name: Sign and notarize
-        if: ${{ env.MAC_CERT_P12 != '' }}
+      - name: Import the Developer ID certificate
         env:
-          MAC_CERT_P12: ${{ secrets.MAC_CERT_P12 }}
-          MAC_CERT_PASSWORD: ${{ secrets.MAC_CERT_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          DEVELOPER_ID_P12: ${{ secrets.DEVELOPER_ID_P12 }}
+          DEVELOPER_ID_P12_PASSWORD: ${{ secrets.DEVELOPER_ID_P12_PASSWORD }}
         run: |
-          echo "$MAC_CERT_P12" | base64 --decode > cert.p12
-          security create-keychain -p ci build.keychain
-          security default-keychain -s build.keychain
-          security unlock-keychain -p ci build.keychain
-          security import cert.p12 -k build.keychain -P "$MAC_CERT_PASSWORD" -T /usr/bin/codesign
-          security set-key-partition-list -S apple-tool:,apple: -s -k ci build.keychain
-          APP=build/Build/Products/Release/Conductor.app
-          codesign --force --deep --options runtime --timestamp --sign "Developer ID Application" "$APP"
-          ditto -c -k --keepParent "$APP" Conductor.zip
-          xcrun notarytool submit Conductor.zip --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" --wait
+          KEYCHAIN=$RUNNER_TEMP/signing.keychain-db
+          PASS=$(openssl rand -hex 16)
+          echo "$DEVELOPER_ID_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$PASS" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$PASS" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$DEVELOPER_ID_P12_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$PASS" "$KEYCHAIN" > /dev/null
+          security list-keychains -d user -s "$KEYCHAIN"
+      # The app has no nested code, so one codesign covers it. Re-signing drops the build's entitlements,
+      # hence --entitlements (Conductor.entitlements: no keychain group, which would need a provisioning profile).
+      - name: Sign
+        run: |
+          codesign --force --options runtime --timestamp --entitlements Conductor/Conductor.entitlements \
+            --sign "Developer ID Application" "$APP"
+          codesign --verify --strict --verbose=2 "$APP"
+      - name: Notarize and staple
+        env:
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          echo "$ASC_KEY_P8" > "$RUNNER_TEMP/key.p8"
+          AUTH=(--key "$RUNNER_TEMP/key.p8" --key-id "$ASC_KEY_ID" --issuer "$ASC_ISSUER_ID")
+          ditto -c -k --keepParent "$APP" "$RUNNER_TEMP/upload.zip"
+          ID=$(xcrun notarytool submit "$RUNNER_TEMP/upload.zip" "${AUTH[@]}" --wait --output-format json | plutil -extract id raw -)
+          # The log names every problem when Apple rejects the build; stapling then fails the job.
+          xcrun notarytool log "$ID" "${AUTH[@]}"
           xcrun stapler staple "$APP"
+          spctl --assess --type execute --verbose=2 "$APP"
       - name: Package
-        run: ditto -c -k --keepParent build/Build/Products/Release/Conductor.app Conductor-${GITHUB_REF_NAME#v}.zip
+        run: ditto -c -k --keepParent "$APP" Conductor-${GITHUB_REF_NAME#v}.zip
       - name: Release
         uses: softprops/action-gh-release@v2
         with:
