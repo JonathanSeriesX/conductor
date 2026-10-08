@@ -116,6 +116,9 @@ struct RootView: View {
                     } else {
                         ContentUnavailableView("No Issue Selected", systemImage: "doc.text")
                             .frame(maxWidth: .infinity, maxHeight: .infinity).background(Backdrop())
+                            // Without items of its own the column has no toolbar section, and the list's
+                            // New Issue and Save Filter drift over here.
+                            .toolbar(id: "empty") { ToolbarItem(id: "none") { EmptyView() }.glassTitle() }
                     }
                 }
                 .background(WindowEventMonitor(mask: .keyDown) { escape($0) })
@@ -179,6 +182,8 @@ struct RootView: View {
         guard e.keyCode == 53, e.modifierFlags.intersection(.deviceIndependentFlagsMask).isEmpty, selection != nil
         else { return e }
         if issueActions?.isEditing == true { return e }
+        // A popover's Escape arrives tagged with the main window on Tahoe; the popover (a child window) must close, not the preview.
+        if NSApp.keyWindow !== e.window || e.window?.childWindows?.contains(where: \.isVisible) == true { return e }
         if let tv = e.window?.firstResponder as? NSTextView, !tv.string.isEmpty { return e }
         selection = nil
         return nil

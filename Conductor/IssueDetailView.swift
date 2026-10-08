@@ -204,6 +204,7 @@ struct IssueDetailView: View {
     @State private var showDueDate = false
     @State private var showRemind = false
     @State private var showParent = false
+    @State private var showWatchers = false
     @State private var isDropTargeted = false
     /// A destructive action waiting for the user's confirmation: what it is and what it does.
     @State private var pendingDelete: (title: String, verb: String, perform: () -> Void)?
@@ -212,8 +213,6 @@ struct IssueDetailView: View {
     @FocusState private var editCommentFocused: Bool
     @FocusState private var commentFocused: Bool
     @State private var commentRequest = 0
-    /// Narrower than a full window (the main window's preview column): metadata goes under the body instead of beside it.
-    @State private var narrow = false
 
     var body: some View {
         Group {
@@ -287,27 +286,32 @@ struct IssueDetailView: View {
                 VStack(alignment: .leading, spacing: 16) {
                     header(issue)
                     GlassGroup(spacing: 16) {
-                        if narrow {
+                        if embedded {
+                            // The preview column is narrow: the fields go under the body, the first four above the comments.
                             cards(issue)
-                            metadata(issue)
+                            metadata { primaryFields(issue) }.overlay(alignment: .topTrailing) { working }
                             GlassCard(title: "Comments") { comments(issue) }.id("comments")
+                            metadata { fields(issue) }
                         } else {
                             HStack(alignment: .top, spacing: 16) {
                                 VStack(alignment: .leading, spacing: 16) {
                                     cards(issue)
                                     GlassCard(title: "Comments") { comments(issue) }.id("comments")
                                 }
-                                metadata(issue).frame(width: 250)
+                                GlassCard {
+                                    VStack(alignment: .leading, spacing: 14) {
+                                        primaryFields(issue)
+                                        fields(issue)
+                                    }
+                                    .font(.callout)
+                                }
+                                .frame(width: 250)
+                                .overlay(alignment: .topTrailing) { working }
                             }
                         }
                     }
                 }
                 .padding(20)
-            }
-            .onGeometryChange(for: Bool.self) {
-                $0.size.width < 800
-            } action: {
-                narrow = $0
             }
             // The toolbar has no background, so blur what scrolls under it instead of letting buttons sit on text.
             .softScrollEdge()
@@ -346,9 +350,32 @@ struct IssueDetailView: View {
         }
     }
 
+    /// Parent → key. The parent opens on a click (⌘-click beside); the text can be selected and copied, so the
+    /// click rides a simultaneous gesture, as on the summary.
+    private var crumb: some View {
+        HStack(spacing: 6) {
+            if let p = store.issue?.fields.parent {
+                HStack(spacing: 4) {
+                    RemoteImage(url: p.fields.issuetype?.iconUrl).frame(width: 14, height: 14)
+                    Text(p.key).monospaced()
+                    Text(p.fields.summary).lineLimit(1)
+                }
+                .contentShape(.rect)
+                .simultaneousGesture(TapGesture().onEnded { open(p.key) })
+                .help("Open \(p.key); ⌘-click for a new window")
+                Image(systemName: "chevron.forward").font(.caption2.weight(.bold)).foregroundStyle(.tertiary)
+            }
+            RemoteImage(url: store.issue?.fields.issuetype.iconUrl, placeholder: "circle").frame(width: 14, height: 14)
+                .accessibilityLabel(store.issue?.fields.issuetype.name ?? String(localized: "Issue type"))
+            Text(key).monospaced()
+        }
+        .font(.callout).foregroundStyle(.secondary)
+        .textSelection(.enabled)
+    }
+
     private func header(_ issue: Issue) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            // The key and type icon are the window title; the parent is a row in the sidebar.
+            if embedded { crumb }  // a window carries it in its toolbar
             if summaryDraft != nil {
                 TextField("Summary", text: Binding($summaryDraft, or: ""), axis: .vertical)
                     .font(.system(.largeTitle, design: .rounded, weight: .semibold))
@@ -439,30 +466,50 @@ struct IssueDetailView: View {
             } else {
                 Text("No description").foregroundStyle(.tertiary)
             }
-        }
-    }
-
-    private func metadata(_ issue: Issue) -> some View {
-        GlassCard {
-            Group {
-                if narrow {
-                    // Under the body the card is wide: one value per row would leave most of it empty.
-                    LazyVGrid(
-                        columns: [GridItem(.adaptive(minimum: 240), alignment: .topLeading)], alignment: .leading,
-                        spacing: 14
-                    ) { fields(issue) }
-                } else {
-                    VStack(alignment: .leading, spacing: 14) { fields(issue) }
+            // Labels close the description, as tags close a post. A click edits them.
+            let labels = issue.fields.labels ?? []
+            if !labels.isEmpty || store.canEdit("labels") {
+                Button {
+                    showLabels = true
+                } label: {
+                    if labels.isEmpty {
+                        Label("Add labels…", systemImage: "tag").foregroundStyle(.tertiary)
+                    } else {
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            Image(systemName: "tag").foregroundStyle(.tertiary)
+                            Wrap { ForEach(labels, id: \.self) { Chip(text: $0) } }
+                        }
+                    }
+                }
+                .buttonStyle(.plain)
+                .disabled(!store.canEdit("labels"))
+                .popover(isPresented: $showLabels, arrowEdge: .bottom) {
+                    LabelsEditor(labels: labels, suggestions: store.allLabels) { new in
+                        showLabels = false
+                        run { try await $0.editIssue(key, fields: ["labels": .array(new.map(JSONValue.string))]) }
+                    }
                 }
             }
-            .font(.callout)
-        }
-        .overlay(alignment: .topTrailing) {
-            if store.isWorking { ProgressView().controlSize(.small).padding(12) }
         }
     }
 
-    @ViewBuilder private func fields(_ issue: Issue) -> some View {
+    @ViewBuilder private var working: some View {
+        if store.isWorking { ProgressView().controlSize(.small).padding(12) }
+    }
+
+    /// Two columns whatever the width: one would leave half the card empty, three would squeeze the values.
+    private func metadata<V: View>(@ViewBuilder _ fields: () -> V) -> some View {
+        GlassCard {
+            LazyVGrid(
+                columns: Array(repeating: GridItem(.flexible(), alignment: .topLeading), count: 2),
+                alignment: .leading, spacing: 14
+            ) { fields() }
+            .font(.callout)
+        }
+    }
+
+    /// The four values a reader wants first, above the comments.
+    @ViewBuilder private func primaryFields(_ issue: Issue) -> some View {
         field("Status") {
             Menu {
                 ForEach(store.transitions) { t in
@@ -479,6 +526,22 @@ struct IssueDetailView: View {
             }
             .menuStyle(.button).buttonStyle(.plain).fixedSize()
             .disabled(store.transitions.isEmpty)
+        }
+        field("Priority") {
+            if store.canEdit("priority"), !store.priorities.isEmpty {
+                Menu {
+                    ForEach(store.priorities, id: \.id) { p in
+                        Button(p.name) {
+                            run { try await $0.editIssue(key, fields: ["priority": .object(["id": .string(p.id)])]) }
+                        }
+                    }
+                } label: {
+                    priorityLabel(issue.fields.priority)
+                }
+                .menuStyle(.button).buttonStyle(.plain).fixedSize()
+            } else {
+                priorityLabel(issue.fields.priority)
+            }
         }
         field("Assignee") {
             Button {
@@ -504,22 +567,9 @@ struct IssueDetailView: View {
                 Text(issue.fields.reporter?.displayName ?? "—")
             }
         }
-        field("Priority") {
-            if store.canEdit("priority"), !store.priorities.isEmpty {
-                Menu {
-                    ForEach(store.priorities, id: \.id) { p in
-                        Button(p.name) {
-                            run { try await $0.editIssue(key, fields: ["priority": .object(["id": .string(p.id)])]) }
-                        }
-                    }
-                } label: {
-                    priorityLabel(issue.fields.priority)
-                }
-                .menuStyle(.button).buttonStyle(.plain).fixedSize()
-            } else {
-                priorityLabel(issue.fields.priority)
-            }
-        }
+    }
+
+    @ViewBuilder private func fields(_ issue: Issue) -> some View {
         field("Type") {
             let types = store.issueTypes
             if !types.isEmpty {
@@ -682,25 +732,6 @@ struct IssueDetailView: View {
         }
         multiValue("Components", field: "components", current: issue.fields.components ?? [])
         multiValue("Fix Versions", field: "fixVersions", current: issue.fields.fixVersions ?? [])
-        field("Labels") {
-            Button {
-                showLabels = true
-            } label: {
-                if let labels = issue.fields.labels, !labels.isEmpty {
-                    Wrap { ForEach(labels, id: \.self) { Chip(text: $0) } }
-                } else {
-                    Text("None").foregroundStyle(.secondary)
-                }
-            }
-            .buttonStyle(.plain)
-            .disabled(!store.canEdit("labels"))
-            .popover(isPresented: $showLabels, arrowEdge: .leading) {
-                LabelsEditor(labels: issue.fields.labels ?? [], suggestions: store.allLabels) { new in
-                    showLabels = false
-                    run { try await $0.editIssue(key, fields: ["labels": .array(new.map(JSONValue.string))]) }
-                }
-            }
-        }
         if let tt = issue.fields.timetracking, tt.timeSpent != nil || tt.originalEstimate != nil {
             field("Time") {
                 VStack(alignment: .leading, spacing: 2) {
@@ -716,19 +747,31 @@ struct IssueDetailView: View {
         if let w = issue.fields.watches {
             field("Watchers") {
                 Button {
-                    let me = jira?.me?.accountId
-                    run { try await $0.watch(key, !w.isWatching, me: me) }
+                    showWatchers = true
                 } label: {
                     Label("\(w.watchCount) watching", systemImage: w.isWatching ? "eye.fill" : "eye")
                         .foregroundStyle(w.isWatching ? Color.accentColor : .primary)
                 }
                 .buttonStyle(.plain)
-                .help(w.isWatching ? "Stop watching" : "Watch this issue")
+                .help("Who is watching; right-click to watch or stop")
+                .contextMenu { watchToggle(w) }
+                .popover(isPresented: $showWatchers, arrowEdge: .leading) {
+                    WatchersView(key: key) { watchToggle(w) }
+                }
             }
         }
         if let c = issue.fields.created { field("Created") { Text(c.formatted(date: .abbreviated, time: .shortened)) } }
         if let u = issue.fields.updated {
             field("Updated") { Text(u.formatted(.relative(presentation: .named))).help(u.formatted()) }
+        }
+    }
+
+    private func watchToggle(_ w: Watches) -> some View {
+        Button(
+            w.isWatching ? "Stop Watching This Issue" : "Watch This Issue",
+            systemImage: w.isWatching ? "eye.slash" : "eye"
+        ) {
+            perform(.watch)
         }
     }
 
@@ -1001,18 +1044,11 @@ struct IssueDetailView: View {
                     .keyboardShortcut("[", modifiers: .command)
             }
         }
-        ToolbarItem(id: "title", placement: embedded ? .automatic : .navigation) {
-            // The list row's first line as the title: type icon, then the key in the same grey monospaced face.
-            HStack(spacing: 8) {
-                RemoteImage(url: store.issue?.fields.issuetype.iconUrl, placeholder: "circle").frame(
-                    width: 16, height: 16
-                )
-                .accessibilityLabel(store.issue?.fields.issuetype.name ?? String(localized: "Issue type"))
-                Text(key).font(.body.monospaced()).foregroundStyle(.secondary)
-            }
-            .padding(.leading, 4)
+        // The window's title is the crumb; the preview column draws it above the summary and keeps its actions
+        // at the leading edge, with no spacer.
+        if !embedded {
+            ToolbarItem(id: "title", placement: .navigation) { crumb.padding(.leading, 4) }.glassTitle()
         }
-        .glassTitle()
         ToolbarItem(id: "refresh") {
             Button {
                 perform(.refresh)
@@ -1551,6 +1587,34 @@ struct LabelsEditor: View {
         guard !l.isEmpty else { return }
         if !labels.contains(l) { labels.append(l) }
         draft = ""
+    }
+}
+
+/// Who watches the issue, with the watch toggle under the list.
+struct WatchersView<Toggle: View>: View {
+    let key: String
+    @ViewBuilder var toggle: Toggle
+    @Environment(\.jira) private var jira
+    @State private var users: [JiraUser]?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Watchers").font(.headline)
+            if let users {
+                ForEach(users) { u in
+                    HStack(spacing: 6) {
+                        Avatar(user: u, size: 20)
+                        Text(u.displayName)
+                    }
+                }
+            } else {
+                ProgressView().controlSize(.small)
+            }
+            toggle.glassButton()
+        }
+        .padding(12)
+        .frame(minWidth: 220, alignment: .leading)
+        .task { users = (try? await jira?.client.watchers(key)) ?? [] }
     }
 }
 

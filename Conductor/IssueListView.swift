@@ -370,11 +370,12 @@ struct IssueListView: View {
                         filterName = ""
                         savingFilter = true
                     } : nil,
-                openBoard: boardTarget.map { b in { openWindow(id: "board", value: b) } }
+                openBoard: boardTarget.map { b in { openWindow(id: "board", value: b) } },
+                sort: $filters.sort
             )
         )
-        .navigationTitle(session.title(for: filters))
-        .navigationSubtitle(subtitle)
+        .navigationTitle(session.title(for: filters))  // the Window menu; the toolbar draws its own, with the sort
+        .toolbar(removing: .title)
         .searchable(text: $filters.text, placement: .toolbar, prompt: "Search, JQL, or paste a Jira link")
         .searchFocused($searchFocused)
         .searchSuggestions {
@@ -393,6 +394,28 @@ struct IssueListView: View {
             session.recordSearch(filters.text)
         }
         .toolbar(id: "list") {
+            ToolbarItem(id: "title") {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(session.title(for: filters)).font(.headline)
+                    HStack(spacing: 4) {
+                        if !subtitle.isEmpty { Text(verbatim: "\(subtitle) ·") }
+                        Menu {
+                            SortMenuItems(sort: $filters.sort)
+                        } label: {
+                            HStack(spacing: 2) {
+                                Text("sorted by \(filters.sort.field.title)")
+                                Image(systemName: filters.sort.descending ? "arrow.down" : "arrow.up")
+                                    .font(.caption2.weight(.bold))
+                            }
+                        }
+                        .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize()
+                        .help("Sort order")
+                    }
+                    .font(.subheadline).foregroundStyle(.secondary)
+                }
+                .padding(.leading, 14)
+            }
+            .glassTitle()
             NewIssueToolbarItem()
             ToolbarItem(id: "board") {
                 if let b = boardTarget {
@@ -617,7 +640,7 @@ struct IssueListView: View {
     private var chips: some View {
         let all = chipList
         let more = all.filter { !$0.active }
-        return HStack(spacing: 6) {
+        return HStack(spacing: 0) {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 6) {
                     ForEach(all.filter(\.active), id: \.id) { c in
@@ -642,24 +665,6 @@ struct IssueListView: View {
                 }
                 .padding(.horizontal, 10).padding(.vertical, 8)
             }
-            FilterChip(
-                id: "sort", title: filters.sort.field.title,
-                symbol: filters.sort.descending ? "arrow.down" : "arrow.up", active: false, menus: chipMenus,
-                items: ListFilters.Sort.Field.allCases.map { f in
-                    ChipItem(f.title, selected: filters.sort.field == f) { filters.sort.field = f }
-                }
-                    + [
-                        .separator,
-                        ChipItem(String(localized: "Ascending"), selected: !filters.sort.descending) {
-                            filters.sort.descending = false
-                        },
-                        ChipItem(String(localized: "Descending"), selected: filters.sort.descending) {
-                            filters.sort.descending = true
-                        },
-                    ]
-            )
-            .help("Sort order")
-            .padding(.trailing, 10)
         }
         .background(.bar)
         .overlay(alignment: .bottom) { Divider() }
@@ -985,6 +990,20 @@ struct FilterChip: View {
         }
         .buttonStyle(.plain)
         .background(ChipAnchor(id: id, menus: menus, items: items))
+    }
+}
+
+/// The sort order as menu items: the View menu and the toolbar's "sorted by" show the same.
+struct SortMenuItems: View {
+    @Binding var sort: ListFilters.Sort
+
+    var body: some View {
+        ForEach(ListFilters.Sort.Field.allCases, id: \.self) { f in
+            Toggle(f.title, isOn: Binding(get: { sort.field == f }, set: { if $0 { sort.field = f } }))
+        }
+        Divider()
+        Toggle("Ascending", isOn: Binding(get: { !sort.descending }, set: { if $0 { sort.descending = false } }))
+        Toggle("Descending", isOn: Binding(get: { sort.descending }, set: { if $0 { sort.descending = true } }))
     }
 }
 

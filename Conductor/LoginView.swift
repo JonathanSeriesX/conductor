@@ -20,7 +20,7 @@ struct LoginView: View {
         } else {
             ZStack {
                 Backdrop()
-                card.glassPane(cornerRadius: 28)
+                card
             }
         }
     }

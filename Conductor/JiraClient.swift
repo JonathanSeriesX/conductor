@@ -392,6 +392,12 @@ struct JiraClient: Sendable {
     /// workflow within a project, so one fetch serves every row that shares them.
     func transitionsCached(for issue: Issue) async throws -> [Transition] { try await transitions(issue.key) }
 
+    func watchers(_ key: String) async throws -> [JiraUser] {
+        struct R: Decodable { let watchers: [JiraUser] }
+        let r: R = try await get("issue/\(key)/watchers")
+        return r.watchers
+    }
+
     func watch(_ key: String, _ on: Bool, me: String? = nil) async throws {
         let accountId: String
         if let me { accountId = me } else { accountId = try await myself().accountId }
