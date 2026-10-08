@@ -336,7 +336,6 @@ struct IssueDetailView: View {
                                 priorityField(issue)
                                 reporterField(issue)
                             }
-                            .overlay(alignment: .topTrailing) { working }
                             GlassCard(title: "Comments") { comments(issue) }.id("comments")
                             metadata { fields(issue) }
                         } else {
@@ -356,7 +355,6 @@ struct IssueDetailView: View {
                                     .font(.callout)
                                 }
                                 .frame(width: 250)
-                                .overlay(alignment: .topTrailing) { working }
                             }
                         }
                     }
@@ -378,6 +376,7 @@ struct IssueDetailView: View {
                 }
             #endif
         }
+        .overlay(alignment: .topTrailing) { working.padding(.trailing, 8) }
         .environment(\.adfAttachments, issue.fields.attachment ?? [])
         .environment(\.previewURL, $store.previewURL)
     }

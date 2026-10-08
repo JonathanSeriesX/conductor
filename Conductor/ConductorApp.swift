@@ -15,6 +15,7 @@ struct ConductorApp: App {
         // Windows come back after ⌘Q whatever the system-wide "Close windows when quitting" setting says.
         UserDefaults.standard.set(true, forKey: "NSQuitAlwaysKeepsWindows")
         MenuClickThrough.install()
+        PopoverFocusReturn.install()
     }
 
     var body: some Scene {
@@ -199,7 +200,12 @@ struct RootView: View {
         if issueActions?.isEditing == true { return e }
         // A popover's Escape arrives tagged with the main window on Tahoe; the popover (a child window) must close, not the preview.
         if NSApp.keyWindow !== e.window || e.window?.childWindows?.contains(where: \.isVisible) == true { return e }
-        if let tv = e.window?.firstResponder as? NSTextView, !tv.string.isEmpty { return e }
+        if let tv = e.window?.firstResponder as? NSTextView, let window = e.window {
+            // The search field clears itself; a comment box just gives the keyboard back to the list.
+            if tv.isFieldEditor, !tv.string.isEmpty { return e }
+            window.focusList()
+            return nil
+        }
         if let back = issueActions?.back { back() } else { selection = nil }
         return nil
     }
