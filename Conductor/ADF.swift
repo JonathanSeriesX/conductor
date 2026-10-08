@@ -320,14 +320,15 @@ struct ADFBlock: View {
 extension EnvironmentValues {
     /// Attachments of the issue being rendered, so inline media can resolve to real images by filename.
     @Entry var adfAttachments: [Attachment] = []
-    /// Set by the issue view: shows an attachment in Quick Look.
-    @Entry var previewAttachment: (Attachment) -> Void = { _ in }
+    /// Set by the issue view: the Quick Look URL an inline image writes to when clicked.
+    @Entry var previewURL: Binding<URL?>? = nil
 }
 
 struct InlineImage: View {
     let attachment: Attachment
     @Environment(Session.self) private var session
-    @Environment(\.previewAttachment) private var preview
+    @Environment(\.jira) private var jira
+    @Environment(\.previewURL) private var previewURL
     @State private var image: NSImage?
 
     var body: some View {
@@ -355,7 +356,10 @@ struct InlineImage: View {
             ImageCache.shared.setObject(img, forKey: url as NSURL)
             image = img
         }
-        .onTapGesture { preview(attachment) }
+        .onTapGesture {
+            guard let c = jira?.client, let previewURL else { return }
+            Task { if let url = await AttachmentOpener.download(attachment, client: c) { previewURL.wrappedValue = url } }
+        }
         .onHover { inside in inside ? NSCursor.pointingHand.push() : NSCursor.pop() }
         .help("\(attachment.filename) — click to preview")
     }

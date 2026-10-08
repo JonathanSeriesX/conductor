@@ -233,7 +233,7 @@ struct WindowEventMonitor: NSViewRepresentable {
     }
 }
 
-extension Binding {
+extension Binding where Value: Sendable {
     /// `Binding($optional)` force-unwraps on every read, and SwiftUI reads a child's bindings once more after
     /// the value went nil (Save sets the draft to nil while the editor is still on screen), which crashed.
     /// This one hands back `fallback` instead.
