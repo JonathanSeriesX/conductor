@@ -62,7 +62,14 @@ struct JiraClient: Sendable {
         "Basic " + Data("\(account.email):\(account.token)".utf8).base64EncodedString()
     }
 
-    static let listFields = "summary,status,assignee,priority,issuetype,updated,project,watches,parent,subtasks"
+    /// What a list row carries: everything the issue page's right column shows, so a page opened from a row is
+    /// complete there at once; only the description, comments, attachments and links wait for the full record.
+    var listFields: String {
+        var f = "summary,status,assignee,reporter,priority,issuetype,created,updated,project,watches,parent,subtasks,labels,duedate,components,fixVersions,timetracking"
+        if let sprintField { f += "," + sprintField }
+        for p in pointsFields { f += "," + p }
+        return f
+    }
     var detailFields: String {
         var f = "summary,description,status,assignee,reporter,priority,issuetype,labels,created,updated,comment,attachment,project,parent,subtasks,issuelinks,worklog,timetracking,watches,duedate,components,fixVersions"
         if let sprintField { f += "," + sprintField }
@@ -167,8 +174,8 @@ struct JiraClient: Sendable {
         return c.count
     }
 
-    func search(jql: String, nextPageToken: String? = nil, fields: String = JiraClient.listFields) async throws -> SearchPage {
-        var q = ["jql": jql, "maxResults": "50", "fields": fields]
+    func search(jql: String, nextPageToken: String? = nil, fields: String? = nil) async throws -> SearchPage {
+        var q = ["jql": jql, "maxResults": "50", "fields": fields ?? listFields]
         if let nextPageToken { q["nextPageToken"] = nextPageToken }
         return try await get("search/jql", query: q)
     }
@@ -372,7 +379,7 @@ struct JiraClient: Sendable {
     /// `jql` narrows the board, e.g. with its quick filters. `parent` comes along for swimlanes.
     func boardIssues(_ id: Int, sprint: Int?, jql: String? = nil, startAt: Int = 0) async throws -> AgileIssuePage {
         let path = sprint.map { "board/\(id)/sprint/\($0)/issue" } ?? "board/\(id)/issue"
-        var q = ["maxResults": "100", "startAt": "\(startAt)", "fields": Self.listFields]
+        var q = ["maxResults": "100", "startAt": "\(startAt)", "fields": listFields]
         if let jql { q["jql"] = jql }
         return try await get(path, query: q, base: agile)
     }

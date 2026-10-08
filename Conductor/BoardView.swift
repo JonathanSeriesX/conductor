@@ -99,7 +99,11 @@ final class BoardStore {
             if page.issues.isEmpty || all.count >= page.total { break }
             if all.count >= 2000 { truncated = true; break } // ponytail: 20 pages; past that a board wants server-side filtering
         }
-        if gen == generation { issues = all; saveSnapshot() }
+        if gen == generation {
+            issues = all
+            saveSnapshot()
+            if let state { IssueListStore.prefetchDetails(all.map { ListRow(issue: $0, state: state) }, limit: 200) }
+        }
     }
 
     func toggle(_ filter: QuickFilter, client: JiraClient) async {
