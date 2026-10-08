@@ -287,7 +287,7 @@ struct SidebarView: View {
                             .help("Try to reconnect now. Conductor also retries on its own every 20 seconds.")
                     }
                 }
-                let warming = session.states.filter { $0.warmProgress != nil }
+                let warming = session.states.filter { $0.warmProgress != nil && $0.warmIsFirst }
                 if !warming.isEmpty {
                     // One bar for every account: the first download of an account, or a catch-up after launch.
                     VStack(alignment: .leading, spacing: 4) {

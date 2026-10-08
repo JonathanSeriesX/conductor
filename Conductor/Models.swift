@@ -146,22 +146,28 @@ struct Issue: Codable, Hashable, Sendable, Identifiable {
     /// Story points from whichever of the site's points fields this issue has.
     let points: Double?
 
-    private enum CodingKeys: String, CodingKey { case id, key, fields }
+    /// `sprints` and `points` are the cache's own keys: Jira keeps them in per-site custom fields that only the
+    /// client's decoder knows, and a cached copy must carry them too or a page opened from disk shows "None".
+    private enum CodingKeys: String, CodingKey { case id, key, fields, sprints, points }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(String.self, forKey: .id)
         key = try c.decode(String.self, forKey: .key)
         fields = try c.decode(Fields.self, forKey: .fields)
-        // Sprint is a per-site custom field; the client passes its id via userInfo.
-        if let sprintKey = decoder.userInfo[.sprintField] as? String {
+        if let cached = try? c.decodeIfPresent([Sprint].self, forKey: .sprints) {
+            sprints = cached
+        } else if let sprintKey = decoder.userInfo[.sprintField] as? String {
+            // Sprint is a per-site custom field; the client passes its id via userInfo.
             let dyn = try c.nestedContainer(keyedBy: AnyKey.self, forKey: .fields)
             sprints = try? dyn.decodeIfPresent([Sprint].self, forKey: AnyKey(sprintKey))
         } else {
             sprints = nil
         }
         let pointsKeys = decoder.userInfo[.pointsFields] as? [String] ?? []
-        if !pointsKeys.isEmpty {
+        if let cached = try? c.decodeIfPresent(Double.self, forKey: .points) {
+            points = cached
+        } else if !pointsKeys.isEmpty {
             let dyn = try c.nestedContainer(keyedBy: AnyKey.self, forKey: .fields)
             points = pointsKeys.lazy.compactMap { try? dyn.decodeIfPresent(Double.self, forKey: AnyKey($0)) }.first
         } else {
@@ -174,6 +180,8 @@ struct Issue: Codable, Hashable, Sendable, Identifiable {
         try c.encode(id, forKey: .id)
         try c.encode(key, forKey: .key)
         try c.encode(fields, forKey: .fields)
+        try c.encodeIfPresent(sprints, forKey: .sprints)
+        try c.encodeIfPresent(points, forKey: .points)
     }
 
     var activeSprint: Sprint? { sprints?.first { $0.state == "active" } ?? sprints?.last }
