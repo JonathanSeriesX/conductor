@@ -19,8 +19,11 @@ extension View {
 
     /// A glass pane on macOS 26; the regular material on Sequoia.
     @ViewBuilder func glassPane(cornerRadius r: CGFloat) -> some View {
-        if #available(macOS 26, *) { glassEffect(.regular, in: .rect(cornerRadius: r)) }
-        else { background(.regularMaterial, in: .rect(cornerRadius: r)) }
+        if #available(macOS 26, *) {
+            glassEffect(.regular, in: .rect(cornerRadius: r))
+        } else {
+            background(.regularMaterial, in: .rect(cornerRadius: r))
+        }
     }
 
     /// Blurs what scrolls under a transparent toolbar. Sequoia's toolbar has an opaque background already.
@@ -31,8 +34,11 @@ extension View {
     /// A bottom bar that the system blurs on macOS 26; on Sequoia an inset with the `.bar` backing, so rows
     /// don't scroll through it.
     @ViewBuilder func bottomBar<Bar: View>(@ViewBuilder _ bar: () -> Bar) -> some View {
-        if #available(macOS 26, *) { safeAreaBar(edge: .bottom, content: bar) }
-        else { safeAreaInset(edge: .bottom, spacing: 0) { bar().background(.bar) } }
+        if #available(macOS 26, *) {
+            safeAreaBar(edge: .bottom, content: bar)
+        } else {
+            safeAreaInset(edge: .bottom, spacing: 0) { bar().background(.bar) }
+        }
     }
 }
 
@@ -96,7 +102,8 @@ struct RemoteImage: View {
         .task(id: url) {
             guard let url, image == nil else { return }
             guard let client = session.client(for: url), let data = try? await client.data(for: url),
-                  let img = await DiskCache.decodeImage(data, maxPixels: 256) else { return }
+                let img = await DiskCache.decodeImage(data, maxPixels: 256)
+            else { return }
             DiskCache.saveImage(data, for: url)
             ImageCache.shared.setObject(img, forKey: url as NSURL)
             loaded = img
@@ -113,7 +120,8 @@ struct Avatar: View {
             if let user {
                 RemoteImage(url: user.avatar, placeholder: "person.crop.circle.fill")
             } else {
-                Image(systemName: "person.crop.circle.badge.questionmark").resizable().scaledToFit().foregroundStyle(.tertiary)
+                Image(systemName: "person.crop.circle.badge.questionmark").resizable().scaledToFit().foregroundStyle(
+                    .tertiary)
             }
         }
         .frame(width: size, height: size)
@@ -159,7 +167,7 @@ struct PriorityIcon: View {
         RemoteImage(url: priority.iconUrl, placeholder: "minus")
             .accessibilityLabel(priority.name)
             .frame(width: size, height: size)
-            .padding(2) // constant so the glyph does not shift when the disc appears
+            .padding(2)  // constant so the glyph does not shift when the disc appears
             .background(prominence == .increased ? .white.opacity(0.9) : .clear, in: .circle)
             .help(priority.name)
     }
@@ -192,13 +200,20 @@ extension View {
 }
 
 /// "1 issue", "2 issues", "50+ issues" for subtitles; the plural forms live in the string catalog.
-func issues(_ n: Int, more: Bool = false) -> String { more ? String(localized: "\(n)+ issues") : String(localized: "\(n) issues") }
+func issues(_ n: Int, more: Bool = false) -> String {
+    more ? String(localized: "\(n)+ issues") : String(localized: "\(n) issues")
+}
 
 extension View {
     func errorAlert(_ error: Binding<String?>) -> some View {
-        alert("Something went wrong", isPresented: Binding(get: { error.wrappedValue != nil }, set: { if !$0 { error.wrappedValue = nil } })) {
+        alert(
+            "Something went wrong",
+            isPresented: Binding(get: { error.wrappedValue != nil }, set: { if !$0 { error.wrappedValue = nil } })
+        ) {
             Button("OK") { error.wrappedValue = nil }
-        } message: { Text(error.wrappedValue ?? "") }
+        } message: {
+            Text(error.wrappedValue ?? "")
+        }
     }
 }
 
@@ -216,7 +231,10 @@ struct WindowEventMonitor: NSViewRepresentable {
         var handler: (NSEvent) -> NSEvent? = { $0 }
         private var monitor: Any?
 
-        init(mask: NSEvent.EventTypeMask) { self.mask = mask; super.init(frame: .zero) }
+        init(mask: NSEvent.EventTypeMask) {
+            self.mask = mask
+            super.init(frame: .zero)
+        }
         required init?(coder: NSCoder) { fatalError() }
 
         override func hitTest(_ point: NSPoint) -> NSView? { nil }
@@ -239,6 +257,8 @@ extension Binding where Value: Sendable {
     /// This one hands back `fallback` instead.
     init(_ source: Binding<Value?>, or fallback: Value) {
         // Writes after the draft went nil are the field's own echo of its last text; taking them would reopen it.
-        self.init(get: { source.wrappedValue ?? fallback }, set: { if source.wrappedValue != nil { source.wrappedValue = $0 } })
+        self.init(
+            get: { source.wrappedValue ?? fallback },
+            set: { if source.wrappedValue != nil { source.wrappedValue = $0 } })
     }
 }

@@ -4,7 +4,9 @@ import SwiftUI
 struct ListFilters: Hashable, Codable {
     // Raw values are saved with the filters (and Status's go into JQL), so they stay English; `title` is what the chips show.
     enum Scope: String, CaseIterable, Codable {
-        case all = "Everything", recent = "Recently viewed", watching = "Watching"
+        case all = "Everything"
+        case recent = "Recently viewed"
+        case watching = "Watching"
         var title: String {
             switch self {
             case .all: String(localized: "Everything")
@@ -14,12 +16,18 @@ struct ListFilters: Hashable, Codable {
         }
     }
     enum Status: String, CaseIterable, Codable {
-        case any = "Any status", open = "Open", todo = "To Do", inProgress = "In Progress", done = "Done"
+        case any = "Any status"
+        case open = "Open"
+        case todo = "To Do"
+        case inProgress = "In Progress"
+        case done = "Done"
         var title: String {
             switch self {
             case .any: String(localized: "Any status")
             // Its own key: "Open" alone is the verb on menus.
-            case .open: String(localized: "status.open", defaultValue: "Open", comment: "Status filter chip: issues not done yet")
+            case .open:
+                String(
+                    localized: "status.open", defaultValue: "Open", comment: "Status filter chip: issues not done yet")
             case .todo: String(localized: "To Do", comment: "Jira status category")
             case .inProgress: String(localized: "In Progress", comment: "Jira status category")
             case .done: String(localized: "Done", comment: "Jira status category")
@@ -27,7 +35,9 @@ struct ListFilters: Hashable, Codable {
         }
     }
     enum Assignee: String, CaseIterable, Codable {
-        case any = "Any assignee", me = "Assigned to me", unassigned = "Unassigned"
+        case any = "Any assignee"
+        case me = "Assigned to me"
+        case unassigned = "Unassigned"
         var title: String {
             switch self {
             case .any: String(localized: "Any assignee")
@@ -37,11 +47,15 @@ struct ListFilters: Hashable, Codable {
         }
     }
     enum Reporter: String, CaseIterable, Codable {
-        case any = "Any reporter", me = "Reported by me"
+        case any = "Any reporter"
+        case me = "Reported by me"
         var title: String { self == .any ? String(localized: "Any reporter") : String(localized: "Reported by me") }
     }
     enum Updated: String, CaseIterable, Codable {
-        case any = "Any time", today = "Today", week = "This week", month = "This month"
+        case any = "Any time"
+        case today = "Today"
+        case week = "This week"
+        case month = "This month"
         var title: String {
             switch self {
             case .any: String(localized: "Any time", comment: "Updated filter chip")
@@ -54,7 +68,12 @@ struct ListFilters: Hashable, Codable {
 
     struct Sort: Hashable, Codable {
         enum Field: String, CaseIterable, Codable {
-            case updated = "Updated", created = "Created", viewed = "Last viewed", due = "Due date", priority = "Priority", key = "Key"
+            case updated = "Updated"
+            case created = "Created"
+            case viewed = "Last viewed"
+            case due = "Due date"
+            case priority = "Priority"
+            case key = "Key"
             var title: String {
                 switch self {
                 case .updated: String(localized: "Updated")
@@ -86,7 +105,7 @@ struct ListFilters: Hashable, Codable {
             switch field {
             case .updated, .viewed: r = (a.fields.updated ?? .distantPast).compare(b.fields.updated ?? .distantPast)
             case .created: r = (a.fields.created ?? .distantPast).compare(b.fields.created ?? .distantPast)
-            case .due: r = (a.fields.duedate ?? "").compare(b.fields.duedate ?? "")   // "2026-10-31": sorts as text
+            case .due: r = (a.fields.duedate ?? "").compare(b.fields.duedate ?? "")  // "2026-10-31": sorts as text
             case .priority:
                 // Jira's priority ids count up from the highest, so "priority DESC" is the lowest id first.
                 let (pa, pb) = (Int(a.fields.priority?.id ?? "") ?? .max, Int(b.fields.priority?.id ?? "") ?? .max)
@@ -199,8 +218,13 @@ enum Smart: String, CaseIterable, Codable {
         f.account = account
         switch self {
         case .assigned: f.assignee = .me
-        case .reported: f.reporter = .me; f.sort.field = .created
-        case .recent: f.scope = .recent; f.status = .any; f.sort.field = .viewed
+        case .reported:
+            f.reporter = .me
+            f.sort.field = .created
+        case .recent:
+            f.scope = .recent
+            f.status = .any
+            f.sort.field = .viewed
         case .watching: f.scope = .watching
         }
         return f
@@ -245,22 +269,35 @@ struct SidebarView: View {
                     HStack(spacing: 4) {
                         Text(st.title)
                         if let e = st.error {
-                            Image(systemName: "wifi.exclamationmark").foregroundStyle(.orange).help("Showing cached data. \(e)")
+                            Image(systemName: "wifi.exclamationmark").foregroundStyle(.orange).help(
+                                "Showing cached data. \(e)")
                         }
                     }
-                        .contextMenu {
-                            Button("Rename…", systemImage: "pencil") { newTitle = st.title; renaming = st }
-                            Menu("Colour") {
-                                ForEach(Palette.names, id: \.self) { name in
-                                    Toggle(isOn: Binding(get: { st.colorName == name }, set: { if $0 { st.setColor(name) } })) {
-                                        Label { Text(Palette.title(name)) } icon: { Image(nsImage: Palette.swatch(name)) }
+                    .contextMenu {
+                        Button("Rename…", systemImage: "pencil") {
+                            newTitle = st.title
+                            renaming = st
+                        }
+                        Menu("Colour") {
+                            ForEach(Palette.names, id: \.self) { name in
+                                Toggle(
+                                    isOn: Binding(get: { st.colorName == name }, set: { if $0 { st.setColor(name) } })
+                                ) {
+                                    Label {
+                                        Text(Palette.title(name))
+                                    } icon: {
+                                        Image(nsImage: Palette.swatch(name))
                                     }
                                 }
                             }
-                            Button("Refresh", systemImage: "arrow.clockwise") { Task { try? await st.load() } }
-                            Divider()
-                            Button("Sign Out of \(st.title)…", systemImage: "rectangle.portrait.and.arrow.forward", role: .destructive) { signingOut = st }
                         }
+                        Button("Refresh", systemImage: "arrow.clockwise") { Task { try? await st.load() } }
+                        Divider()
+                        Button(
+                            "Sign Out of \(st.title)…", systemImage: "rectangle.portrait.and.arrow.forward",
+                            role: .destructive
+                        ) { signingOut = st }
+                    }
                 }
             }
             ForEach(session.accounts.filter { session.unreachable[$0.id] != nil }, id: \.id) { account in
@@ -281,9 +318,13 @@ struct SidebarView: View {
                     HStack {
                         Label("Working Offline", systemImage: "wifi.slash").foregroundStyle(.secondary)
                         Spacer()
-                        Button { Task { await session.reconnect() } } label: { Image(systemName: "arrow.clockwise") }
-                            .buttonStyle(.plain).foregroundStyle(.secondary)
-                            .help("Try to reconnect now. Conductor also retries on its own every 20 seconds.")
+                        Button {
+                            Task { await session.reconnect() }
+                        } label: {
+                            Image(systemName: "arrow.clockwise")
+                        }
+                        .buttonStyle(.plain).foregroundStyle(.secondary)
+                        .help("Try to reconnect now. Conductor also retries on its own every 20 seconds.")
                     }
                 }
                 let warming = session.states.filter { $0.warmProgress != nil && $0.warmIsFirst }
@@ -292,48 +333,84 @@ struct SidebarView: View {
                     VStack(alignment: .leading, spacing: 4) {
                         ProgressView(value: warming.map { $0.warmProgress ?? 0 }.reduce(0, +) / Double(warming.count))
                             .progressViewStyle(.linear).controlSize(.small)
-                        Text(warming.count == 1 ? warming[0].warmLabel : String(localized: "Downloading issues for \(warming.count) accounts…"))
-                            .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                        Text(
+                            warming.count == 1
+                                ? warming[0].warmLabel
+                                : String(localized: "Downloading issues for \(warming.count) accounts…")
+                        )
+                        .font(.caption).foregroundStyle(.secondary).lineLimit(1)
                     }
                 }
-                Button { showAddAccount = true } label: { Label("Add Account", systemImage: "plus") }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.secondary)
-                    .help("Sign in to another Jira site")
+                Button {
+                    showAddAccount = true
+                } label: {
+                    Label("Add Account", systemImage: "plus")
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help("Sign in to another Jira site")
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 14).padding(.vertical, 8)
         }
         .sheet(isPresented: $showAddAccount) { LoginView(isSheet: true) }
-        .onChange(of: session.addAccountRequested) { _, on in if on { showAddAccount = true; session.addAccountRequested = false } }
+        .onChange(of: session.addAccountRequested) { _, on in
+            if on {
+                showAddAccount = true
+                session.addAccountRequested = false
+            }
+        }
         .alert("Rename Account", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
             TextField("Name", text: $newTitle)
-            Button("Rename") { renaming?.rename(newTitle); renaming = nil }
+            Button("Rename") {
+                renaming?.rename(newTitle)
+                renaming = nil
+            }
             Button("Cancel", role: .cancel) { renaming = nil }
         } message: {
             Text("Shown as the section title in the sidebar.")
         }
-        .confirmationDialog("Sign out of \(signingOut?.title ?? "")?", isPresented: Binding(get: { signingOut != nil }, set: { if !$0 { signingOut = nil } }), titleVisibility: .visible) {
-            Button("Sign Out", role: .destructive) { if let st = signingOut { session.remove(st.account) }; signingOut = nil }
+        .confirmationDialog(
+            "Sign out of \(signingOut?.title ?? "")?",
+            isPresented: Binding(get: { signingOut != nil }, set: { if !$0 { signingOut = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button("Sign Out", role: .destructive) {
+                if let st = signingOut { session.remove(st.account) }
+                signingOut = nil
+            }
             Button("Cancel", role: .cancel) { signingOut = nil }
         } message: {
             Text("The token is removed from the Keychain. Cached issues stay until the cache is cleared.")
         }
-        .confirmationDialog("Delete the filter “\(deletingPreset?.name ?? "")”?", isPresented: Binding(get: { deletingPreset != nil }, set: { if !$0 { deletingPreset = nil } }), titleVisibility: .visible) {
-            Button("Delete", role: .destructive) { if let p = deletingPreset { session.removePreset(p.id) }; deletingPreset = nil }
+        .confirmationDialog(
+            "Delete the filter “\(deletingPreset?.name ?? "")”?",
+            isPresented: Binding(get: { deletingPreset != nil }, set: { if !$0 { deletingPreset = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button("Delete", role: .destructive) {
+                if let p = deletingPreset { session.removePreset(p.id) }
+                deletingPreset = nil
+            }
             Button("Cancel", role: .cancel) { deletingPreset = nil }
         }
-        .alert("Rename Filter", isPresented: Binding(get: { renamingPreset != nil }, set: { if !$0 { renamingPreset = nil } })) {
+        .alert(
+            "Rename Filter",
+            isPresented: Binding(get: { renamingPreset != nil }, set: { if !$0 { renamingPreset = nil } })
+        ) {
             TextField("Name", text: $newTitle)
-            Button("Rename") { if let p = renamingPreset { session.renamePreset(p.id, to: newTitle) }; renamingPreset = nil }
+            Button("Rename") {
+                if let p = renamingPreset { session.renamePreset(p.id, to: newTitle) }
+                renamingPreset = nil
+            }
             Button("Cancel", role: .cancel) { renamingPreset = nil }
         }
         #if DEBUG
-        .task {
-            guard ProcessInfo.processInfo.environment["CONDUCTOR_SHOW"] == "addAccount" else { return }
-            try? await Task.sleep(for: .seconds(1))
-            showAddAccount = true
-        }
+            .task {
+                guard ProcessInfo.processInfo.environment["CONDUCTOR_SHOW"] == "addAccount" else { return }
+                try? await Task.sleep(for: .seconds(1))
+                showAddAccount = true
+            }
         #endif
     }
 
@@ -341,10 +418,12 @@ struct SidebarView: View {
     private func accountContent(_ st: AccountState) -> some View {
         ForEach(session.presets(account: st)) { presetRow($0, color: st.color) }
         ForEach(st.starredProjects) { projectRow($0, st) }
-        DisclosureGroup(isExpanded: Binding(
-            get: { expandedAllProjects.contains(st.id) },
-            set: { if $0 { expandedAllProjects.insert(st.id) } else { expandedAllProjects.remove(st.id) } }
-        )) {
+        DisclosureGroup(
+            isExpanded: Binding(
+                get: { expandedAllProjects.contains(st.id) },
+                set: { if $0 { expandedAllProjects.insert(st.id) } else { expandedAllProjects.remove(st.id) } }
+            )
+        ) {
             ForEach(st.projects) { projectRow($0, st) }
         } label: {
             tinted(String(localized: "All Projects"), symbol: "folder", color: st.color)
@@ -356,7 +435,10 @@ struct SidebarView: View {
             .tag(p.filters)
             .contextMenu {
                 if p.custom {
-                    Button("Rename…", systemImage: "pencil") { newTitle = p.name; renamingPreset = p }
+                    Button("Rename…", systemImage: "pencil") {
+                        newTitle = p.name
+                        renamingPreset = p
+                    }
                     Button("Delete…", systemImage: "trash", role: .destructive) { deletingPreset = p }
                 } else {
                     Button("Hide", systemImage: "eye.slash") { session.hidePreset(p.id) }
@@ -367,14 +449,21 @@ struct SidebarView: View {
     /// A sidebar label whose icon carries the account colour; unified entries take the accent from the system.
     /// Every icon goes grey with the window, as the system's own do.
     private func tinted(_ title: String, symbol: String, color: Color?) -> some View {
-        Label { Text(title) } icon: {
-            if let color { Image(systemName: symbol).foregroundStyle(active ? color : .secondary) }
-            else { Image(systemName: symbol) }
+        Label {
+            Text(title)
+        } icon: {
+            if let color {
+                Image(systemName: symbol).foregroundStyle(active ? color : .secondary)
+            } else {
+                Image(systemName: symbol)
+            }
         }
     }
 
     private func expandedBinding(_ st: AccountState) -> Binding<Bool> {
-        Binding(get: { !collapsed.contains(st.id) }, set: { if $0 { collapsed.remove(st.id) } else { collapsed.insert(st.id) } })
+        Binding(
+            get: { !collapsed.contains(st.id) },
+            set: { if $0 { collapsed.remove(st.id) } else { collapsed.insert(st.id) } })
     }
 
     private func projectRow(_ p: Project, _ st: AccountState) -> some View {
@@ -392,9 +481,14 @@ struct SidebarView: View {
         .tag(filters)
         .onTapGesture(count: 2) { openWindow(id: "board", value: BoardTarget(accountID: st.id, projectKey: p.key)) }
         .contextMenu {
-            Button("Open Board", systemImage: "rectangle.split.3x1") { openWindow(id: "board", value: BoardTarget(accountID: st.id, projectKey: p.key)) }
+            Button("Open Board", systemImage: "rectangle.split.3x1") {
+                openWindow(id: "board", value: BoardTarget(accountID: st.id, projectKey: p.key))
+            }
             Button("Open on Web", systemImage: "safari") { NSWorkspace.shared.open(st.client.boardURL(project: p.key)) }
-            Button("New Issue in \(p.name)…", systemImage: "plus") { selection = filters; session.createIssueRequested = true }
+            Button("New Issue in \(p.name)…", systemImage: "plus") {
+                selection = filters
+                session.createIssueRequested = true
+            }
         }
     }
 }

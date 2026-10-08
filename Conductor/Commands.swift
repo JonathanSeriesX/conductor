@@ -5,7 +5,8 @@ import SwiftUI
 struct IssueActions {
     enum Action: Hashable {
         case openInBrowser, openInWindow, copyLink, copyKey, copyMarkdown
-        case assign, assignToMe, watch, remind, transition(String)
+        case assign, assignToMe, watch, remind
+        case transition(String)
         case editSummary, editDescription, comment, attach, link, logWork, subtask, refresh
     }
     let key: String
@@ -14,6 +15,8 @@ struct IssueActions {
     let transitions: [Transition]
     let canEditSummary: Bool
     let canEditDescription: Bool
+    /// A summary, description or comment editor is open.
+    let isEditing: Bool
     let perform: (Action) -> Void
 }
 
@@ -80,7 +83,8 @@ struct AppCommands: Commands {
             item("Remind Me…", .remind, "r", [.command, .option])
             Divider()
             item("Edit Summary", .editSummary, "e").disabled(issue?.canEditSummary != true)
-            item("Edit Description", .editDescription, "e", [.command, .option]).disabled(issue?.canEditDescription != true)
+            item("Edit Description", .editDescription, "e", [.command, .option]).disabled(
+                issue?.canEditDescription != true)
             item("Add Comment", .comment, "m", [.command, .shift])
             item("Attach Files…", .attach, "a", [.command, .option])
             item("Link Issue…", .link, "l", [.command, .shift])
@@ -106,7 +110,10 @@ struct AppCommands: Commands {
         }
     }
 
-    private func item(_ title: LocalizedStringKey, _ action: IssueActions.Action, _ key: KeyEquivalent? = nil, _ modifiers: EventModifiers = .command) -> some View {
+    private func item(
+        _ title: LocalizedStringKey, _ action: IssueActions.Action, _ key: KeyEquivalent? = nil,
+        _ modifiers: EventModifiers = .command
+    ) -> some View {
         Button(title) { issue?.perform(action) }
             .keyboardShortcut(key.map { KeyboardShortcut($0, modifiers: modifiers) })
             .disabled(issue == nil)
@@ -126,12 +133,21 @@ struct IssueWindow: View {
     var body: some View {
         Group {
             if let st = session.state(target.accountID) {
-                IssueDetailView(target: target, open: { trail.append(target); target = $0 },
-                                back: trail.isEmpty ? nil : { target = trail.removeLast() }, embedded: embedded)
-                    .environment(\.jira, st)
-                    .id(target)
+                IssueDetailView(
+                    target: target,
+                    open: {
+                        trail.append(target)
+                        target = $0
+                    },
+                    back: trail.isEmpty ? nil : { target = trail.removeLast() }, embedded: embedded
+                )
+                .environment(\.jira, st)
+                .id(target)
             } else if session.isRestoring {
-                ZStack { Backdrop(); ProgressView() }
+                ZStack {
+                    Backdrop()
+                    ProgressView()
+                }
             } else {
                 // A restored window whose account signed out, or one from a dev launch with a fresh account id.
                 ContentUnavailableView {
@@ -147,7 +163,6 @@ struct IssueWindow: View {
         }
         .writingToolsBehavior(.disabled)
         .background(WindowCascader())
-        .onChange(of: target, initial: true) { session.recordView(target) }
     }
 }
 
@@ -167,10 +182,13 @@ private struct WindowCascader: NSViewRepresentable {
         override func viewDidMoveToWindow() {
             guard !done, let window, let id = window.identifier?.rawValue, id.hasPrefix("issue") else { return }
             done = true
-            let others = NSApp.windows.filter { $0 !== window && $0.isVisible && $0.identifier?.rawValue.hasPrefix("issue") == true }
+            let others = NSApp.windows.filter {
+                $0 !== window && $0.isVisible && $0.identifier?.rawValue.hasPrefix("issue") == true
+            }
             guard let last = others.max(by: { $0.orderedIndex > $1.orderedIndex }) else { return }
             if abs(last.frame.origin.x - window.frame.origin.x) < 2, abs(last.frame.maxY - window.frame.maxY) < 2 {
-                window.setFrameTopLeftPoint(window.cascadeTopLeft(from: NSPoint(x: last.frame.minX, y: last.frame.maxY)))
+                window.setFrameTopLeftPoint(
+                    window.cascadeTopLeft(from: NSPoint(x: last.frame.minX, y: last.frame.maxY)))
             }
         }
     }

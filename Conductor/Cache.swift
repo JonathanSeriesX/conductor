@@ -12,13 +12,15 @@ enum DiskCache {
     }()
 
     private static func file(_ account: Account, _ name: String) -> URL {
-        let folder = root.appending(path: safe("\(account.site.host() ?? "site")|\(account.email)"), directoryHint: .isDirectory)
+        let folder = root.appending(
+            path: safe("\(account.site.host() ?? "site")|\(account.email)"), directoryHint: .isDirectory)
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         return folder.appending(path: safe(name) + ".json")
     }
 
     private static func safe(_ s: String) -> String {
-        s.count > 80 ? hash(s) : s.map { $0.isLetter || $0.isNumber || "-_.@|".contains($0) ? String($0) : "_" }.joined()
+        s.count > 80
+            ? hash(s) : s.map { $0.isLetter || $0.isNumber || "-_.@|".contains($0) ? String($0) : "_" }.joined()
     }
 
     static func hash(_ s: String) -> String {
@@ -34,9 +36,17 @@ enum DiskCache {
     /// and whatever was open last, so the window can draw them in its first frame.
     static func recentLists(account: Account, limit: Int = 12) -> [String: [Issue]] {
         let folder = file(account, "x").deletingLastPathComponent()
-        let files = (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
+        let files =
+            (try? FileManager.default.contentsOfDirectory(
+                at: folder, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
         let recent = files.filter { $0.lastPathComponent.hasPrefix("list-") }
-            .map { ($0, (try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast) }
+            .map {
+                (
+                    $0,
+                    (try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
+                        ?? .distantPast
+                )
+            }
             .sorted { $0.1 > $1.1 }.prefix(limit)
         var out: [String: [Issue]] = [:]
         for (url, _) in recent {
@@ -48,7 +58,8 @@ enum DiskCache {
     }
 
     /// Same as `load`, but the read and decode happen off the main thread.
-    static func loadAsync<T: Decodable & Sendable>(_ type: T.Type = T.self, account: Account, name: String) async -> T? {
+    static func loadAsync<T: Decodable & Sendable>(_ type: T.Type = T.self, account: Account, name: String) async -> T?
+    {
         await Task.detached(priority: .userInitiated) { load(T.self, account: account, name: name) }.value
     }
 
@@ -83,16 +94,24 @@ enum DiskCache {
     }
 
     /// Reads on the calling thread: a few kilobytes for an icon, so a view can draw it in its first frame.
-    static func imageDataNow(for url: URL) -> Data? { try? Data(contentsOf: imageRoot.appending(path: hash(url.absoluteString))) }
-    static func hasImage(for url: URL) -> Bool { FileManager.default.fileExists(atPath: imageRoot.appending(path: hash(url.absoluteString)).path) }
+    static func imageDataNow(for url: URL) -> Data? {
+        try? Data(contentsOf: imageRoot.appending(path: hash(url.absoluteString)))
+    }
+    static func hasImage(for url: URL) -> Bool {
+        FileManager.default.fileExists(atPath: imageRoot.appending(path: hash(url.absoluteString)).path)
+    }
 
     /// Bytes on disk for issues, lists and images together.
     static func size() async -> Int64 {
         await Task.detached(priority: .utility) { () -> Int64 in
             var total: Int64 = 0
             for dir in [root, imageRoot] {
-                guard let e = FileManager.default.enumerator(at: dir, includingPropertiesForKeys: [.fileSizeKey]) else { continue }
-                for f in e.allObjects.compactMap({ $0 as? URL }) { total += Int64((try? f.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) }
+                guard let e = FileManager.default.enumerator(at: dir, includingPropertiesForKeys: [.fileSizeKey]) else {
+                    continue
+                }
+                for f in e.allObjects.compactMap({ $0 as? URL }) {
+                    total += Int64((try? f.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
+                }
             }
             return total
         }.value
@@ -107,10 +126,14 @@ enum DiskCache {
     static func decodeImage(_ data: Data, maxPixels: Int = 1600) async -> NSImage? {
         await Task.detached(priority: .userInitiated) { () -> NSImage? in
             guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return NSImage(data: data) }
-            let options: [CFString: Any] = [kCGImageSourceCreateThumbnailFromImageAlways: true,
-                                            kCGImageSourceThumbnailMaxPixelSize: maxPixels,
-                                            kCGImageSourceCreateThumbnailWithTransform: true]
-            guard let cg = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return NSImage(data: data) }
+            let options: [CFString: Any] = [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceThumbnailMaxPixelSize: maxPixels,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+            ]
+            guard let cg = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
+                return NSImage(data: data)
+            }
             return NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
         }.value
     }
@@ -125,10 +148,13 @@ enum Spotlight {
             let items = issues.map { issue -> CSSearchableItem in
                 let a = CSSearchableItemAttributeSet(contentType: .text)
                 a.title = "\(issue.key)  \(issue.fields.summary)"
-                a.contentDescription = [issue.fields.status.name, issue.fields.assignee?.displayName, issue.fields.project?.name].compactMap { $0 }.joined(separator: " · ")
+                a.contentDescription = [
+                    issue.fields.status.name, issue.fields.assignee?.displayName, issue.fields.project?.name,
+                ].compactMap { $0 }.joined(separator: " · ")
                 a.keywords = [issue.key, issue.fields.project?.key ?? "", issue.fields.issuetype.name]
                 a.identifier = issue.key
-                let item = CSSearchableItem(uniqueIdentifier: "\(host)|\(issue.key)", domainIdentifier: host, attributeSet: a)
+                let item = CSSearchableItem(
+                    uniqueIdentifier: "\(host)|\(issue.key)", domainIdentifier: host, attributeSet: a)
                 item.expirationDate = .distantFuture
                 return item
             }

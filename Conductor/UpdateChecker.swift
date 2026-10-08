@@ -6,7 +6,11 @@ final class UpdateChecker {
     static let shared = UpdateChecker()
     private let releases = URL(string: "https://api.github.com/repos/JonathanSeriesX/conductor/releases/latest")!
 
-    private struct Release: Decodable { let tag_name: String; let html_url: String; let body: String? }
+    private struct Release: Decodable {
+        let tag_name: String
+        let html_url: String
+        let body: String?
+    }
 
     var current: String { Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0" }
 
@@ -32,10 +36,16 @@ final class UpdateChecker {
                     if UserDefaults.standard.string(forKey: "skippedVersion") == latest, !interactive { return }
                     offer(latest, url: r.html_url, notes: r.body)
                 } else if interactive {
-                    alert(String(localized: "You're up to date"), String(localized: "Conductor \(current) is the latest version."))
+                    alert(
+                        String(localized: "You're up to date"),
+                        String(localized: "Conductor \(current) is the latest version."))
                 }
             } catch {
-                if interactive { alert(String(localized: "Couldn't check for updates"), String(localized: "GitHub didn't answer: \(error.localizedDescription)")) }
+                if interactive {
+                    alert(
+                        String(localized: "Couldn't check for updates"),
+                        String(localized: "GitHub didn't answer: \(error.localizedDescription)"))
+                }
             }
         }
     }
@@ -45,7 +55,8 @@ final class UpdateChecker {
         let x = a.split(separator: ".").map { Int($0) ?? 0 }
         let y = b.split(separator: ".").map { Int($0) ?? 0 }
         for i in 0..<max(x.count, y.count) {
-            let l = i < x.count ? x[i] : 0, r = i < y.count ? y[i] : 0
+            let l = i < x.count ? x[i] : 0
+            let r = i < y.count ? y[i] : 0
             if l != r { return l > r }
         }
         return false
@@ -54,7 +65,8 @@ final class UpdateChecker {
     private func offer(_ version: String, url: String, notes: String?) {
         let a = NSAlert()
         a.messageText = String(localized: "Conductor \(version) is available")
-        a.informativeText = (notes?.isEmpty == false ? notes! : String(localized: "You have \(current).")).prefix(600).description
+        a.informativeText =
+            (notes?.isEmpty == false ? notes! : String(localized: "You have \(current).")).prefix(600).description
         a.addButton(withTitle: String(localized: "Download"))
         a.addButton(withTitle: String(localized: "Later"))
         a.addButton(withTitle: String(localized: "Skip This Version"))

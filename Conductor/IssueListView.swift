@@ -1,5 +1,5 @@
-import SwiftUI
 import AppKit
+import SwiftUI
 
 /// One row of a list: the issue and the account it came from.
 struct ListRow: Identifiable {
@@ -23,7 +23,9 @@ struct DisplayRow: Identifiable {
         var children: [String: [ListRow]] = [:]
         var top: [ListRow] = []
         for r in rows {
-            if r.issue.fields.issuetype.isSubtask, let p = r.issue.fields.parent?.key, present.contains("\(r.state.id)|\(p)") {
+            if r.issue.fields.issuetype.isSubtask, let p = r.issue.fields.parent?.key,
+                present.contains("\(r.state.id)|\(p)")
+            {
                 children["\(r.state.id)|\(p)", default: []].append(r)
             } else {
                 top.append(r)
@@ -33,7 +35,9 @@ struct DisplayRow: Identifiable {
         // order is the server's and stays as it came.
         if sort.field == .updated {
             func latest(_ r: ListRow) -> Date {
-                max(r.issue.fields.updated ?? .distantPast, children[r.id]?.compactMap(\.issue.fields.updated).max() ?? .distantPast)
+                max(
+                    r.issue.fields.updated ?? .distantPast,
+                    children[r.id]?.compactMap(\.issue.fields.updated).max() ?? .distantPast)
             }
             top.sort { a, b in
                 let (la, lb) = (latest(a), latest(b))
@@ -69,10 +73,16 @@ final class IssueListStore {
 
     /// One page of a query for one account. With `cache` on, the page is saved to disk, indexed for
     /// Spotlight and remembered as a peek for the issue page. Shared by the list and the launch prefetch.
-    static func fetch(jql: String, state: AccountState, nextPageToken: String? = nil, cache: Bool) async throws -> SearchPage {
+    static func fetch(jql: String, state: AccountState, nextPageToken: String? = nil, cache: Bool) async throws
+        -> SearchPage
+    {
         let page = try await state.client.search(jql: jql, nextPageToken: nextPageToken)
-        for issue in page.issues where !(state.peek[issue.key].map { $0.fields.updated == issue.fields.updated && $0.fields.comment != nil } ?? false) {
-            state.peek[issue.key] = issue   // keep a full copy of the same revision; a row has fewer fields
+        for issue in page.issues
+        where
+            !(state.peek[issue.key].map { $0.fields.updated == issue.fields.updated && $0.fields.comment != nil }
+            ?? false)
+        {
+            state.peek[issue.key] = issue  // keep a full copy of the same revision; a row has fewer fields
         }
         state.warmTransitions(page.issues)
         if cache {
@@ -114,7 +124,12 @@ final class IssueListStore {
         sort = f.sort
         unbounded = !f.isBounded
         queryError = nil
-        if unbounded { rows = []; shownKey = ""; isLoading = false; return }
+        if unbounded {
+            rows = []
+            shownKey = ""
+            isLoading = false
+            return
+        }
         let states = f.account.map { id in session.states.filter { $0.id == id } } ?? session.states
         let queries: [(AccountState, String)] = states.map { ($0, f.jql) }
         // Typed searches are not cached: they change with every keystroke and would litter the disk.
@@ -133,21 +148,30 @@ final class IssueListStore {
         isLoading = true
         if f.account == nil {
             let tasks = queries.map { st, jql in
-                (st.id, Task<[ListRow]?, Never> { @MainActor in
-                    guard let page = try? await Self.fetch(jql: jql, state: st, cache: cacheable) else { return nil }
-                    return page.issues.map { ListRow(issue: $0, state: st) }
-                })
+                (
+                    st.id,
+                    Task<[ListRow]?, Never> { @MainActor in
+                        guard let page = try? await Self.fetch(jql: jql, state: st, cache: cacheable) else {
+                            return nil
+                        }
+                        return page.issues.map { ListRow(issue: $0, state: st) }
+                    }
+                )
             }
             for (id, t) in tasks {
                 let fresh = await t.value
                 guard gen == generation else { return }
-                if let fresh { byAccount[id] = fresh }   // a failed site keeps what it had
+                if let fresh { byAccount[id] = fresh }  // a failed site keeps what it had
                 show(merged(byAccount))
             }
             isLoading = false
             if cacheable { Self.prefetchDetails(rows) }
         } else {
-            guard let (st, jql) = queries.first else { rows = []; isLoading = false; return }
+            guard let (st, jql) = queries.first else {
+                rows = []
+                isLoading = false
+                return
+            }
             single = (st, jql, cacheable)
             await fetchPage(gen: gen, replacing: true)
         }
@@ -159,13 +183,21 @@ final class IssueListStore {
         var out: [UUID: [ListRow]] = [:]
         var missing: [(AccountState, String)] = []
         for (st, jql) in queries {
-            if let hit = st.lists["list-" + DiskCache.hash(jql)] { out[st.id] = hit.map { ListRow(issue: $0, state: st) } }
-            else { missing.append((st, jql)) }
+            if let hit = st.lists["list-" + DiskCache.hash(jql)] {
+                out[st.id] = hit.map { ListRow(issue: $0, state: st) }
+            } else {
+                missing.append((st, jql))
+            }
         }
         guard !missing.isEmpty else { return out }
         let reads = missing.map { st, jql in
             let name = "list-" + DiskCache.hash(jql)
-            return (st, name, Task.detached(priority: .userInitiated) { [account = st.account] in DiskCache.load([Issue].self, account: account, name: name) })
+            return (
+                st, name,
+                Task.detached(priority: .userInitiated) { [account = st.account] in
+                    DiskCache.load([Issue].self, account: account, name: name)
+                }
+            )
         }
         for (st, name, read) in reads {
             guard let issues = await read.value else { continue }
@@ -177,12 +209,14 @@ final class IssueListStore {
 
     /// Replaces the rows unless nothing changed: a refresh that brings the same page back must not redraw the list.
     private func show(_ new: [ListRow]) {
-        guard new.count != rows.count || zip(new, rows).contains(where: { $0.id != $1.id || $0.issue != $1.issue }) else { return }
+        guard new.count != rows.count || zip(new, rows).contains(where: { $0.id != $1.id || $0.issue != $1.issue })
+        else { return }
         rows = new
     }
 
     private func merged(_ byAccount: [UUID: [ListRow]]) -> [ListRow] {
-        byAccount.count == 1 ? byAccount.values.first! : byAccount.values.flatMap { $0 }.sorted { sort.areInOrder($0.issue, $1.issue) }
+        byAccount.count == 1
+            ? byAccount.values.first! : byAccount.values.flatMap { $0 }.sorted { sort.areInOrder($0.issue, $1.issue) }
     }
 
     func loadMore() async {
@@ -204,8 +238,12 @@ final class IssueListStore {
         } catch {
             guard gen == generation, !error.isOffline, !error.isCancelled else { return }
             // A 400 on a typed search is the query itself; an alert would steal the keystrokes that fix it.
-            if !cacheable, (error as? JiraError)?.status == 400 { queryError = error.localizedDescription; rows = [] }
-            else { self.error = error.localizedDescription }
+            if !cacheable, (error as? JiraError)?.status == 400 {
+                queryError = error.localizedDescription
+                rows = []
+            } else {
+                self.error = error.localizedDescription
+            }
         }
     }
 }
@@ -246,29 +284,49 @@ struct IssueListView: View {
         List(selection: $selection) {
             ForEach(shown) { d in
                 let row = d.row
-                IssueRow(issue: row.issue, site: isUnified && session.states.count > 1 ? (row.state.title, row.state.color) : nil,
-                         depth: d.depth, folded: d.children.count, expanded: expanded.contains(d.id),
-                         toggle: d.children.isEmpty ? nil : { withAnimation(.snappy(duration: 0.25)) { expanded.formSymmetricDifference([d.id]) } })
-                    .tag(row.target)
-                    .onAppear { if d.id == shown.last?.id { Task { await store.loadMore() } } }
-                    // Drag a row into Slack, a browser or a note as its Jira link.
-                    .itemProvider {
-                        let p = NSItemProvider(object: row.state.client.browseURL(row.issue.key) as NSURL)
-                        p.suggestedName = "\(row.issue.key) \(row.issue.fields.summary)"   // the .webloc's name in the Finder
-                        return p
-                    }
+                let selected = selection == row.target
+                IssueRow(
+                    issue: row.issue,
+                    site: isUnified && session.states.count > 1 ? (row.state.title, row.state.color) : nil,
+                    depth: d.depth, folded: d.children.count, expanded: expanded.contains(d.id),
+                    toggle: d.children.isEmpty
+                        ? nil : { withAnimation(.snappy(duration: 0.25)) { expanded.formSymmetricDifference([d.id]) } }
+                )
+                .tag(row.target)
+                // The open issue stays in the accent colour while the preview has the focus, as in Notes and Mail;
+                // the table's own highlight, grey without focus, is off.
+                .foregroundStyle(selected ? AnyShapeStyle(.white) : AnyShapeStyle(.foreground))
+                .environment(\.backgroundProminence, selected ? .increased : .standard)
+                .listRowBackground(
+                    RoundedRectangle(cornerRadius: 6).fill(selected ? Color.accentColor : .clear).padding(
+                        .horizontal, 8
+                    ).background(NativeSelectionOff())
+                )
+                .onAppear { if d.id == shown.last?.id { Task { await store.loadMore() } } }
+                // Drag a row into Slack, a browser or a note as its Jira link.
+                .itemProvider {
+                    let p = NSItemProvider(object: row.state.client.browseURL(row.issue.key) as NSURL)
+                    p.suggestedName = "\(row.issue.key) \(row.issue.fields.summary)"  // the .webloc's name in the Finder
+                    return p
+                }
             }
             // Only while there is nothing to show or the next page is coming: a refresh behind rows that are
             // already on screen must not add and remove a row at the end of the list.
             if store.isLoading, store.rows.isEmpty || store.nextToken != nil {
-                HStack { Spacer(); ProgressView().controlSize(.small); Spacer() }
-                    .listRowSeparator(.hidden)
+                HStack {
+                    Spacer()
+                    ProgressView().controlSize(.small)
+                    Spacer()
+                }
+                .listRowSeparator(.hidden)
             }
             if filters.scope == .recent, !store.rows.isEmpty, !store.isLoading {
                 // Jira's history only records issues opened on the web; nothing Conductor does can add to it.
-                Text("Jira keeps this list from the issues you open on the web. Issues opened in Conductor don't count.")
-                    .font(.caption).foregroundStyle(.tertiary).padding(.vertical, 8)
-                    .listRowSeparator(.hidden)
+                Text(
+                    "Jira keeps this list from the issues you open on the web. Issues opened in Conductor don't count."
+                )
+                .font(.caption).foregroundStyle(.tertiary).padding(.vertical, 8)
+                .listRowSeparator(.hidden)
             }
         }
         .listStyle(.inset)
@@ -283,8 +341,11 @@ struct IssueListView: View {
         .safeAreaInset(edge: .top, spacing: 0) { chips }
         .overlay {
             if store.unbounded {
-                ContentUnavailableView("Pick a filter", systemImage: "line.3.horizontal.decrease.circle",
-                                       description: Text("Jira won't list a whole site at once. Choose a project, a status, a person or a scope, or type a search."))
+                ContentUnavailableView(
+                    "Pick a filter", systemImage: "line.3.horizontal.decrease.circle",
+                    description: Text(
+                        "Jira won't list a whole site at once. Choose a project, a status, a person or a scope, or type a search."
+                    ))
             } else if let e = store.queryError {
                 ContentUnavailableView("Incomplete query", systemImage: "text.magnifyingglass", description: Text(e))
             } else if !store.isLoading, store.rows.isEmpty {
@@ -293,15 +354,25 @@ struct IssueListView: View {
                 } description: {
                     if filters != cleared { Text("Nothing matches these filters.") }
                 } actions: {
-                    if !filters.text.isEmpty { Button("Clear Search") { filters.text = "" } }
-                    else if filters != cleared { Button("Clear Filters") { filters = cleared } }
+                    if !filters.text.isEmpty {
+                        Button("Clear Search") { filters.text = "" }
+                    } else if filters != cleared {
+                        Button("Clear Filters") { filters = cleared }
+                    }
                 }
             }
         }
-        .focusedSceneValue(\.listActions, ListActions(
-            saveFilter: canSaveFilter ? { filterName = ""; savingFilter = true } : nil,
-            openBoard: boardTarget.map { b in { openWindow(id: "board", value: b) } }
-        ))
+        .focusedSceneValue(
+            \.listActions,
+            ListActions(
+                saveFilter: canSaveFilter
+                    ? {
+                        filterName = ""
+                        savingFilter = true
+                    } : nil,
+                openBoard: boardTarget.map { b in { openWindow(id: "board", value: b) } }
+            )
+        )
         .navigationTitle(session.title(for: filters))
         .navigationSubtitle(subtitle)
         .searchable(text: $filters.text, placement: .toolbar, prompt: "Search, JQL, or paste a Jira link")
@@ -312,7 +383,9 @@ struct IssueListView: View {
             }
         }
         .onSubmit(of: .search) {
-            if let url = URL(string: filters.text), url.scheme?.hasPrefix("http") == true, Session.issueKey(in: url) != nil {
+            if let url = URL(string: filters.text), url.scheme?.hasPrefix("http") == true,
+                Session.issueKey(in: url) != nil
+            {
                 session.open(url: url)
                 filters.text = ""
                 return
@@ -323,23 +396,36 @@ struct IssueListView: View {
             NewIssueToolbarItem()
             ToolbarItem(id: "board") {
                 if let b = boardTarget {
-                    Button { openWindow(id: "board", value: b) } label: { Label("Board", systemImage: "rectangle.split.3x1") }
-                        .help("Open the project board (⌘⇧B)")
+                    Button {
+                        openWindow(id: "board", value: b)
+                    } label: {
+                        Label("Board", systemImage: "rectangle.split.3x1")
+                    }
+                    .help("Open the project board (⌘⇧B)")
                 }
             }
             ToolbarItem(id: "saveFilter") {
-                Button { filterName = ""; savingFilter = true } label: { Label("Save Filter", systemImage: "bookmark") }
-                    .help("Keep these filters and search in the sidebar (⌘S)")
-                    .disabled(!canSaveFilter)
+                Button {
+                    filterName = ""
+                    savingFilter = true
+                } label: {
+                    Label("Save Filter", systemImage: "bookmark")
+                }
+                .help("Keep these filters and search in the sidebar (⌘S)")
+                .disabled(!canSaveFilter)
             }
         }
         .alert("Save Filter", isPresented: $savingFilter) {
             TextField("Filter name", text: $filterName)
-            Button("Save") { session.addPreset(name: filterName.trimmingCharacters(in: .whitespaces), filters: filters) }
-                .disabled(filterName.trimmingCharacters(in: .whitespaces).isEmpty)
+            Button("Save") {
+                session.addPreset(name: filterName.trimmingCharacters(in: .whitespaces), filters: filters)
+            }
+            .disabled(filterName.trimmingCharacters(in: .whitespaces).isEmpty)
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("The current chips, search and sort order, under \(filters.account.flatMap(session.state)?.title ?? String(localized: "All Accounts")) in the sidebar.")
+            Text(
+                "The current chips, search and sort order, under \(filters.account.flatMap(session.state)?.title ?? String(localized: "All Accounts")) in the sidebar."
+            )
         }
         .task(id: loadKey) {
             // Debounce typing; JQL is evaluated server-side.
@@ -355,12 +441,17 @@ struct IssueListView: View {
                 refresh()
             }
         }
-        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in refresh() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            refresh()
+        }
         .onChange(of: filters) { old, new in
             if new.text.isEmpty, old.text.isEmpty, old != new { searchFocused = false }
         }
         .onChange(of: session.focusSearchRequested) { _, on in
-            if on { searchFocused = true; session.focusSearchRequested = false }
+            if on {
+                searchFocused = true
+                session.focusSearchRequested = false
+            }
         }
         .errorAlert($store.error)
     }
@@ -372,7 +463,8 @@ struct IssueListView: View {
     /// → unfolds the selected parent's subtasks, ← folds them, as in an outline (the other way round right to left).
     private func fold(open: Bool) -> KeyPress.Result {
         guard let sel = selection, let d = displayRows.first(where: { $0.row.target == sel }), !d.children.isEmpty,
-              expanded.contains(d.id) != open else { return .ignored }
+            expanded.contains(d.id) != open
+        else { return .ignored }
         withAnimation(.snappy(duration: 0.25)) { expanded.formSymmetricDifference([d.id]) }
         return .handled
     }
@@ -381,7 +473,9 @@ struct IssueListView: View {
     private var canSaveFilter: Bool {
         guard filters.isActive else { return false }
         if !filters.text.isEmpty { return true }
-        var projectRow = ListFilters(); projectRow.account = filters.account; projectRow.project = filters.project
+        var projectRow = ListFilters()
+        projectRow.account = filters.account
+        projectRow.project = filters.project
         return session.preset(matching: filters) == nil && filters != projectRow
     }
 
@@ -405,7 +499,10 @@ struct IssueListView: View {
     /// Runs a write, then reloads the list and the open issue so both show the result.
     private func act(_ op: @escaping () async throws -> Void) {
         Task {
-            do { try await op(); session.reloadTick += 1 } catch { store.error = error.localizedDescription }
+            do {
+                try await op()
+                session.reloadTick += 1
+            } catch { store.error = error.localizedDescription }
         }
     }
 
@@ -431,35 +528,88 @@ struct IssueListView: View {
     private var chipList: [Chip] {
         var list: [Chip] = []
         if session.states.count > 1 {
-            list.append(Chip(id: "account", name: String(localized: "Account"), title: filters.account.flatMap(session.state)?.title ?? String(localized: "All accounts"), active: filters.account != nil,
-                             items: [ChipItem(String(localized: "All accounts"), selected: filters.account == nil) { setAccount(nil) }, .separator]
-                                 + session.states.map { st in ChipItem(st.title, selected: filters.account == st.id) { setAccount(st.id) } }))
+            list.append(
+                Chip(
+                    id: "account", name: String(localized: "Account"),
+                    title: filters.account.flatMap(session.state)?.title ?? String(localized: "All accounts"),
+                    active: filters.account != nil,
+                    items: [
+                        ChipItem(String(localized: "All accounts"), selected: filters.account == nil) {
+                            setAccount(nil)
+                        }, .separator,
+                    ]
+                        + session.states.map { st in
+                            ChipItem(st.title, selected: filters.account == st.id) { setAccount(st.id) }
+                        }))
         }
         if let st = filters.account.flatMap(session.state) {
             let projects = st.starredProjects + st.projects.filter { !st.starred.contains($0.key) }
-            list.append(Chip(id: "project", name: String(localized: "Project"), title: projects.first { $0.key == filters.project }?.name ?? filters.project ?? String(localized: "Any project"), active: filters.project != nil,
-                             items: [ChipItem(String(localized: "Any project"), selected: filters.project == nil) { filters.project = nil }, .separator]
-                                 + projects.map { p in ChipItem(p.name, selected: filters.project == p.key) { filters.project = p.key } }))
+            list.append(
+                Chip(
+                    id: "project", name: String(localized: "Project"),
+                    title: projects.first { $0.key == filters.project }?.name ?? filters.project
+                        ?? String(localized: "Any project"), active: filters.project != nil,
+                    items: [
+                        ChipItem(String(localized: "Any project"), selected: filters.project == nil) {
+                            filters.project = nil
+                        }, .separator,
+                    ]
+                        + projects.map { p in
+                            ChipItem(p.name, selected: filters.project == p.key) { filters.project = p.key }
+                        }))
         }
         if let f = filters.jiraFilter {
-            list.append(Chip(id: "jiraFilter", name: f.name, title: f.name, active: true,
-                             items: [ChipItem(String(localized: "Clear filter"), selected: false) { filters.jiraFilter = nil }]))
+            list.append(
+                Chip(
+                    id: "jiraFilter", name: f.name, title: f.name, active: true,
+                    items: [ChipItem(String(localized: "Clear filter"), selected: false) { filters.jiraFilter = nil }]))
         }
-        list.append(Chip(id: "scope", name: String(localized: "Scope"), title: filters.scope.title, active: filters.scope != .all,
-                         items: ListFilters.Scope.allCases.map { s in ChipItem(s.title, selected: filters.scope == s) { filters.scope = s } }))
-        list.append(Chip(id: "status", name: String(localized: "Status"), title: filters.status.title, active: filters.status != .any,
-                         items: ListFilters.Status.allCases.map { s in ChipItem(s.title, selected: filters.status == s) { filters.status = s } }))
-        list.append(Chip(id: "assignee", name: String(localized: "Assignee"), title: filters.assignee.title, active: filters.assignee != .any,
-                         items: ListFilters.Assignee.allCases.map { a in ChipItem(a.title, selected: filters.assignee == a) { filters.assignee = a } }))
-        list.append(Chip(id: "reporter", name: String(localized: "Reporter"), title: filters.reporter.title, active: filters.reporter != .any,
-                         items: ListFilters.Reporter.allCases.map { r in ChipItem(r.title, selected: filters.reporter == r) { filters.reporter = r } }))
-        if let st = filters.account.flatMap(session.state) { // issue types differ per site, so the chip only makes sense inside one account
-            list.append(Chip(id: "type", name: String(localized: "Type"), title: filters.type ?? String(localized: "Any type"), active: filters.type != nil,
-                             items: [ChipItem(String(localized: "Any type"), selected: filters.type == nil) { filters.type = nil }, .separator]
-                                 + st.issueTypeNames.map { t in ChipItem(t, selected: filters.type == t) { filters.type = t } }))
+        list.append(
+            Chip(
+                id: "scope", name: String(localized: "Scope"), title: filters.scope.title,
+                active: filters.scope != .all,
+                items: ListFilters.Scope.allCases.map { s in
+                    ChipItem(s.title, selected: filters.scope == s) { filters.scope = s }
+                }))
+        list.append(
+            Chip(
+                id: "status", name: String(localized: "Status"), title: filters.status.title,
+                active: filters.status != .any,
+                items: ListFilters.Status.allCases.map { s in
+                    ChipItem(s.title, selected: filters.status == s) { filters.status = s }
+                }))
+        list.append(
+            Chip(
+                id: "assignee", name: String(localized: "Assignee"), title: filters.assignee.title,
+                active: filters.assignee != .any,
+                items: ListFilters.Assignee.allCases.map { a in
+                    ChipItem(a.title, selected: filters.assignee == a) { filters.assignee = a }
+                }))
+        list.append(
+            Chip(
+                id: "reporter", name: String(localized: "Reporter"), title: filters.reporter.title,
+                active: filters.reporter != .any,
+                items: ListFilters.Reporter.allCases.map { r in
+                    ChipItem(r.title, selected: filters.reporter == r) { filters.reporter = r }
+                }))
+        if let st = filters.account.flatMap(session.state) {  // issue types differ per site, so the chip only makes sense inside one account
+            list.append(
+                Chip(
+                    id: "type", name: String(localized: "Type"), title: filters.type ?? String(localized: "Any type"),
+                    active: filters.type != nil,
+                    items: [
+                        ChipItem(String(localized: "Any type"), selected: filters.type == nil) { filters.type = nil },
+                        .separator,
+                    ]
+                        + st.issueTypeNames.map { t in ChipItem(t, selected: filters.type == t) { filters.type = t } }))
         }
-        list.append(Chip(id: "updated", name: String(localized: "Updated"), title: filters.updated.title, active: filters.updated != .any,
-                         items: ListFilters.Updated.allCases.map { u in ChipItem(u.title, selected: filters.updated == u) { filters.updated = u } }))
+        list.append(
+            Chip(
+                id: "updated", name: String(localized: "Updated"), title: filters.updated.title,
+                active: filters.updated != .any,
+                items: ListFilters.Updated.allCases.map { u in
+                    ChipItem(u.title, selected: filters.updated == u) { filters.updated = u }
+                }))
         return list
     }
 
@@ -474,30 +624,50 @@ struct IssueListView: View {
                         FilterChip(id: c.id, title: c.title, active: true, menus: chipMenus, items: c.items)
                     }
                     if !more.isEmpty {
-                        FilterChip(id: "add", title: String(localized: "Filter"), symbol: "plus", active: false, menus: chipMenus,
-                                   items: more.map { ChipItem($0.name, children: $0.items) })
-                            .help("Add a filter")
+                        FilterChip(
+                            id: "add", title: String(localized: "Filter"), symbol: "plus", active: false,
+                            menus: chipMenus,
+                            items: more.map { ChipItem($0.name, children: $0.items) }
+                        )
+                        .help("Add a filter")
                     }
                     if filters != cleared {
-                        Button { filters = cleared } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }
-                            .buttonStyle(.plain).help("Clear filters")
+                        Button {
+                            filters = cleared
+                        } label: {
+                            Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain).help("Clear filters")
                     }
                 }
                 .padding(.horizontal, 10).padding(.vertical, 8)
             }
-            FilterChip(id: "sort", title: filters.sort.field.title, symbol: filters.sort.descending ? "arrow.down" : "arrow.up", active: false, menus: chipMenus,
-                       items: ListFilters.Sort.Field.allCases.map { f in ChipItem(f.title, selected: filters.sort.field == f) { filters.sort.field = f } }
-                           + [.separator,
-                              ChipItem(String(localized: "Ascending"), selected: !filters.sort.descending) { filters.sort.descending = false },
-                              ChipItem(String(localized: "Descending"), selected: filters.sort.descending) { filters.sort.descending = true }])
-                .help("Sort order")
-                .padding(.trailing, 10)
+            FilterChip(
+                id: "sort", title: filters.sort.field.title,
+                symbol: filters.sort.descending ? "arrow.down" : "arrow.up", active: false, menus: chipMenus,
+                items: ListFilters.Sort.Field.allCases.map { f in
+                    ChipItem(f.title, selected: filters.sort.field == f) { filters.sort.field = f }
+                }
+                    + [
+                        .separator,
+                        ChipItem(String(localized: "Ascending"), selected: !filters.sort.descending) {
+                            filters.sort.descending = false
+                        },
+                        ChipItem(String(localized: "Descending"), selected: filters.sort.descending) {
+                            filters.sort.descending = true
+                        },
+                    ]
+            )
+            .help("Sort order")
+            .padding(.trailing, 10)
         }
         .background(.bar)
         .overlay(alignment: .bottom) { Divider() }
         .disabled(filters.isRawJQL || filters.isKey)
         .opacity(filters.isRawJQL || filters.isKey ? 0.4 : 1)
-        .help(filters.isRawJQL ? "Filters don't apply to raw JQL" : filters.isKey ? "A key opens that issue whatever the filters" : "")
+        .help(
+            filters.isRawJQL
+                ? "Filters don't apply to raw JQL" : filters.isKey ? "A key opens that issue whatever the filters" : "")
     }
 
     // MARK: Search assist
@@ -509,23 +679,42 @@ struct IssueListView: View {
             return
         }
         let fields = state?.jqlFields ?? []
-        guard filters.isRawJQL || fields.contains(where: { q.lowercased().hasPrefix($0.value.lowercased()) }) else { suggestions = []; return }
+        guard filters.isRawJQL || fields.contains(where: { q.lowercased().hasPrefix($0.value.lowercased()) }) else {
+            suggestions = []
+            return
+        }
         // "status = In" → values for status; "sta" → field names.
-        if let m = q.firstMatch(of: /(.*?)([A-Za-z_][\w\[\]. ]*?)\s*(=|!=|~|!~|>=|<=|>|<|\bin\b|\bnot in\b|\bis not\b|\bis\b)\s*("?)([^"]*)$/.ignoresCase()) {
+        if let m = q.firstMatch(
+            of:
+                /(.*?)([A-Za-z_][\w\[\]. ]*?)\s*(=|!=|~|!~|>=|<=|>|<|\bin\b|\bnot in\b|\bis not\b|\bis\b)\s*("?)([^"]*)$/
+                .ignoresCase())
+        {
             let field = String(m.2).trimmingCharacters(in: .whitespaces)
             let partial = String(m.5)
             try? await Task.sleep(for: .milliseconds(250))
             guard !Task.isCancelled, let c = state?.client else { return }
             let values = (try? await c.jqlSuggestions(field: field, value: partial)) ?? []
             let prefix = String(m.1) + field + " " + String(m.3) + " "
-            suggestions = values.prefix(8).map { ($0.displayName.replacingOccurrences(of: "<b>", with: "").replacingOccurrences(of: "</b>", with: ""), prefix + $0.value + " ") }
+            suggestions = values.prefix(8).map {
+                (
+                    $0.displayName.replacingOccurrences(of: "<b>", with: "").replacingOccurrences(of: "</b>", with: ""),
+                    prefix + $0.value + " "
+                )
+            }
             return
         }
-        guard let last = q.split(separator: " ", omittingEmptySubsequences: false).last else { suggestions = []; return }
+        guard let last = q.split(separator: " ", omittingEmptySubsequences: false).last else {
+            suggestions = []
+            return
+        }
         let head = q.dropLast(last.count)
         let word = last.lowercased()
-        guard !word.isEmpty else { suggestions = []; return }
-        suggestions = fields
+        guard !word.isEmpty else {
+            suggestions = []
+            return
+        }
+        suggestions =
+            fields
             .filter { $0.value.lowercased().hasPrefix(word) }
             .prefix(8)
             .map { ($0.displayName, head + $0.value + " ") }
@@ -541,7 +730,7 @@ struct SiteBadge: View {
 
     var body: some View {
         let tint: Color = prominence == .increased ? .white : color
-        Text(name).font(.caption2.weight(.semibold)).foregroundStyle(tint)
+        Text(name).font(.caption2.weight(.semibold)).foregroundStyle(tint).fixedSize()
             .padding(.horizontal, 5).padding(.vertical, 2)
             .background(tint.opacity(prominence == .increased ? 0.28 : 0.16), in: .rect(cornerRadius: 4))
     }
@@ -566,17 +755,26 @@ struct IssueRow: View {
             VStack(alignment: .leading, spacing: 5) {
                 if depth == 0, issue.fields.issuetype.isSubtask, let parent = issue.fields.parent {
                     // The parent is not in this list, so say which one it is.
-                    Label { Text(verbatim: "\(parent.key)  \(parent.fields.summary)") } icon: { Image(systemName: "arrow.turn.down.right").flipsForRightToLeftLayoutDirection(true) }
-                        .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    Label {
+                        Text(verbatim: "\(parent.key)  \(parent.fields.summary)")
+                    } icon: {
+                        Image(systemName: "arrow.turn.down.right").flipsForRightToLeftLayoutDirection(true)
+                    }
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
                 HStack(alignment: .top, spacing: 6) {
-                    Text(issue.fields.summary).lineLimit(2).strikethrough(issue.isDone).foregroundStyle(issue.isDone ? .secondary : .primary)
+                    Text(issue.fields.summary).lineLimit(2).strikethrough(issue.isDone).foregroundStyle(
+                        issue.isDone ? .secondary : .primary)
                     if let toggle {
                         Spacer(minLength: 0)
                         Button(action: toggle) {
-                            Label(expanded ? "Hide subtasks" : "Show subtasks", systemImage: expanded ? "chevron.down" : "chevron.forward")
-                                .labelStyle(.iconOnly)
-                                .font(.caption.weight(.semibold)).foregroundStyle(.secondary).frame(width: 22, height: 22).contentShape(.rect)
+                            Label(
+                                expanded ? "Hide subtasks" : "Show subtasks",
+                                systemImage: expanded ? "chevron.down" : "chevron.forward"
+                            )
+                            .labelStyle(.iconOnly)
+                            .font(.caption.weight(.semibold)).foregroundStyle(.secondary).frame(width: 22, height: 22)
+                            .contentShape(.rect)
                         }
                         .buttonStyle(.plain)
                         .help(expanded ? "Hide subtasks" : "Show \(folded) subtasks from this list")
@@ -625,10 +823,13 @@ struct IssueMenu: View {
         Divider()
         Button("Copy Link", systemImage: "link") { copyToPasteboard(url.absoluteString) }
         Button("Copy Key", systemImage: "number") { copyToPasteboard(key) }
-        Button("Copy as Markdown", systemImage: "text.quote") { copyToPasteboard(state.client.markdownLink(key, summary: issue.fields.summary)) }
+        Button("Copy as Markdown", systemImage: "text.quote") {
+            copyToPasteboard(state.client.markdownLink(key, summary: issue.fields.summary))
+        }
         ShareLink(item: url)
         Divider()
-        Button(watching ? "Stop Watching This Issue" : "Watch This Issue", systemImage: watching ? "eye.slash" : "eye") {
+        Button(watching ? "Stop Watching This Issue" : "Watch This Issue", systemImage: watching ? "eye.slash" : "eye")
+        {
             write { try await state.client.watch(key, !watching, me: me) }
         }
         Divider()
@@ -636,11 +837,18 @@ struct IssueMenu: View {
         if let transitions = state.transitionsByWorkflow[AccountState.workflowKey(issue)] {
             Menu("Change Status") {
                 ForEach(transitions) { t in
-                    Toggle(isOn: Binding(get: { t.to.id == issue.fields.status.id }, set: { on in if on { write { try await state.client.transition(key, to: t.id) } } })) { Text(t.name) }
+                    Toggle(
+                        isOn: Binding(
+                            get: { t.to.id == issue.fields.status.id },
+                            set: { on in if on { write { try await state.client.transition(key, to: t.id) } } })
+                    ) { Text(t.name) }
                 }
             }
         } else {
-            Button("Change Status…") { openWindow(id: "issue", value: target); state.warmTransitions([issue]) }
+            Button("Change Status…") {
+                openWindow(id: "issue", value: target)
+                state.warmTransitions([issue])
+            }
         }
         if let me, issue.fields.assignee?.accountId != me {
             Button("Assign to Me", systemImage: "person.crop.circle.badge.checkmark") {
@@ -663,9 +871,22 @@ struct ChipItem {
     let action: (() -> Void)?
     /// A submenu instead of an action.
     var children: [ChipItem] = []
-    init(_ title: String, selected: Bool, action: @escaping () -> Void) { self.title = title; self.selected = selected; self.action = action }
-    init(_ title: String, children: [ChipItem]) { self.title = title; selected = false; action = nil; self.children = children }
-    private init() { title = ""; selected = false; action = nil }
+    init(_ title: String, selected: Bool, action: @escaping () -> Void) {
+        self.title = title
+        self.selected = selected
+        self.action = action
+    }
+    init(_ title: String, children: [ChipItem]) {
+        self.title = title
+        selected = false
+        action = nil
+        self.children = children
+    }
+    private init() {
+        title = ""
+        selected = false
+        action = nil
+    }
     static var separator: ChipItem { ChipItem() }
 }
 
@@ -684,7 +905,7 @@ final class ChipMenuController: NSObject, NSMenuDelegate {
     }
 
     func toggle(_ id: String) {
-        if openID == id { return } // the click that closed it must not reopen it
+        if openID == id { return }  // the click that closed it must not reopen it
         open(id)
     }
 
@@ -702,8 +923,12 @@ final class ChipMenuController: NSObject, NSMenuDelegate {
     private func build(_ list: [ChipItem]) -> NSMenu {
         let menu = NSMenu()
         for item in list {
-            if item.action == nil, item.children.isEmpty { menu.addItem(.separator()); continue }
-            let mi = NSMenuItem(title: item.title, action: item.action == nil ? nil : #selector(fire(_:)), keyEquivalent: "")
+            if item.action == nil, item.children.isEmpty {
+                menu.addItem(.separator())
+                continue
+            }
+            let mi = NSMenuItem(
+                title: item.title, action: item.action == nil ? nil : #selector(fire(_:)), keyEquivalent: "")
             mi.target = self
             mi.state = item.selected ? .on : .off
             if let action = item.action { actions[mi] = action } else { mi.submenu = build(item.children) }
@@ -725,8 +950,11 @@ final class ChipMenuController: NSObject, NSMenuDelegate {
                 guard frame.contains(mouse) else { continue }
                 // A chip scrolled under the sort chip, or the trailing edge of the chip strip, must not count.
                 let local = content.convert(window.convertPoint(fromScreen: mouse), from: nil)
-                guard let hit = content.hitTest(local), hit.isDescendant(of: view) || view.isDescendant(of: hit) else { continue }
-                self.open(id); return
+                guard let hit = content.hitTest(local), hit.isDescendant(of: view) || view.isDescendant(of: hit) else {
+                    continue
+                }
+                self.open(id)
+                return
             }
         }
     }
@@ -741,7 +969,9 @@ struct FilterChip: View {
     let items: [ChipItem]
 
     var body: some View {
-        Button { menus.toggle(id) } label: {
+        Button {
+            menus.toggle(id)
+        } label: {
             HStack(spacing: 3) {
                 if let symbol { Image(systemName: symbol).font(.system(size: 9, weight: .bold)) }
                 Text(title).lineLimit(1)
@@ -755,6 +985,19 @@ struct FilterChip: View {
         }
         .buttonStyle(.plain)
         .background(ChipAnchor(id: id, menus: menus, items: items))
+    }
+}
+
+/// Turns off the table's own selection drawing; the rows paint theirs.
+private struct NativeSelectionOff: NSViewRepresentable {
+    func makeNSView(context: Context) -> Finder { Finder() }
+    func updateNSView(_ view: Finder, context: Context) {}
+    final class Finder: NSView {
+        override func viewDidMoveToWindow() {
+            var v: NSView? = self
+            while let s = v, !(s is NSTableView) { v = s.superview }
+            (v as? NSTableView)?.selectionHighlightStyle = .none
+        }
     }
 }
 
