@@ -27,7 +27,8 @@ struct ConductorApp: App {
                     Notifier.shared.start(session)
                     UpdateChecker.shared.checkIfDue()
                 }
-                .frame(minWidth: 760, minHeight: 560)
+                // Sidebar (200) and list (420) at their narrowest still leave the preview a readable width.
+                .frame(minWidth: 1100, minHeight: 560)
         }
         .windowToolbarStyle(.unified)
         // Always present a window at launch, even when restored state has none (e.g. after a test-host run).
@@ -37,13 +38,14 @@ struct ConductorApp: App {
         .commands {
             CommandGroup(replacing: .newItem) {
                 Button("New Issue…") {
-                    // The sheet hangs off the list window; make sure there is one.
-                    if !NSApp.windows.contains(where: {
+                    // The list window knows which project it shows and fills it in; without one, a plain window.
+                    if NSApp.windows.contains(where: {
                         $0.identifier?.rawValue.hasPrefix("main") == true && $0.isVisible
                     }) {
-                        openWindow(id: "main")
+                        session.createIssueRequested = true
+                    } else {
+                        openWindow(id: "create", value: CreateRequest())
                     }
-                    session.createIssueRequested = true
                 }
                 .keyboardShortcut("n")
                 .disabled(!session.isSignedIn)
@@ -74,6 +76,15 @@ struct ConductorApp: App {
             }
         }
         .defaultSize(width: 1400, height: 820)
+
+        // A window of its own, not a sheet: the list and other issues stay usable while an issue is written.
+        WindowGroup("New Issue", id: "create", for: CreateRequest.self) { $request in
+            if let request {
+                CreateIssueView(request: request).environment(session)
+            }
+        }
+        .windowResizability(.contentSize)
+        .defaultPosition(.center)
 
         Settings {
             SettingsView().environment(session)
@@ -129,8 +140,9 @@ struct RootView: View {
                         ContentUnavailableView("No Issue Selected", systemImage: "doc.text")
                             .frame(maxWidth: .infinity, maxHeight: .infinity).background(Backdrop())
                             // Without items of its own the column has no toolbar section, and the list's
-                            // New Issue and Save Filter drift over here.
-                            .toolbar(id: "empty") { ToolbarItem(id: "none") { EmptyView() }.glassTitle() }
+                            // New Issue and Save Filter drift over here. Not customizable, like the issue page's:
+                            // SwiftUI crashed applying saved customizations while the two swapped in one pass.
+                            .toolbar { ToolbarItem { EmptyView() }.glassTitle() }
                     }
                 }
                 .background(
@@ -138,8 +150,12 @@ struct RootView: View {
                         escape(e).flatMap { ShortcutScheme.handle($0, issue: issueActions, session: session) }
                     }
                 )
-                .sheet(isPresented: Bindable(session).createIssueRequested) {
-                    CreateIssueView(defaultProject: currentProject) { openWindow(id: "issue", value: $0) }
+                .onChange(of: session.createIssueRequested) { _, on in
+                    guard on else { return }
+                    session.createIssueRequested = false
+                    openWindow(
+                        id: "create",
+                        value: CreateRequest(accountID: currentProject?.1.id, projectKey: currentProject?.0.key))
                 }
             } else {
                 LoginView()

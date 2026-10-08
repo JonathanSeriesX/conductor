@@ -55,6 +55,18 @@ extension CustomizableToolbarContent {
     }
 }
 
+extension ToolbarContent {
+    /// The same for a toolbar that cannot be customized: the issue page's, which comes and goes in the preview column.
+    @ToolbarContentBuilder func glassTitle() -> some ToolbarContent {
+        if #available(macOS 26, *) {
+            sharedBackgroundVisibility(.hidden)
+            ToolbarSpacer(.flexible)
+        } else {
+            self
+        }
+    }
+}
+
 /// Lets neighbouring glass panes blend on macOS 26; plain content on Sequoia.
 struct GlassGroup<Content: View>: View {
     var spacing: CGFloat
@@ -114,6 +126,7 @@ struct RemoteImage: View {
 struct Avatar: View {
     let user: JiraUser?
     var size: CGFloat = 22
+    @Environment(\.backgroundProminence) private var prominence
 
     var body: some View {
         Group {
@@ -126,6 +139,8 @@ struct Avatar: View {
         }
         .frame(width: size, height: size)
         .clipShape(.circle)
+        // A ring on a selected row, so an orange avatar still reads on the orange selection.
+        .overlay { if prominence == .increased { Circle().stroke(.white.opacity(0.9), lineWidth: 1.5) } }
         .help(user?.displayName ?? String(localized: "Unassigned"))
         .accessibilityLabel(user?.displayName ?? String(localized: "Unassigned"))
     }
@@ -263,21 +278,38 @@ extension NSWindow {
     }
 }
 
-/// A closed popover leaves the keyboard on the window's first key view, the search field, when it had a text
-/// field of its own. The list is where it came from.
+/// A closed popover leaves the keyboard on the window's first key view when it had a text field of its own: the
+/// search field in the list window, the comment box in an issue window. The list, or nothing, is where it came from.
 @MainActor enum PopoverFocusReturn {
     static func install() {
         NotificationCenter.default.addObserver(forName: NSPopover.didCloseNotification, object: nil, queue: .main) {
             _ in
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
-                    guard let w = NSApp.keyWindow, let tv = w.firstResponder as? NSTextView, tv.isFieldEditor else {
-                        return
-                    }
+                    guard let w = NSApp.keyWindow, w.firstResponder is NSTextView else { return }
                     w.focusList()
                 }
             }
         }
+    }
+}
+
+extension View {
+    /// Marks a value the user can change: it lights up under the pointer, as a field does on the web. Read-only
+    /// values stay plain, so the two can be told apart. Off, it changes nothing.
+    func editable(_ on: Bool = true) -> some View { modifier(Editable(on: on)) }
+}
+
+private struct Editable: ViewModifier {
+    let on: Bool
+    @State private var hover = false
+
+    func body(content: Content) -> some View {
+        content
+            .padding(.horizontal, 6).padding(.vertical, 3)
+            .background(hover && on ? Color.primary.opacity(0.08) : .clear, in: .rect(cornerRadius: 6))
+            .padding(.horizontal, -6).padding(.vertical, -3)  // the highlight draws outside; nothing moves
+            .onHover { hover = $0 }
     }
 }
 

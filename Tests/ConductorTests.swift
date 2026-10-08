@@ -296,6 +296,29 @@ final class MarkdownTests: XCTestCase {
         XCTAssertTrue(ADFNode(type: "doc", content: [ADFNode(type: "panel")]).hasLossyNodes)  // tables round-trip now
         XCTAssertFalse(ADFNode.document(markdown: "plain").hasLossyNodes)
     }
+
+    func testTaskListsRoundTrip() {
+        let md = "- [ ] todo item\n- [x] done item\n\n- plain bullet"
+        let doc = ADFNode.document(markdown: md)
+        XCTAssertEqual(doc.content?.map(\.type), ["taskList", "bulletList"])
+        let items = doc.content?.first?.content ?? []
+        XCTAssertEqual(items.map { $0.attr("state") }, ["TODO", "DONE"])
+        XCTAssertEqual(items.first?.content?.first?.text, "todo item", "a task item holds inline text, not a paragraph")
+        XCTAssertNotNil(items.first?.attr("localId"))
+        XCTAssertFalse(doc.hasLossyNodes)
+        var m: [String: String] = [:]
+        XCTAssertEqual(doc.markdown(mentions: &m), md)
+    }
+
+    func testJiraErrorsReadAsPlainSentences() {
+        let body = Data(
+            #"{"errorMessages":[],"errors":{"parentId":"Parent issue cannot be found.","parent":"Parent issue cannot be found.","summary":"Summary can't exceed 255 characters."}}"#
+                .utf8)
+        XCTAssertEqual(
+            JiraError(status: 400, data: body).messages,
+            ["Parent issue cannot be found.", "Summary can't exceed 255 characters."],
+            "no field keys, and one text for a parent Jira reports under two keys")
+    }
 }
 
 final class FilterAndDurationTests: XCTestCase {

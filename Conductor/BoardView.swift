@@ -241,6 +241,10 @@ struct BoardView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var store = BoardStore()
     @AppStorage("boardSwimlanes") private var swimlanes = Swimlanes.none
+    @Environment(\.openWindow) private var openWindow
+    /// The card a click or the arrows picked; ↩ opens it.
+    @State private var selection: String?
+    @FocusState private var focused: Bool
     private var projectKey: String { target.projectKey }
     private var state: AccountState? { session.state(target.accountID) }
 
@@ -250,8 +254,8 @@ struct BoardView: View {
                 HStack(alignment: .top, spacing: 12) {
                     ForEach(store.columns) { column in
                         BoardColumn(
-                            column: column, issues: store.issues(in: column, fold: true), onDrop: drop(column),
-                            onWrite: reload)
+                            column: column, issues: store.issues(in: column, fold: true), selection: $selection,
+                            onDrop: drop(column), onWrite: reload)
                     }
                 }
                 .padding(16)
@@ -278,6 +282,18 @@ struct BoardView: View {
         .environment(\.jira, state)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(Backdrop())
+        // The arrows walk the cards as laid out: ↑↓ along a column, ←→ across at the same height; ↩ opens.
+        .focusable().focusEffectDisabled().focused($focused)
+        .onChange(of: selection) { if selection != nil { focused = true } }
+        .onKeyPress(.downArrow) { move(rows: 1) }
+        .onKeyPress(.upArrow) { move(rows: -1) }
+        .onKeyPress(.rightArrow) { move(columns: 1) }
+        .onKeyPress(.leftArrow) { move(columns: -1) }
+        .onKeyPress(.return) {
+            guard let selection, let state else { return .ignored }
+            openWindow(id: "issue", value: IssueTarget(accountID: state.id, key: selection))
+            return .handled
+        }
         .safeAreaInset(edge: .top, spacing: 0) { quickFilterBar }
         .overlay {
             if state == nil, !session.isRestoring {
@@ -301,24 +317,25 @@ struct BoardView: View {
             ToolbarItem(id: "boardPicker") {
                 // Setters, not onChange: only a user's pick reloads, not the store's own assignments.
                 // Menus pull down under the button; a pop-up picker centres its chosen row on the pointer and
-                // can run off the top of the screen.
-                Menu {
-                    ForEach(store.boards) { b in
-                        Toggle(
-                            b.name,
-                            isOn: Binding(
-                                get: { store.board == b },
-                                set: { on in
-                                    guard on else { return }
-                                    store.board = b
-                                    if let c = state?.client { Task { await store.loadBoard(c) } }
-                                }))
+                // can run off the top of the screen. With one board there is nothing to pick: the title names it.
+                if store.boards.count > 1 {
+                    Menu {
+                        ForEach(store.boards) { b in
+                            Toggle(
+                                b.name,
+                                isOn: Binding(
+                                    get: { store.board == b },
+                                    set: { on in
+                                        guard on else { return }
+                                        store.board = b
+                                        if let c = state?.client { Task { await store.loadBoard(c) } }
+                                    }))
+                        }
+                    } label: {
+                        Text(store.board?.name ?? String(localized: "Board")).lineLimit(1)
                     }
-                } label: {
-                    Text(store.board?.name ?? String(localized: "Board")).lineLimit(1)
+                    .frame(maxWidth: 220).fixedSize()  // its own width, up to 220; the toolbar would squeeze it to "…"
                 }
-                .frame(maxWidth: 220)
-                .disabled(store.boards.count < 2)
             }
             ToolbarItem(id: "sprintPicker") {
                 if !store.sprints.isEmpty {
@@ -337,7 +354,7 @@ struct BoardView: View {
                     } label: {
                         Text(store.sprint.map(sprintTitle) ?? String(localized: "Sprint")).lineLimit(1)
                     }
-                    .frame(maxWidth: 260)
+                    .frame(maxWidth: 260).fixedSize()
                 }
             }
             ToolbarItem(id: "swimlanes") {
@@ -390,7 +407,7 @@ struct BoardView: View {
                             BoardColumn(
                                 column: column,
                                 issues: store.issues(in: column, from: lane.issues, fold: swimlanes != .parent),
-                                showsHeader: false, onDrop: drop(column), onWrite: reload)
+                                showsHeader: false, selection: $selection, onDrop: drop(column), onWrite: reload)
                         }
                     }
                 }
@@ -428,6 +445,34 @@ struct BoardView: View {
     }
 
     private func reload() { if let c = state?.client { Task { await store.loadIssues(c) } } }
+
+    /// The keys per column, top to bottom as drawn: lanes stack, so with lanes a column runs through all of them.
+    private var grid: [[String]] {
+        let lanes = swimlanes.lanes(store.issues)
+        return store.columns.map { column in
+            swimlanes == .none
+                ? store.issues(in: column, fold: true).map(\.key)
+                : lanes.flatMap { store.issues(in: column, from: $0.issues, fold: swimlanes != .parent).map(\.key) }
+        }
+    }
+
+    private func move(rows: Int = 0, columns: Int = 0) -> KeyPress.Result {
+        let grid = grid
+        guard let sel = selection, let c = grid.firstIndex(where: { $0.contains(sel) }),
+            let r = grid[c].firstIndex(of: sel)
+        else {
+            selection = grid.first { !$0.isEmpty }?.first  // nothing picked yet: the first card
+            return selection == nil ? .ignored : .handled
+        }
+        var column = max(0, min(grid.count - 1, c + columns))
+        // Sideways, skip empty columns rather than stop at them.
+        while grid[column].isEmpty, column + columns >= 0, column + columns < grid.count, columns != 0 {
+            column += columns
+        }
+        guard !grid[column].isEmpty else { return .handled }
+        selection = grid[column][max(0, min(grid[column].count - 1, r + rows))]
+        return .handled
+    }
 
     private func drop(_ column: BoardConfiguration.Column) -> (String) -> Void {
         { key in if let c = state?.client { Task { await store.move(key, to: column, client: c) } } }
@@ -482,6 +527,7 @@ struct BoardColumn: View {
     let issues: [Issue]
     /// Off inside swimlanes, where the board shows headers once and scrolls as a whole.
     var showsHeader = true
+    @Binding var selection: String?
     var onDrop: (String) -> Void
     /// Reloads the board after a menu action changed an issue.
     var onWrite: () -> Void = {}
@@ -520,11 +566,12 @@ struct BoardColumn: View {
         LazyVStack(spacing: 8) {
             ForEach(issues) { issue in
                 if issue.id != issues.first?.id { Divider().padding(.horizontal, 6) }
-                BoardCard(issue: issue)
+                BoardCard(issue: issue, selected: selection == issue.key)
                     .draggable(issue.key)
                     .onTapGesture(count: 2) {
                         if let jira { openWindow(id: "issue", value: IssueTarget(accountID: jira.id, key: issue.key)) }
                     }
+                    .onTapGesture { selection = issue.key }
                     .contextMenu {
                         if let jira {
                             IssueMenu(issue: issue, state: jira) { op in
@@ -544,6 +591,7 @@ struct BoardColumn: View {
 
 struct BoardCard: View {
     let issue: Issue
+    var selected = false
 
     /// Whole days since the last update, once a card has sat still for a week.
     private var staleDays: Int? {
@@ -578,6 +626,7 @@ struct BoardCard: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.background.opacity(0.7), in: .rect(cornerRadius: 10))
         .background(staleDays == nil ? .clear : .orange.opacity(0.12), in: .rect(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color.accentColor, lineWidth: selected ? 2 : 0))
         .contentShape(.rect)
     }
 }

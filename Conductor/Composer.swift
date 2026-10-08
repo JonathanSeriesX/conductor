@@ -38,32 +38,17 @@ struct Composer: View {
                     .background(.quaternary.opacity(0.2), in: .rect(cornerRadius: 10))
             } else {
                 editor
+                    // The suggestions float above the box, as Slack's do, and take no room: nothing below moves.
+                    // Above rather than below, since whatever is above was drawn first and cannot cover them.
+                    // Hung from a zero-height line on the box's top edge; an alignment guide on the list itself
+                    // was ignored inside the conditional.
+                    .overlay(alignment: .top) {
+                        Color.clear.frame(height: 0).overlay(alignment: .bottomLeading) {
+                            if !candidates.isEmpty { suggestions.padding(.bottom, 4) }
+                        }
+                    }
             }
             formatBar
-            if !candidates.isEmpty {
-                VStack(alignment: .leading, spacing: 0) {
-                    ForEach(Array(candidates.enumerated()), id: \.element.id) { i, u in
-                        Button {
-                            accept(u)
-                        } label: {
-                            HStack(spacing: 8) {
-                                Avatar(user: u, size: 18)
-                                Text(u.displayName)
-                                Spacer()
-                            }
-                            .padding(.horizontal, 8).padding(.vertical, 5)
-                            .background(
-                                i == highlighted ? Color.accentColor.opacity(0.18) : .clear, in: .rect(cornerRadius: 6)
-                            )
-                            .contentShape(.rect)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                .padding(4)
-                .glassPane(cornerRadius: 10)
-                .transition(.opacity)
-            }
             if let error { Text(error).font(.caption).foregroundStyle(.red) }
         }
         .onChange(of: isFocused) { _, on in if on, let caret { placeCaret(at: caret) } }
@@ -89,6 +74,31 @@ struct Composer: View {
                 candidates = Array(found.filter { $0.active != false }.prefix(5))
             }
         }
+    }
+
+    private var suggestions: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(Array(candidates.enumerated()), id: \.element.id) { i, u in
+                Button {
+                    accept(u)
+                } label: {
+                    HStack(spacing: 8) {
+                        Avatar(user: u, size: 18)
+                        Text(u.displayName)
+                        Spacer()
+                    }
+                    .padding(.horizontal, 8).padding(.vertical, 5)
+                    .background(i == highlighted ? Color.accentColor.opacity(0.18) : .clear, in: .rect(cornerRadius: 6))
+                    .contentShape(.rect)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(4)
+        .frame(width: 260)
+        .glassPane(cornerRadius: 10)
+        .shadow(color: .black.opacity(0.15), radius: 8, y: 2)
+        .transition(.opacity)
     }
 
     // MARK: Formatting
@@ -237,7 +247,9 @@ struct Composer: View {
                         tv.isAutomaticTextReplacementEnabled = false
                     }
                     // While the mention list shows, the arrows, ↩ and Tab pick from it; Esc dismisses it.
-                    if !candidates.isEmpty, e.modifierFlags.intersection(.deviceIndependentFlagsMask).isEmpty {
+                    // Arrows carry the function and numeric-pad flags, so only the real modifiers count.
+                    let plain = e.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty
+                    if !candidates.isEmpty, plain {
                         switch e.keyCode {
                         case 125:
                             highlighted = min(highlighted + 1, candidates.count - 1)
@@ -254,6 +266,9 @@ struct Composer: View {
                         default: break
                         }
                     }
+                    if e.keyCode == 36, plain, let tv = e.window?.firstResponder as? NSTextView, continueList(in: tv) {
+                        return nil
+                    }
                     guard let uploadImage, e.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
                         e.charactersIgnoringModifiers == "v"
                     else { return e }
@@ -265,6 +280,26 @@ struct Composer: View {
                     pasteImage(image, uploadImage)
                     return nil
                 })
+    }
+
+    /// ↩ on a list line starts the next item ("- ", "2. ", "- [ ] "); on an empty item it ends the list instead.
+    /// Typed through the text view, so ⌘Z takes it back like any other keystroke.
+    private func continueList(in tv: NSTextView) -> Bool {
+        let s = tv.string as NSString
+        let caret = tv.selectedRange()
+        guard caret.length == 0 else { return false }
+        let lineStart = s.lineRange(for: NSRange(location: caret.location, length: 0)).location
+        let line = s.substring(with: NSRange(location: lineStart, length: caret.location - lineStart))
+        guard let m = line.firstMatch(of: /^(\s*)(?:([-*+])|(\d+)([.)]))(\s+)(\[[ xX]\]\s+)?(.*)$/) else {
+            return false
+        }
+        if m.7.isEmpty {
+            tv.insertText("", replacementRange: NSRange(location: lineStart, length: caret.location - lineStart))
+            return true
+        }
+        let marker = m.2.map(String.init) ?? "\((Int(m.3!) ?? 0) + 1)\(m.4!)"
+        tv.insertText("\n\(m.1)\(marker)\(m.5)\(m.6 == nil ? "" : "[ ] ")", replacementRange: caret)
+        return true
     }
 
     private func pasteImage(_ image: (data: Data, name: String), _ upload: @escaping (Data, String) async throws -> URL)
@@ -395,6 +430,12 @@ struct PeoplePicker: View {
     @State private var query = ""
     @State private var users: [JiraUser] = []
 
+    /// Rows on offer: me, Unassigned, and the matches. The list's height follows, since a popover sizes itself
+    /// to its content and a scroll view has no height of its own.
+    private var rowCount: Int {
+        users.count + (jira?.me != nil && jira?.me?.accountId != current?.accountId ? 1 : 0) + (current != nil ? 1 : 0)
+    }
+
     var body: some View {
         VStack(spacing: 8) {
             TextField("Search people", text: $query).textFieldStyle(.roundedBorder)
@@ -428,7 +469,7 @@ struct PeoplePicker: View {
                     }
                 }
             }
-            .frame(maxHeight: 320)
+            .frame(height: min(320, CGFloat(max(rowCount, 1)) * 32))
         }
         .padding(10)
         .frame(width: 280)

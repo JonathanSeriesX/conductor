@@ -567,14 +567,16 @@ final class Session {
     /// The sidebar entry these filters came from. The status chip is left out of the comparison: a preset is
     /// built with whatever the Hide Done default is at the time, and flipping that setting must not unname a list.
     func preset(matching f: ListFilters) -> Preset? {
-        var want = f
-        want.status = .any
-        want.text = ""
-        return (presets(account: nil) + states.flatMap { presets(account: $0) }).first {
-            var p = $0.filters
-            p.status = .any
-            return p == want
+        func same(_ a: ListFilters, _ b: ListFilters) -> Bool {
+            var (a, b) = (a, b)
+            (a.status, b.status) = (.any, .any)
+            return a == b
         }
+        let all = presets(account: nil) + states.flatMap { presets(account: $0) }
+        var untyped = f
+        untyped.text = ""
+        // A saved search carries its text, so the exact list first; else a search typed on a list does not unname it.
+        return all.first { same($0.filters, f) } ?? all.first { same($0.filters, untyped) }
     }
 
     func addPreset(name: String, filters: ListFilters) {

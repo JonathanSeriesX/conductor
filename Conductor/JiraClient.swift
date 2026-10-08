@@ -50,7 +50,9 @@ struct JiraError: LocalizedError, Sendable {
         self.status = status
         let b = try? JSONDecoder().decode(Body.self, from: data)
         var m = b?.errorMessages ?? []
-        m += (b?.errors ?? [:]).map { "\($0.key): \($0.value)" }
+        // Jira names the field in the message itself ("Summary can't exceed…"), and one bad parent comes back
+        // under two keys with one text; the key prefix would only make it read like a log line.
+        for v in (b?.errors ?? [:]).values.sorted() where !m.contains(v) { m.append(v) }
         if m.isEmpty, status == 401 { m = [String(localized: "Invalid email or API token.")] }
         messages = m
     }
