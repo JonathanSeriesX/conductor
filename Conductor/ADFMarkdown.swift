@@ -246,7 +246,7 @@ extension ADFNode {
                     lines.append(indent + marker)
                     continue
                 }
-                lines.append(indent + marker + first.dropFirst(indent.count + 2))
+                lines.append(indent + marker + String(first.dropFirst(indent.count + 2)))
                 lines += parts.dropFirst()
             }
             return lines.joined(separator: "\n")
