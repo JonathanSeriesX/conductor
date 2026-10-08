@@ -13,6 +13,9 @@ struct Composer: View {
     var uploadImage: ((Data, String) async throws -> URL)?
     /// Lets the owner move focus into the editor, e.g. from the Add Comment menu item.
     var focus: FocusState<Bool>.Binding?
+    /// Where the click that opened this editor landed, relative to the text it replaced (top-left origin):
+    /// the caret starts at the same spot in the editor rather than at the end.
+    var caret: CGPoint?
     @FocusState private var ownFocus: Bool
     @Environment(\.jira) private var jira
     @State private var candidates: [JiraUser] = []
@@ -58,6 +61,7 @@ struct Composer: View {
             }
             if let error { Text(error).font(.caption).foregroundStyle(.red) }
         }
+        .onChange(of: isFocused) { _, on in if on, let caret { placeCaret(at: caret) } }
         .onChange(of: text) { _, new in
             // A trailing "@name" drives the suggestion list; anything else dismisses it. A name just accepted
             // from the list (followed by its space) is complete and must not open the list again.
@@ -137,6 +141,21 @@ struct Composer: View {
 
     private func focusEditor() {
         if let focus { focus.wrappedValue = true } else { ownFocus = true }
+    }
+
+    /// The character under `point`, asked of the text view once AppKit has made it first responder, then set
+    /// through the selection binding: SwiftUI owns the selection and would undo a direct change.
+    private func placeCaret(at point: CGPoint, attempt: Int = 0) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            guard let tv = NSApp.keyWindow?.firstResponder as? NSTextView, tv.string == text else {
+                if attempt < 10 { placeCaret(at: point, attempt: attempt + 1) }
+                return
+            }
+            // The text view is flipped, so the rendered text's top-left offset maps straight onto it.
+            let local = NSPoint(x: point.x + tv.textContainerInset.width, y: point.y + tv.textContainerInset.height)
+            let utf16 = min(tv.characterIndexForInsertion(at: local), text.utf16.count)
+            selection = TextSelection(insertionPoint: text.utf16.index(text.utf16.startIndex, offsetBy: utf16))
+        }
     }
 
     private var editor: some View {
