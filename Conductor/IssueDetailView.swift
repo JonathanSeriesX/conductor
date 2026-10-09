@@ -76,29 +76,30 @@ final class IssueDetailStore {
         if issue == nil {
             // Last opened copy from disk, else what the list row already knows: either way, no blank page.
             // Everything the right column is built from comes with it, so no row appears or wakes up a second
-            // later. The four files are read at once.
+            // later. The four files are read at once and land together, after one check that this is still the issue.
             let account = state.account
             async let diskIssue: Issue? = DiskCache.loadAsync(account: account, name: "issue-\(key)")
             async let diskMeta: EditMeta? = DiskCache.loadAsync(account: account, name: "editmeta-\(key)")
             async let diskTransitions: [Transition]? = DiskCache.loadAsync(account: account, name: "transitions-\(key)")
             async let diskChildren: [Issue]? =
                 full ? DiskCache.loadAsync(account: account, name: "children-\(key)") : nil
-            let cached = await diskIssue ?? state.peek[key]
+            let (cached, meta, trans, kids) = await (diskIssue, diskMeta, diskTransitions, diskChildren)
             guard self.key == key else { return }
-            issue = cached
-            if let m = await diskMeta {
-                editMeta = m
+            issue = cached ?? state.peek[key]
+            if let meta {
+                editMeta = meta
             } else if let i = issue, let m = state.editMetaByWorkflow[AccountState.workflowKey(i)] {
                 editMeta = m
             }
-            if let t = await diskTransitions {
-                transitions = t
+            if let trans {
+                transitions = trans
             } else if let i = issue, let t = state.transitionsByWorkflow[AccountState.workflowKey(i)] {
                 transitions = t
             }
-            if let kids = await diskChildren { children = kids }
+            if let kids { children = kids }
             if full, canEdit(client.sprintField), let project = issue?.fields.project?.key {
-                sprints = await state.sprints(project: project)
+                let list = await state.sprints(project: project)
+                if self.key == key { sprints = list }
             }
         }
         do {
@@ -110,8 +111,8 @@ final class IssueDetailStore {
             let fresh = try await i
             guard self.key == key else { return }
             issue = fresh
-            DiskCache.saveAsync(issue, account: state.account, name: "issue-\(key)")
-            Spotlight.index([issue!], host: state.host)
+            DiskCache.saveAsync(fresh, account: state.account, name: "issue-\(key)")
+            Spotlight.index([fresh], host: state.host)
             if let fresh = try? await t, self.key == key {
                 transitions = fresh
                 DiskCache.saveAsync(fresh, account: state.account, name: "transitions-\(key)")
@@ -160,18 +161,9 @@ final class IssueDetailStore {
         for k in keys { if let i = state.peek[k] { related[k] = i } }
         let missing = Set(keys).filter { state.prefetched[$0] == nil || state.peek[$0] == nil }
         guard !missing.isEmpty else { return }
-        let client = state.client
-        let jql = "issuekey in (" + missing.map { "\"\($0)\"" }.joined(separator: ",") + ")"
         let key = self.key
         Task { @MainActor in
-            guard let page = try? await client.search(jql: jql, fields: client.detailFields) else { return }
-            for i in page.issues {
-                DiskCache.saveAsync(i, account: state.account, name: "issue-\(i.key)")
-                state.peek[i.key] = i
-                state.prefetched[i.key] = i.fields.updated
-                if self.key == key { related[i.key] = i }
-            }
-            DiskCache.saveAsync(state.prefetched, account: state.account, name: "prefetched")
+            for i in await state.fetchDetails(Array(missing)) where self.key == key { related[i.key] = i }
         }
     }
 
@@ -471,7 +463,7 @@ struct IssueDetailView: View {
                     .background(.quaternary.opacity(0.4), in: .rect(cornerRadius: 10))
                     .padding(.horizontal, -8).padding(.vertical, -4)
                     .help("↩ to save · esc to cancel")
-                    .task { focusSoon($summaryFocused) }
+                    .focusSoon($summaryFocused)
                     .onReceive(NotificationCenter.default.publisher(for: NSTextView.didChangeSelectionNotification)) {
                         placeCaret(in: $0.object as? NSTextView)
                     }
@@ -511,7 +503,7 @@ struct IssueDetailView: View {
                                     descriptionFocused ? KeyboardShortcut(.return, modifiers: .command) : nil)
                         })
                 )
-                .task { focusSoon($descriptionFocused) }
+                .focusSoon($descriptionFocused)
                 if issue.fields.description?.hasLossyNodes == true {
                     Label(
                         "This description has images, panels or other content the editor can't keep. Saving replaces them with the text shown here; Cancel leaves the description as it is.",
@@ -940,13 +932,6 @@ struct IssueDetailView: View {
         }
     }
 
-    private func field<V: View>(_ name: LocalizedStringKey, @ViewBuilder _ value: () -> V) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(name).textCase(.uppercase).font(.caption2.weight(.semibold)).foregroundStyle(.tertiary)
-            value()
-        }
-    }
-
     // MARK: Sections
 
     private func attachments(_ atts: [Attachment]) -> some View {
@@ -972,23 +957,31 @@ struct IssueDetailView: View {
 
     /// One line per related issue: icon, key, title, then the status and the assignee in a column at the end,
     /// as in the list. A ref carries no assignee; the full record, once prefetched, does.
+    private func relatedRow(_ key: String, icon: URL?, summary: String, status: Status?, assignee: JiraUser?)
+        -> some View
+    {
+        Button {
+            open(key)
+        } label: {
+            HStack(spacing: 8) {
+                RemoteImage(url: icon).frame(width: 14, height: 14)
+                Text(key).font(.callout.monospaced()).foregroundStyle(.secondary)
+                Text(summary).lineLimit(1)
+                Spacer()
+                if let status { StatusPill(status: status) }
+                Avatar(user: assignee, size: 16)
+            }
+            .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+    }
+
     private func refs(_ refs: [IssueRef]) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             ForEach(refs) { r in
-                Button {
-                    open(r.key)
-                } label: {
-                    HStack(spacing: 8) {
-                        RemoteImage(url: r.fields.issuetype?.iconUrl).frame(width: 14, height: 14)
-                        Text(r.key).font(.callout.monospaced()).foregroundStyle(.secondary)
-                        Text(r.fields.summary).lineLimit(1)
-                        Spacer()
-                        if let s = r.fields.status { StatusPill(status: s) }
-                        Avatar(user: store.related[r.key]?.fields.assignee, size: 16)
-                    }
-                    .contentShape(.rect)
-                }
-                .buttonStyle(.plain)
+                relatedRow(
+                    r.key, icon: r.fields.issuetype?.iconUrl, summary: r.fields.summary, status: r.fields.status,
+                    assignee: store.related[r.key]?.fields.assignee)
             }
         }
     }
@@ -996,20 +989,9 @@ struct IssueDetailView: View {
     private func children(_ issues: [Issue]) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             ForEach(issues) { i in
-                Button {
-                    open(i.key)
-                } label: {
-                    HStack(spacing: 8) {
-                        RemoteImage(url: i.fields.issuetype.iconUrl).frame(width: 14, height: 14)
-                        Text(i.key).font(.callout.monospaced()).foregroundStyle(.secondary)
-                        Text(i.fields.summary).lineLimit(1)
-                        Spacer()
-                        StatusPill(status: i.fields.status)
-                        Avatar(user: i.fields.assignee, size: 16)
-                    }
-                    .contentShape(.rect)
-                }
-                .buttonStyle(.plain)
+                relatedRow(
+                    i.key, icon: i.fields.issuetype.iconUrl, summary: i.fields.summary, status: i.fields.status,
+                    assignee: i.fields.assignee)
             }
         }
     }
@@ -1022,20 +1004,10 @@ struct IssueDetailView: View {
                     Text(relation).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                     ForEach(grouped[relation] ?? []) { link in
                         if let o = link.other {
-                            Button {
-                                open(o.key)
-                            } label: {
-                                HStack(spacing: 8) {
-                                    RemoteImage(url: o.fields.issuetype?.iconUrl).frame(width: 14, height: 14)
-                                    Text(o.key).font(.callout.monospaced()).foregroundStyle(.secondary)
-                                    Text(o.fields.summary).lineLimit(1)
-                                    Spacer()
-                                    if let s = o.fields.status { StatusPill(status: s) }
-                                    Avatar(user: store.related[o.key]?.fields.assignee, size: 16)
-                                }
-                                .contentShape(.rect)
-                            }
-                            .buttonStyle(.plain)
+                            relatedRow(
+                                o.key, icon: o.fields.issuetype?.iconUrl, summary: o.fields.summary,
+                                status: o.fields.status, assignee: store.related[o.key]?.fields.assignee
+                            )
                             .contextMenu {
                                 Button("Remove Link", systemImage: "link.badge.minus", role: .destructive) {
                                     confirmDelete(
@@ -1129,7 +1101,7 @@ struct IssueDetailView: View {
                                                 editDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                                     })
                             )
-                            .task { focusSoon($editCommentFocused) }
+                            .focusSoon($editCommentFocused)
                         } else {
                             ADFView(node: c.body)
                         }
@@ -1328,11 +1300,6 @@ struct IssueDetailView: View {
         optimistic({ $0.status = t.to }) { try await $0.transition(key, to: id) }
     }
 
-    /// Focus set in the same pass that creates the field is lost; one turn of the run loop later it sticks.
-    private func focusSoon(_ focus: FocusState<Bool>.Binding) {
-        DispatchQueue.main.async { focus.wrappedValue = true }
-    }
-
     /// Puts the caret under the click that opened the editor, or at the end when a key opened it (⌘E).
     /// Focus selects everything; this runs inside that selection change, so no frame ever shows it.
     /// The editor sits where the text was, in the same font, so the character under the point is the one clicked.
@@ -1447,7 +1414,7 @@ struct IssueDetailView: View {
         panel.nameFieldStringValue = a.filename
         guard panel.runModal() == .OK, let dest = panel.url else { return }
         Task {
-            if let data = try? await c.data(for: a.content) { try? data.write(to: dest) }
+            do { try await c.data(for: a.content).write(to: dest) } catch { store.error = error.localizedDescription }
         }
     }
 
@@ -1750,7 +1717,7 @@ struct LabelsEditor: View {
         }
         .padding(12)
         .frame(width: 280)
-        .task { DispatchQueue.main.async { focused = true } }
+        .focusSoon($focused)
     }
 
     private func add() {
@@ -1900,7 +1867,7 @@ struct ParentPicker: View {
         }
         .padding(12)
         .frame(width: 320)
-        .task { DispatchQueue.main.async { focused = true } }
+        .focusSoon($focused)
         .task(id: query) {
             try? await Task.sleep(for: .milliseconds(250))
             guard !Task.isCancelled, let c = jira?.client else { return }
@@ -1920,10 +1887,10 @@ struct LinkIssueView: View {
     @State private var picked: IssuePickerResult.Item?
     @FocusState private var linkFocused: Bool
 
-    /// Every link type offers both directions, worded from this issue's side.
-    private var relations: [(id: String, label: String, type: LinkType, outward: Bool)] {
+    /// Every link type offers both directions, worded from this issue's side; once when both wordings are identical.
+    var relations: [(id: String, label: String, type: LinkType, outward: Bool)] {
         types.flatMap { t in [(t.id + ">", t.outward, t, true), (t.id + "<", t.inward, t, false)] }
-            .filter { $0.1 != $0.2.inward || $0.3 }  // skip the duplicate when both wordings are identical
+            .filter { $0.outward || $0.type.inward != $0.type.outward }
     }
 
     var body: some View {
@@ -1968,7 +1935,7 @@ struct LinkIssueView: View {
         .padding(12)
         .frame(width: 360)
         .onAppear { if relation.isEmpty { relation = relations.first?.id ?? "" } }
-        .task { DispatchQueue.main.async { linkFocused = true } }
+        .focusSoon($linkFocused)
         .task(id: query) {
             try? await Task.sleep(for: .milliseconds(250))
             guard !Task.isCancelled, let c = jira?.client else { return }
@@ -2034,20 +2001,5 @@ struct LogWorkView: View {
         }
         let leftovers = t.replacing(/(\d+(?:\.\d+)?)\s*[wdhm]/, with: "").trimmingCharacters(in: .whitespaces)
         return matched && leftovers.isEmpty && total > 0 ? Int(total) : nil
-    }
-}
-
-/// Leading "New Issue" button shared by the issue page and the empty detail pane.
-struct NewIssueToolbarItem: CustomizableToolbarContent {
-    @Environment(Session.self) private var session
-    var body: some CustomizableToolbarContent {
-        ToolbarItem(id: "new") {
-            Button {
-                session.createIssueRequested = true
-            } label: {
-                Label("New Issue", systemImage: "square.and.pencil")
-            }
-            .help("New issue (⌘N)")
-        }
     }
 }

@@ -258,7 +258,7 @@ struct Composer: View {
             .background(
                 WindowEventMonitor(mask: .keyDown) { e in
                     guard isFocused else { return e }
-                    // Smart quotes and dashes would corrupt code and tables; the text view is only reachable here.
+                    // `tune`'s switches again, for a text view it missed.
                     if let tv = e.window?.firstResponder as? NSTextView,
                         tv.isAutomaticQuoteSubstitutionEnabled || tv.isAutomaticDashSubstitutionEnabled
                     {

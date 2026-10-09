@@ -99,7 +99,7 @@ final class BoardStore {
                 board = boards.first { $0.type == "scrum" } ?? boards.first
             }
             await loadBoard(client)
-        } catch { if !error.isOffline { self.error = error.localizedDescription } }
+        } catch { if !error.isOffline, !error.isCancelled { self.error = error.localizedDescription } }
     }
 
     func loadBoard(_ client: JiraClient) async {
@@ -118,7 +118,7 @@ final class BoardStore {
                 sprint = sprints.first { $0.state == "active" } ?? sprints.first
             }
             await loadIssues(client)
-        } catch { if !error.isOffline { self.error = error.localizedDescription } }
+        } catch { if !error.isOffline, !error.isCancelled { self.error = error.localizedDescription } }
     }
 
     /// Pages through the whole board, showing cards as each page lands.
@@ -130,11 +130,16 @@ final class BoardStore {
         var all: [Issue] = []
         truncated = false
         while true {
-            guard
-                let page = try? await client.boardIssues(
-                    board.id, sprint: sprint?.id, jql: jql.isEmpty ? nil : jql, startAt: all.count),
-                gen == generation
-            else { break }
+            let page: AgileIssuePage
+            do {
+                page = try await client.boardIssues(
+                    board.id, sprint: sprint?.id, jql: jql.isEmpty ? nil : jql, startAt: all.count)
+            } catch {
+                // The cards and the snapshot on disk stay as they were; a failed page must not empty them.
+                if gen == generation, !error.isOffline, !error.isCancelled { self.error = error.localizedDescription }
+                return
+            }
+            guard gen == generation else { break }
             all += page.issues
             issues = all
             if page.issues.isEmpty || all.count >= page.total { break }
@@ -259,7 +264,7 @@ struct BoardView: View {
                     ForEach(store.columns) { column in
                         BoardColumn(
                             column: column, issues: store.issues(in: column, fold: true), selection: $selection,
-                            onDrop: drop(column), onWrite: reload)
+                            onDrop: drop(column), write: write)
                     }
                 }
                 .padding(16)
@@ -411,7 +416,7 @@ struct BoardView: View {
                             BoardColumn(
                                 column: column,
                                 issues: store.issues(in: column, from: lane.issues, fold: swimlanes != .parent),
-                                showsHeader: false, selection: $selection, onDrop: drop(column), onWrite: reload)
+                                showsHeader: false, selection: $selection, onDrop: drop(column), write: write)
                         }
                     }
                 }
@@ -448,7 +453,14 @@ struct BoardView: View {
         s.state == "active" ? String(localized: "\(s.name) · active") : s.name
     }
 
-    private func reload() { if let c = state?.client { Task { await store.loadIssues(c) } } }
+    /// Runs a card menu's write, then reloads the board so the cards show the result (or why there is none).
+    private func write(_ op: @escaping @Sendable () async throws -> Void) {
+        guard let c = state?.client else { return }
+        Task {
+            do { try await op() } catch { store.error = error.localizedDescription }
+            await store.loadIssues(c)
+        }
+    }
 
     /// The keys per column, top to bottom as drawn: lanes stack, so with lanes a column runs through all of them.
     private var grid: [[String]] {
@@ -533,8 +545,8 @@ struct BoardColumn: View {
     var showsHeader = true
     @Binding var selection: String?
     var onDrop: (String) -> Void
-    /// Reloads the board after a menu action changed an issue.
-    var onWrite: () -> Void = {}
+    /// Runs a card menu's write and refreshes the board, as `IssueMenu` expects it.
+    let write: (@escaping @Sendable () async throws -> Void) -> Void
     @Environment(Session.self) private var session
     @Environment(\.jira) private var jira
     @Environment(\.openWindow) private var openWindow
@@ -577,14 +589,7 @@ struct BoardColumn: View {
                     }
                     .onTapGesture { selection = issue.key }
                     .contextMenu {
-                        if let jira {
-                            IssueMenu(issue: issue, state: jira) { op in
-                                Task {
-                                    try? await op()
-                                    onWrite()
-                                }
-                            }
-                        }
+                        if let jira { IssueMenu(issue: issue, state: jira, write: write) }
                     }
             }
         }

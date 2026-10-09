@@ -181,7 +181,7 @@ final class LiveWriteTests: XCTestCase {
         let before = try await c.issue(key)
 
         // Comment, then remove it so the issue is left as found.
-        try await c.addComment(key, text: "Conductor self-test, safe to ignore.\nSecond line.")
+        try await c.addComment(key, body: .document(text: "Conductor self-test, safe to ignore.\nSecond line."))
         let withComment = try await c.issue(key)
         XCTAssertEqual(withComment.fields.comment?.total, (before.fields.comment?.total ?? 0) + 1)
         let mine = try XCTUnwrap(withComment.fields.comment?.comments.last)
@@ -367,6 +367,13 @@ final class FilterAndDurationTests: XCTestCase {
         XCTAssertEqual(LogWorkView.parseDuration("45"), 45 * 60)
         XCTAssertNil(LogWorkView.parseDuration("soon"))
         XCTAssertNil(LogWorkView.parseDuration("1h x"))
+    }
+
+    @MainActor func testLinkPickerOffersBothDirectionsUnlessIdentical() {
+        let blocks = LinkType(id: "1", name: "Blocks", inward: "is blocked by", outward: "blocks")
+        let relates = LinkType(id: "2", name: "Relates", inward: "relates to", outward: "relates to")
+        let picker = LinkIssueView(key: "A-1", types: [blocks, relates]) { _, _, _ in }
+        XCTAssertEqual(picker.relations.map(\.label), ["blocks", "is blocked by", "relates to"])
     }
 
     func testVersionCompare() {

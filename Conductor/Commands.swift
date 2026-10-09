@@ -217,7 +217,6 @@ struct AppCommands: Commands {
     }
 }
 
-/// An issue in a window of its own, so two can sit side by side. Links inside it navigate in place.
 /// An issue with its own back trail: the content of an issue window and of the main window's preview column.
 struct IssueWindow: View, Equatable {
     /// The window's value, or the main window's selection: a change from outside starts a fresh trail.
