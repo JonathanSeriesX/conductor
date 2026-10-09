@@ -155,7 +155,7 @@ struct RootView: View {
                 }
                 .background(
                     WindowEventMonitor(mask: .keyDown) { e in
-                        escape(e).flatMap { ShortcutScheme.handle($0, issue: issueActions, session: session) }
+                        escape(e).flatMap { Shortcuts.handle($0, issue: issueActions, session: session) }
                     }
                 )
                 .onChange(of: session.createIssueRequested) { _, on in

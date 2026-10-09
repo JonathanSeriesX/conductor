@@ -237,7 +237,7 @@ struct GlassCard<Content: View>: View {
                 // The gap before the bullet equals the space after it.
                 HStack(spacing: 3) {
                     Text(title).font(.headline).foregroundStyle(.secondary)
-                    if let hint { Text(hint).font(.subheadline).foregroundStyle(.tertiary) }
+                    if let hint { Text(hint).font(.subheadline).foregroundStyle(.secondary) }
                 }
             }
             content
@@ -268,8 +268,8 @@ func issues(_ n: Int, more: Bool = false) -> String {
 {
     VStack(alignment: .leading, spacing: 4) {
         HStack(spacing: 2) {
-            Text(name).textCase(.uppercase).font(.caption2.weight(.semibold)).foregroundStyle(.tertiary)
-            if let hint { Text(hint).font(.caption2).foregroundStyle(.tertiary.opacity(0.8)) }  // "• A to assign"
+            Text(name).textCase(.uppercase).font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+            if let hint { Text(hint).font(.caption2).foregroundStyle(.secondary) }  // "• A or ⌘⇧A to assign"
         }
         value()
     }
