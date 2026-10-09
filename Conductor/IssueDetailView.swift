@@ -329,6 +329,11 @@ struct IssueDetailView: View {
         }
     }
 
+    /// "• M to add": the key the current scheme binds to `action`, worded by `phrase`, for a caption; nil when none.
+    private func hint(_ action: IssueActions.Action, _ phrase: (String) -> String) -> String? {
+        ShortcutScheme.hint(for: action).map { "• " + phrase($0) }
+    }
+
     /// Asks first, then runs the write. Jira has no undo for these.
     private func confirmDelete(
         _ title: String, verb: String = String(localized: "Delete"), _ perform: @escaping () -> Void
@@ -351,13 +356,19 @@ struct IssueDetailView: View {
                                 priorityField(issue)
                                 reporterField(issue)
                             }
-                            GlassCard(title: "Comments") { comments(issue) }.id("comments")
+                            GlassCard(title: "Comments", hint: hint(.comment) { String(localized: "\($0) to add") }) {
+                                comments(issue)
+                            }
+                            .id("comments")
                             metadata { fields(issue) }
                         } else {
                             HStack(alignment: .top, spacing: 16) {
                                 VStack(alignment: .leading, spacing: 16) {
                                     cards(issue)
-                                    GlassCard(title: "Comments") { comments(issue) }.id("comments")
+                                    GlassCard(
+                                        title: "Comments", hint: hint(.comment) { String(localized: "\($0) to add") }
+                                    ) { comments(issue) }
+                                    .id("comments")
                                 }
                                 GlassCard {
                                     VStack(alignment: .leading, spacing: 14) {
@@ -506,7 +517,12 @@ struct IssueDetailView: View {
 
     private func descriptionCard(_ issue: Issue) -> some View {
         GlassCard {
-            Text("Description").font(.headline).foregroundStyle(.secondary)
+            HStack(spacing: 6) {
+                Text("Description").font(.headline).foregroundStyle(.secondary)
+                if let h = hint(.editDescription, { String(localized: "\($0) to edit") }) {
+                    Text(h).font(.subheadline).foregroundStyle(.quaternary)
+                }
+            }
             if descriptionDraft != nil {
                 Composer(
                     text: Binding($descriptionDraft, or: ""), mentions: $descriptionMentions,
@@ -605,7 +621,7 @@ struct IssueDetailView: View {
 
     /// The four values a reader wants first, above the comments.
     @ViewBuilder private func statusField(_ issue: Issue) -> some View {
-        field("Status") {
+        field("Status", hint: hint(.changeStatus) { String(localized: "\($0) to change") }) {
             Menu {
                 ForEach(store.transitions) { t in
                     Toggle(
@@ -631,7 +647,7 @@ struct IssueDetailView: View {
     }
 
     @ViewBuilder private func priorityField(_ issue: Issue) -> some View {
-        field("Priority") {
+        field("Priority", hint: hint(.changePriority) { String(localized: "\($0) to change") }) {
             if store.canEdit("priority"), !store.priorities.isEmpty {
                 Menu {
                     ForEach(store.priorities, id: \.id) { p in
@@ -658,7 +674,7 @@ struct IssueDetailView: View {
     }
 
     @ViewBuilder private func assigneeField(_ issue: Issue) -> some View {
-        field("Assignee") {
+        field("Assignee", hint: hint(.assign) { String(localized: "\($0) to assign") }) {
             Button {
                 showAssign = true
             } label: {
@@ -870,12 +886,13 @@ struct IssueDetailView: View {
             }
         }
         if let w = issue.fields.watches {
-            field("Watchers") {
+            field("Watchers", hint: hint(.watch) { String(localized: "\($0) to watch") }) {
                 Button {
                     showWatchers = true
                 } label: {
                     Label("\(w.watchCount) watching", systemImage: w.isWatching ? "eye.fill" : "eye")
                         .foregroundStyle(w.isWatching ? Color.accentColor : .primary)
+                        .inactiveDim()
                 }
                 .buttonStyle(.plain)
                 .editable()

@@ -31,8 +31,9 @@ struct ConductorApp: App {
                 .frame(minWidth: 1100, minHeight: 560)
         }
         .windowToolbarStyle(.unified)
-        // Always present a window at launch, even when restored state has none (e.g. after a test-host run).
-        .defaultLaunchBehavior(.presented)
+        // Always present a window at launch, even when restored state has none (e.g. after a test-host run);
+        // signed out, the small sign-in window takes its place.
+        .defaultLaunchBehavior(session.accounts.isEmpty ? .suppressed : .presented)
         .defaultSize(width: 1400, height: 820)
         .handlesExternalEvents(matching: ["*"])
         .commands {
@@ -86,6 +87,15 @@ struct ConductorApp: App {
         .windowResizability(.contentSize)
         .defaultPosition(.center)
 
+        // Signed out: a card of its own, the size of the form, with the traffic lights and no title bar.
+        Window("Conductor", id: "login") {
+            LoginView().environment(session)
+        }
+        .windowStyle(.hiddenTitleBar)
+        .windowResizability(.contentSize)
+        .defaultPosition(.center)
+        .defaultLaunchBehavior(session.accounts.isEmpty ? .presented : .suppressed)
+
         Settings {
             SettingsView().environment(session)
         }
@@ -99,6 +109,7 @@ struct RootView: View {
     #endif
     @Environment(Session.self) private var session
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.dismissWindow) private var dismissWindow
     @Environment(\.openSettings) private var openSettings
     @AppStorage("defaultSource") private var defaultSource = "assigned"
     @SceneStorage("filters") private var storedFilters = ""
@@ -187,6 +198,13 @@ struct RootView: View {
             }
         }
         .onChange(of: session.pendingOpen) { _, target in if let target { open(target) } }
+        // Signed out of every account (at launch with a restored window, or after the last sign-out): the sign-in
+        // card takes over and this window goes.
+        .onChange(of: [session.isRestoring, session.isSignedIn], initial: true) {
+            guard !session.isRestoring, !session.isSignedIn else { return }
+            openWindow(id: "login")
+            dismissWindow(id: "main")
+        }
         .onOpenURL { session.open(url: $0) }
         .onContinueUserActivity(CSSearchableItemActionType) { activity in
             if let id = activity.userInfo?[CSSearchableItemActivityIdentifier] as? String {
@@ -207,6 +225,7 @@ struct RootView: View {
                 }
                 if env["CONDUCTOR_SHOW"] == "create" { session.createIssueRequested = true }
                 if env["CONDUCTOR_SHOW"] == "settings" { openSettings() }
+                if env["CONDUCTOR_SHOW"] == "login" { openWindow(id: "login") }
                 if let show = env["CONDUCTOR_SHOW"], show.hasPrefix("board:"), let st = session.states.first {
                     openWindow(id: "board", value: BoardTarget(accountID: st.id, projectKey: String(show.dropFirst(6))))
                 }

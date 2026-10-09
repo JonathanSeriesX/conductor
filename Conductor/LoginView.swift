@@ -4,6 +4,8 @@ struct LoginView: View {
     var isSheet = false
     @Environment(Session.self) private var session
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.openWindow) private var openWindow
+    @Environment(\.dismissWindow) private var dismissWindow
     @State private var site = ""
     @State private var email = ""
     @State private var token = ""
@@ -15,14 +17,8 @@ struct LoginView: View {
     }
 
     var body: some View {
-        if isSheet {
-            card
-        } else {
-            ZStack {
-                Backdrop()
-                card
-            }
-        }
+        // As a window the card is the window: a background behind it, not a backdrop that fills a frame.
+        if isSheet { card } else { card.padding(.top, 8).background(Backdrop()) }
     }
 
     private var card: some View {
@@ -85,7 +81,13 @@ struct LoginView: View {
                     Account(
                         site: url, email: email.trimmingCharacters(in: .whitespaces),
                         token: token.trimmingCharacters(in: .whitespaces)))
-                if isSheet { dismiss() }
+                if isSheet {
+                    dismiss()
+                } else {
+                    // The first account: the list window takes over from the sign-in card.
+                    openWindow(id: "main")
+                    dismissWindow(id: "login")
+                }
             } catch { self.error = error.localizedDescription }
         }
     }
