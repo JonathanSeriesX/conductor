@@ -50,6 +50,19 @@ struct ConductorApp: App {
                 }
                 .keyboardShortcut("n")
                 .disabled(!session.isSignedIn)
+                // New Issue windows closed with something in them, as Mail's Drafts; one picked reopens its window.
+                let drafts = Drafts.shared.creates
+                if drafts.isEmpty {
+                    Button("Drafts") {}.disabled(true)
+                } else {
+                    Menu("Drafts") {
+                        ForEach(drafts) { d in
+                            Button(d.summary.isEmpty ? String(localized: "Untitled") : String(d.summary.prefix(60))) {
+                                openWindow(id: "create", value: d.request)
+                            }
+                        }
+                    }
+                }
             }
             // Takes ⌘F away from the text-editing Find panel: in this app, Find means the issue search.
             CommandGroup(replacing: .textEditing) {
@@ -86,6 +99,12 @@ struct ConductorApp: App {
         }
         .windowResizability(.contentSize)
         .defaultPosition(.center)
+
+        // Deleted comments, attachments, links, work logs, parents, filters and status changes, with a way back.
+        Window("Bin", id: "bin") {
+            BinView().environment(session)
+        }
+        .defaultSize(width: 560, height: 420)
 
         // Signed out: a card of its own, the size of the form, with the traffic lights and no title bar.
         Window("Conductor", id: "login") {

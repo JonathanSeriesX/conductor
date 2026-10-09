@@ -184,6 +184,7 @@ final class BoardStore {
             }
             moving[key] = t.to.id
             try await client.transition(key, to: t.id)
+            Bin.shared.put(.status(issue.fields.status), account: state?.id, key: key)
             let fresh = try await client.issue(key)
             if let i = issues.firstIndex(where: { $0.key == key }) { issues[i] = fresh }
             saveSnapshot()

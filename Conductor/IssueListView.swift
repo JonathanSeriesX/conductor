@@ -975,7 +975,14 @@ struct IssueMenu: View {
                     Toggle(
                         isOn: Binding(
                             get: { t.to.id == issue.fields.status.id },
-                            set: { on in if on { write { try await state.client.transition(key, to: t.id) } } })
+                            set: { on in
+                                guard on else { return }
+                                let (old, account) = (issue.fields.status, state.id)
+                                write {
+                                    try await state.client.transition(key, to: t.id)
+                                    await Bin.shared.put(.status(old), account: account, key: key)
+                                }
+                            })
                     ) { Text(t.name) }
                 }
             }

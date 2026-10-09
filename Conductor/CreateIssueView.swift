@@ -7,6 +7,8 @@ struct ProjectChoice: Hashable {
 
 /// What a New Issue window opens with: the list's project, or an issue's project and key for a subtask.
 struct CreateRequest: Hashable, Codable {
+    /// Every New Issue is a window of its own; File > Drafts brings a closed one back under the same id.
+    var id = UUID()
     var accountID: UUID?
     var projectKey: String?
     var parentKey: String?
@@ -132,9 +134,7 @@ final class CreateIssueModel {
 struct CreateIssueView: View {
     let request: CreateRequest
     @Environment(Session.self) private var session
-    /// The NSWindow, from the close-button hook. Closed directly: SwiftUI's dismiss() presses the close button,
-    /// which the hook routes back here, and the two recursed until the stack ran out.
-    @State private var window: NSWindow?
+    @Environment(\.dismiss) private var dismiss
     @Environment(\.openWindow) private var openWindow
     @State private var m = CreateIssueModel()
     @State private var showAssign = false
@@ -146,6 +146,13 @@ struct CreateIssueView: View {
     @State private var showClone = false
     private var parentKey: String? { request.parentKey }
     private var hasDraft: Bool { !m.summary.isEmpty || !m.text.isEmpty }
+    /// The form as the drafts store keeps it; written on every change, read back when the window opens.
+    private var draft: CreateDraft {
+        CreateDraft(
+            request: request, accountID: m.choice?.accountID, projectKey: m.project?.key, type: m.type,
+            summary: m.summary, text: m.text, mentions: m.mentions, assignee: m.assignee, priority: m.priority,
+            labels: m.labels, parentKey: m.parentKey)
+    }
     private var labelMatches: [String] {
         let q = labelDraft.trimmingCharacters(in: .whitespaces).lowercased()
         guard !q.isEmpty else { return [] }
@@ -324,14 +331,18 @@ struct CreateIssueView: View {
             }
 
             HStack {
+                // Closing the window keeps the draft (File > Drafts), as Mail keeps an unsent message; this is the
+                // one way to be rid of it, and it asks nothing: the button says what it does.
+                Button("Delete Draft", systemImage: "trash", role: .destructive) {
+                    Drafts.shared.removeCreate(request.id)
+                    dismiss()
+                }
+                .labelStyle(.iconOnly).glassButton().help("Delete this draft").disabled(!hasDraft)
                 if let e = footerError {
                     Text(e).font(.callout).foregroundStyle(.red).lineLimit(2)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer()
-                // No Escape shortcut: a window of its own closes with ⌘W, Cancel or the close button, never a key
-                // that also leaves text fields and dismisses popovers.
-                Button("Cancel") { requestClose() }.glassButton()
                 Button(action: create) {
                     if m.isWorking {
                         ProgressView().controlSize(.small).frame(width: 60)
@@ -349,32 +360,37 @@ struct CreateIssueView: View {
         .background(Backdrop())
         .writingToolsBehavior(.disabled)  // macOS 27 pins a Siri button beside every text view otherwise
         .navigationTitle(parentKey == nil ? "New Issue" : "New Subtask of \(parentKey!)")
-        .background(CloseButtonHook(onWindow: { window = $0 }, close: requestClose))
         // Signed out of every account, with or without a draft: there is nothing to create an issue in.
-        .task(id: [session.isRestoring, session.isSignedIn, window != nil]) {
-            if !session.isRestoring, !session.isSignedIn { window?.close() }
+        .task(id: [session.isRestoring, session.isSignedIn]) {
+            if !session.isRestoring, !session.isSignedIn { dismiss() }
         }
         .background(
             WindowEventMonitor(mask: .keyDown) { e in
-                // Escape only leaves the field it is in; ⌘W, Cancel and the close button close the window, asking
-                // first when there is a draft.
-                let mods = e.modifierFlags.intersection(.deviceIndependentFlagsMask)
-                if e.keyCode == 53, mods.isEmpty, e.window?.firstResponder is NSTextView {
+                // Escape only leaves the field it is in, never the window: a key that also dismisses popovers
+                // must not close a form. ⌘W and the close button close it, and the draft stays.
+                if e.keyCode == 53, e.modifierFlags.intersection(.deviceIndependentFlagsMask).isEmpty,
+                    e.window?.firstResponder is NSTextView
+                {
                     e.window?.makeFirstResponder(nil)
-                    return nil
-                }
-                if mods == .command, e.charactersIgnoringModifiers == "w" {
-                    requestClose(e.window)
                     return nil
                 }
                 return e
             }
         )
         .focusSoon($summaryFocused)
+        .onChange(of: draft) { _, d in
+            if hasDraft { Drafts.shared.set(d) } else { Drafts.shared.removeCreate(request.id) }
+        }
         .task {
             let last = UserDefaults.standard.string(forKey: "lastCreateProject")
-            // The request's project, else the one used last time, else a starred one, else the first.
-            if let id = request.accountID, let st = session.state(id),
+            let saved = Drafts.shared.creates.first { $0.id == request.id }
+            // The draft's project (a window reopened, or restored after a relaunch), else the request's, else the one
+            // used last time, else a starred one, else the first.
+            if let saved, let id = saved.accountID, let st = session.state(id),
+                let p = st.projects.first(where: { $0.key == saved.projectKey })
+            {
+                m.choice = ProjectChoice(project: p, accountID: st.id)
+            } else if let id = request.accountID, let st = session.state(id),
                 let p = st.projects.first(where: { $0.key == request.projectKey })
             {
                 m.choice = ProjectChoice(project: p, accountID: st.id)
@@ -390,6 +406,17 @@ struct CreateIssueView: View {
                 m.choice = ProjectChoice(project: p, accountID: st.id)
             }
             m.parentKey = parentKey ?? ""
+            if let saved {
+                // The type is kept by `loadTypes` as long as the project still offers it.
+                m.type = saved.type
+                m.summary = saved.summary
+                m.text = saved.text
+                m.mentions = saved.mentions
+                m.assignee = saved.assignee
+                m.priority = saved.priority
+                m.labels = saved.labels
+                m.parentKey = saved.parentKey
+            }
             syncState()
             if let st = m.state { await m.loadTypes(st) }
         }
@@ -417,21 +444,6 @@ struct CreateIssueView: View {
     }
 
     private func syncState() { m.state = m.choice.flatMap { session.state($0.accountID) } }
-
-    /// Closes at once without a draft; with one, asks first. An AppKit sheet answers after it is gone, so the
-    /// window closes cleanly (the SwiftUI dialog's Discard raced its own dismissal and did nothing).
-    private func requestClose(_ from: NSWindow? = nil) {
-        guard let window = from ?? window ?? NSApp.keyWindow else { return }
-        guard hasDraft else {
-            window.close()
-            return
-        }
-        let alert = NSAlert()
-        alert.messageText = String(localized: "Discard this issue?")
-        alert.addButton(withTitle: String(localized: "Keep Editing"))
-        alert.addButton(withTitle: String(localized: "Discard")).hasDestructiveAction = true
-        alert.beginSheetModal(for: window) { if $0 == .alertSecondButtonReturn { window.close() } }
-    }
 
     /// Fills the form from an existing issue.
     private func clone(_ key: String) {
@@ -479,34 +491,10 @@ struct CreateIssueView: View {
                 let created = try await c.createIssue(fields: try m.payload())
                 UserDefaults.standard.set("\(st.id)|\(m.project?.key ?? "")", forKey: "lastCreateProject")
                 session.reloadTick += 1  // the lists, and the parent's subtasks
-                (window ?? NSApp.keyWindow)?.close()
+                Drafts.shared.removeCreate(request.id)
+                dismiss()
                 openWindow(id: "issue", value: IssueTarget(accountID: st.id, key: created.key))
             } catch { m.error = error.localizedDescription }
         }
-    }
-}
-
-/// Routes the window's close button through `close`, so a draft can ask before it goes. ⌘W and Escape reach the
-/// same place through the key monitor; SwiftUI offers no windowShouldClose.
-private struct CloseButtonHook: NSViewRepresentable {
-    let onWindow: (NSWindow?) -> Void
-    let close: (NSWindow?) -> Void
-    func makeNSView(context: Context) -> Probe { Probe() }
-    func updateNSView(_ view: Probe, context: Context) {
-        view.onWindow = onWindow
-        view.close = close
-    }
-
-    final class Probe: NSView {
-        var onWindow: (NSWindow?) -> Void = { _ in }
-        var close: (NSWindow?) -> Void = { _ in }
-        override func viewDidMoveToWindow() {
-            let window = window
-            DispatchQueue.main.async { self.onWindow(window) }  // not inside SwiftUI's update
-            guard let button = window?.standardWindowButton(.closeButton) else { return }
-            button.target = self
-            button.action = #selector(tap)
-        }
-        @objc private func tap() { close(window) }
     }
 }
