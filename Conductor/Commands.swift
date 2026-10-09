@@ -65,7 +65,7 @@ enum ShortcutScheme: String, CaseIterable {
         }
     }
 
-    enum Key {
+    enum Key: Equatable {
         case newIssue, search, issue(IssueActions.Action)
         var title: String {
             switch self {
@@ -99,6 +99,17 @@ enum ShortcutScheme: String, CaseIterable {
                 ("s", .issue(.changeStatus)), ("p", .issue(.changePriority)), ("l", .issue(.editLabels)),
             ]
         }
+    }
+
+    /// The Issue menu's ⌘ shortcuts (mirrors AppCommands), for captions when the scheme binds no single key.
+    private static let menuKeys: [IssueActions.Action: String] = [
+        .editSummary: "⌘E", .editDescription: "⌘⌥E", .comment: "⌘⇧M", .assign: "⌘⇧A", .assignToMe: "⌘⇧I",
+        .attach: "⌘⌥A", .link: "⌘⇧L", .logWork: "⌘⌥L", .subtask: "⌘⇧N", .remind: "⌘⌥R",
+    ]
+
+    /// "M" or "⌘⇧M": what a caption tells the user to press for `action`; nil when nothing is bound.
+    static func hint(for action: IssueActions.Action) -> String? {
+        current.keys.first { $0.1 == .issue(action) }.map { String($0.0).uppercased() } ?? menuKeys[action]
     }
 
     /// "c New Issue… · a Assign…", for Settings.

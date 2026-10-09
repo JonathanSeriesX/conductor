@@ -111,7 +111,7 @@ struct RemoteImage: View {
     var body: some View {
         Group {
             if let image {
-                Image(nsImage: image).resizable().aspectRatio(contentMode: fit ? .fit : .fill)
+                Image(nsImage: image).resizable().aspectRatio(contentMode: fit ? .fit : .fill).inactiveDim()
             } else {
                 Image(systemName: placeholder).resizable().scaledToFit().padding(2).foregroundStyle(.tertiary)
             }
@@ -146,7 +146,6 @@ struct Avatar: View {
         .clipShape(.circle)
         // A ring on a selected row, so an orange avatar still reads on the orange selection.
         .overlay { if prominence == .increased { Circle().stroke(.white.opacity(0.9), lineWidth: 1.5) } }
-        .inactiveDim()
         .help(user?.displayName ?? String(localized: "Unassigned"))
         .accessibilityLabel(user?.displayName ?? String(localized: "Unassigned"))
     }
@@ -154,7 +153,7 @@ struct Avatar: View {
 
 extension View {
     /// Greys a coloured element while its window is inactive, as the system does with sidebar icons and the
-    /// selection. Text stays as it is; chips, pills, icons and avatars lose their colour.
+    /// selection. Text stays as it is; pills, badges and every remote image (icons, avatars) lose their colour.
     func inactiveDim() -> some View { modifier(InactiveDim()) }
 }
 
@@ -222,19 +221,23 @@ struct PriorityIcon: View {
             .frame(width: size, height: size)
             .padding(2)  // constant so the glyph does not shift when the disc appears
             .background(prominence == .increased ? .white.opacity(0.9) : .clear, in: .circle)
-            .inactiveDim()
             .help(priority.name)
     }
 }
 
 struct GlassCard<Content: View>: View {
     var title: LocalizedStringKey?
+    /// "• M to add", faint, after the title: the key that acts on the card.
+    var hint: String?
     @ViewBuilder var content: Content
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             if let title {
-                Text(title).font(.headline).foregroundStyle(.secondary)
+                HStack(spacing: 6) {
+                    Text(title).font(.headline).foregroundStyle(.secondary)
+                    if let hint { Text(hint).font(.subheadline).foregroundStyle(.quaternary) }
+                }
             }
             content
         }
@@ -259,9 +262,14 @@ func issues(_ n: Int, more: Bool = false) -> String {
 }
 
 /// A small-caps caption over a value: the issue page's fields and the New Issue window's.
-@MainActor func field<V: View>(_ name: LocalizedStringKey, @ViewBuilder _ value: () -> V) -> some View {
+@MainActor func field<V: View>(_ name: LocalizedStringKey, hint: String? = nil, @ViewBuilder _ value: () -> V)
+    -> some View
+{
     VStack(alignment: .leading, spacing: 4) {
-        Text(name).textCase(.uppercase).font(.caption2.weight(.semibold)).foregroundStyle(.tertiary)
+        HStack(spacing: 4) {
+            Text(name).textCase(.uppercase).font(.caption2.weight(.semibold)).foregroundStyle(.tertiary)
+            if let hint { Text(hint).font(.caption2).foregroundStyle(.quaternary) }  // "• A to assign", fainter still
+        }
         value()
     }
 }

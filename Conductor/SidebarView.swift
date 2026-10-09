@@ -512,10 +512,9 @@ struct SidebarView: View {
         return Label {
             Text(p.name)
         } icon: {
-            RemoteImage(url: p.avatar, placeholder: "folder")
+            RemoteImage(url: p.avatar, placeholder: "folder")  // greys itself behind another window
                 .frame(width: 18, height: 18)
                 .clipShape(.rect(cornerRadius: 4))
-                .grayscale(active ? 0 : 1).opacity(active ? 1 : 0.5)
         }
         .tag(row)
         .onTapGesture(count: 2) { openWindow(id: "board", value: BoardTarget(accountID: st.id, projectKey: p.key)) }

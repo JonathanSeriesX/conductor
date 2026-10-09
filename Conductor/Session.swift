@@ -25,6 +25,8 @@ final class AccountState: Identifiable {
     /// First pages of lists by cache name ("list-<hash of JQL>"): the recent ones from disk at launch, then every
     /// one fetched, so a list opens with rows in its first frame instead of after a disk read.
     @ObservationIgnored var lists: [String: [Issue]] = [:]
+    /// Every issue in memory, for search suggestions: the rows the lists have seen and the cached first pages.
+    var knownIssues: [Issue] { Array(peek.values) + lists.values.flatMap { $0 } }
     /// Each board as it was last drawn, by project key, so a board window reopens without a disk read and decode.
     @ObservationIgnored var boardSnapshots: [String: BoardStore.Snapshot] = [:]
     @ObservationIgnored private var linkTypesCache: [LinkType]?

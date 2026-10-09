@@ -420,6 +420,15 @@ struct IssueListView: View {
                 searchFocused = false  // or the recent-searches panel stays under the field
                 return
             }
+            // A key opens its issue at once: the list shows the row and the preview shows the page.
+            if filters.isKey {
+                let key = filters.text.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+                if let st = filters.account.flatMap(session.state) ?? session.state(forKey: key) {
+                    selection = IssueTarget(accountID: st.id, key: key)
+                    searchFocused = false
+                }
+                return
+            }
             session.recordSearch(filters.text)
         }
         .toolbar(id: "list") {
@@ -703,11 +712,14 @@ struct IssueListView: View {
     private var chips: some View {
         let all = chipList
         let more = all.filter { !$0.active }
+        // A key or raw JQL ignores the chips: they go grey like an inactive window's, still legible.
+        let muted = filters.isRawJQL || filters.isKey
         return HStack(spacing: 0) {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 6) {
                     ForEach(all.filter(\.active), id: \.id) { c in
-                        FilterChip(id: c.id, title: c.title, active: true, menus: chipMenus, items: c.items)
+                        FilterChip(
+                            id: c.id, title: c.title, active: true, enabled: !muted, menus: chipMenus, items: c.items)
                     }
                     if !more.isEmpty {
                         FilterChip(
@@ -731,8 +743,7 @@ struct IssueListView: View {
         }
         .background(.bar)
         .overlay(alignment: .bottom) { Divider() }
-        .disabled(filters.isRawJQL || filters.isKey)
-        .opacity(filters.isRawJQL || filters.isKey ? 0.4 : 1)
+        .disabled(muted)
         .help(
             filters.isRawJQL
                 ? "Filters don't apply to raw JQL" : filters.isKey ? "A key opens that issue whatever the filters" : "")
@@ -745,6 +756,24 @@ struct IssueListView: View {
         if q.isEmpty {
             suggestions = session.recentSearches.map { ($0, $0) }
             return
+        }
+        // Issues the app has seen whose key or summary matches, newest first: picking one puts its key in the
+        // field, and ↩ opens it. Raw JQL gets the field and value help below instead.
+        if !filters.isRawJQL {
+            let needle = q.trimmingCharacters(in: .whitespaces)
+            var seen = Set<String>()
+            let hits = session.states.flatMap(\.knownIssues)
+                .filter {
+                    seen.insert($0.key).inserted
+                        && ($0.key.hasPrefix(needle.uppercased())
+                            || $0.fields.summary.localizedCaseInsensitiveContains(needle))
+                }
+                .sorted { ($0.fields.updated ?? .distantPast) > ($1.fields.updated ?? .distantPast) }
+                .prefix(5)
+            if !hits.isEmpty {
+                suggestions = hits.map { (display: "\($0.key)  \($0.fields.summary)", completion: $0.key) }
+                return
+            }
         }
         let fields = state?.jqlFields ?? []
         // A lone word of two letters or more that starts a field name ("sta") completes to it; a longer plain
@@ -1071,13 +1100,15 @@ struct FilterChip: View {
     let title: String
     var symbol: String?
     let active: Bool
+    /// False while a key or raw JQL search ignores the chips: set, but not lit.
+    var enabled = true
     let menus: ChipMenuController
     let items: [ChipItem]
     @Environment(\.appearsActive) private var appearsActive
 
     var body: some View {
-        // Behind another window a set chip goes grey with dark text, as Mail's selection does.
-        let lit = active && appearsActive
+        // Behind another window, or ignored by a key search, a set chip goes grey with dark text, as Mail's selection does.
+        let lit = active && appearsActive && enabled
         Button {
             menus.toggle(id)
         } label: {
