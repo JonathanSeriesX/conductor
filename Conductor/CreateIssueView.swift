@@ -324,7 +324,9 @@ struct CreateIssueView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer()
-                Button("Cancel") { requestClose() }.glassButton().keyboardShortcut(.cancelAction)
+                // No Escape shortcut: a window of its own closes with ⌘W, Cancel or the close button, never a key
+                // that also leaves text fields and dismisses popovers.
+                Button("Cancel") { requestClose() }.glassButton()
                 Button(action: create) {
                     if m.isWorking {
                         ProgressView().controlSize(.small).frame(width: 60)
@@ -349,8 +351,8 @@ struct CreateIssueView: View {
         }
         .background(
             WindowEventMonitor(mask: .keyDown) { e in
-                // Escape leaves the field it is in; the next one (or ⌘W, Cancel, the close button) closes the
-                // window, asking first when there is a draft.
+                // Escape only leaves the field it is in; ⌘W, Cancel and the close button close the window, asking
+                // first when there is a draft.
                 let mods = e.modifierFlags.intersection(.deviceIndependentFlagsMask)
                 if e.keyCode == 53, mods.isEmpty, e.window?.firstResponder is NSTextView {
                     e.window?.makeFirstResponder(nil)
