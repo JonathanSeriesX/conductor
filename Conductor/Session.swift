@@ -411,7 +411,8 @@ final class Session {
                 else { return nil }
                 return Account(site: site, email: email, token: token)
             }
-            if !envAccounts.isEmpty {
+            // Only over a keychain that answered: merged into a locked one's empty list they would replace it.
+            if !envAccounts.isEmpty, !Keychain.isUnavailable {
                 // An env account replaces its stored twin (same id: host + email) in place, so the sidebar order holds.
                 for a in envAccounts {
                     if let i = stored.firstIndex(where: { $0.id == a.id }) { stored[i] = a } else { stored.append(a) }
@@ -419,8 +420,16 @@ final class Session {
                 Keychain.save(stored)
             }
         #endif
+        adopt(stored)
+        // With accounts but no cache (a first launch, or after Clear Cache), or with the keychain still locked, the
+        // window keeps its spinner until the first one answers, rather than showing the sign-in form to someone
+        // who is signed in.
+        isRestoring = Keychain.isUnavailable || (states.isEmpty && !stored.isEmpty)
+    }
+
+    /// Makes a state per account from what is on disk and queues each for its network check.
+    private func adopt(_ accounts: [Account]) {
         // One thread per account: each reads a dozen small files and its recent lists.
-        let accounts = stored
         let cached = Mutex([CachedAccount?](repeating: nil, count: accounts.count))
         DispatchQueue.concurrentPerform(iterations: accounts.count) { i in
             let c = CachedAccount(accounts[i])
@@ -431,9 +440,6 @@ final class Session {
             if let c, st.apply(c) { attach(st) }
             connecting.append(st)
         }
-        // With accounts but no cache (a first launch, or after Clear Cache) the window keeps its spinner until the
-        // first one answers, rather than showing the sign-in form to someone who is signed in.
-        isRestoring = states.isEmpty && !stored.isEmpty
     }
 
     /// States made at launch, waiting for their first network check.
@@ -445,6 +451,15 @@ final class Session {
         didRestore = true
         watchConnectivity()
         defer { isRestoring = false }
+        // Launched before the session's first unlock (a login item): the keychain answers -25308 until then.
+        while Keychain.isUnavailable {
+            try? await Task.sleep(for: .seconds(3))
+            let accounts = Keychain.load()
+            if !Keychain.isUnavailable {
+                stored = accounts
+                adopt(accounts)
+            }
+        }
         let pending = connecting.map { st in
             (
                 st,
