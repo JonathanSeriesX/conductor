@@ -127,7 +127,9 @@ final class CreateIssueModel {
 struct CreateIssueView: View {
     let request: CreateRequest
     @Environment(Session.self) private var session
-    @Environment(\.dismiss) private var dismiss
+    /// The NSWindow, from the close-button hook. Closed directly: SwiftUI's dismiss() presses the close button,
+    /// which the hook routes back here, and the two recursed until the stack ran out.
+    @State private var window: NSWindow?
     @Environment(\.openWindow) private var openWindow
     @State private var m = CreateIssueModel()
     @State private var showAssign = false
@@ -340,7 +342,11 @@ struct CreateIssueView: View {
         .background(Backdrop())
         .writingToolsBehavior(.disabled)  // macOS 27 pins a Siri button beside every text view otherwise
         .navigationTitle(parentKey == nil ? "New Issue" : "New Subtask of \(parentKey!)")
-        .background(CloseButtonHook(close: requestClose))
+        .background(CloseButtonHook(onWindow: { window = $0 }, close: requestClose))
+        // Signed out of every account, with or without a draft: there is nothing to create an issue in.
+        .task(id: [session.isRestoring, session.isSignedIn, window != nil]) {
+            if !session.isRestoring, !session.isSignedIn { window?.close() }
+        }
         .background(
             WindowEventMonitor(mask: .keyDown) { e in
                 // Escape leaves the field it is in; the next one (or ⌘W, Cancel, the close button) closes the
@@ -401,9 +407,10 @@ struct CreateIssueView: View {
 
     /// Closes at once without a draft; with one, asks first. An AppKit sheet answers after it is gone, so the
     /// window closes cleanly (the SwiftUI dialog's Discard raced its own dismissal and did nothing).
-    private func requestClose(_ window: NSWindow? = NSApp.keyWindow) {
-        guard hasDraft, let window else {
-            dismiss()
+    private func requestClose(_ from: NSWindow? = nil) {
+        guard let window = from ?? window ?? NSApp.keyWindow else { return }
+        guard hasDraft else {
+            window.close()
             return
         }
         let alert = NSAlert()
@@ -459,7 +466,7 @@ struct CreateIssueView: View {
                 let created = try await c.createIssue(fields: try m.payload())
                 UserDefaults.standard.set("\(st.id)|\(m.project?.key ?? "")", forKey: "lastCreateProject")
                 session.reloadTick += 1  // the lists, and the parent's subtasks
-                dismiss()
+                (window ?? NSApp.keyWindow)?.close()
                 openWindow(id: "issue", value: IssueTarget(accountID: st.id, key: created.key))
             } catch { m.error = error.localizedDescription }
         }
@@ -469,13 +476,20 @@ struct CreateIssueView: View {
 /// Routes the window's close button through `close`, so a draft can ask before it goes. ⌘W and Escape reach the
 /// same place through the key monitor; SwiftUI offers no windowShouldClose.
 private struct CloseButtonHook: NSViewRepresentable {
+    let onWindow: (NSWindow?) -> Void
     let close: (NSWindow?) -> Void
     func makeNSView(context: Context) -> Probe { Probe() }
-    func updateNSView(_ view: Probe, context: Context) { view.close = close }
+    func updateNSView(_ view: Probe, context: Context) {
+        view.onWindow = onWindow
+        view.close = close
+    }
 
     final class Probe: NSView {
+        var onWindow: (NSWindow?) -> Void = { _ in }
         var close: (NSWindow?) -> Void = { _ in }
         override func viewDidMoveToWindow() {
+            let window = window
+            DispatchQueue.main.async { self.onWindow(window) }  // not inside SwiftUI's update
             guard let button = window?.standardWindowButton(.closeButton) else { return }
             button.target = self
             button.action = #selector(tap)
