@@ -86,6 +86,7 @@ final class IssueDetailStore {
             let (cached, meta, trans, kids) = await (diskIssue, diskMeta, diskTransitions, diskChildren)
             guard self.key == key else { return }
             issue = cached ?? state.peek[key]
+            seedRelated(state)  // assignees of subtasks and links from memory, before any request
             if let meta {
                 editMeta = meta
             } else if let i = issue, let m = state.editMetaByWorkflow[AccountState.workflowKey(i)] {
@@ -153,18 +154,28 @@ final class IssueDetailStore {
     /// Full records for everything this page can open with a click: subtasks, children, the parent and linked
     /// issues. One batched request, skipping what is already on disk.
     private func prefetchRelated(_ state: AccountState) {
-        guard let issue else { return }
-        var keys =
-            (issue.fields.subtasks ?? []).map(\.key) + children.map(\.key)
-            + (issue.fields.issuelinks ?? []).compactMap { $0.other?.key }
-        if let p = issue.fields.parent?.key { keys.append(p) }
-        for k in keys { if let i = state.peek[k] { related[k] = i } }
+        let keys = seedRelated(state)
         let missing = Set(keys).filter { state.prefetched[$0] == nil || state.peek[$0] == nil }
         guard !missing.isEmpty else { return }
         let key = self.key
         Task { @MainActor in
             for i in await state.fetchDetails(Array(missing)) where self.key == key { related[i.key] = i }
         }
+    }
+
+    /// The keys this page can open with a click, with what memory already knows about them put in `related`.
+    @discardableResult
+    private func seedRelated(_ state: AccountState) -> [String] {
+        guard let issue else { return [] }
+        var keys =
+            (issue.fields.subtasks ?? []).map(\.key) + children.map(\.key)
+            + (issue.fields.issuelinks ?? []).compactMap { $0.other?.key }
+        if let p = issue.fields.parent?.key { keys.append(p) }
+        // Memory first, then the issue's own file (a Done subtask is in no open list but was prefetched once).
+        for k in keys where related[k] == nil {
+            related[k] = state.peek[k] ?? DiskCache.load(Issue.self, account: state.account, name: "issue-\(k)")
+        }
+        return keys
     }
 
     /// Runs a write, then refreshes only what a write can change: the issue, its transitions and editmeta.
@@ -437,13 +448,12 @@ struct IssueDetailView: View {
                 } label: {
                     HStack(spacing: 4) {
                         RemoteImage(url: p.fields.issuetype?.iconUrl).frame(width: 14, height: 14)
-                        Text(p.key).monospaced()
-                        Text(p.fields.summary).lineLimit(1)
+                        Text(p.key).monospaced()  // the key alone: the summary is in the tooltip and on the parent field
                     }
                     .contentShape(.rect)
                 }
                 .buttonStyle(.plain)
-                .help("Open \(p.key); ⌘-click for a new window")
+                .help("\(p.fields.summary)\n\(String(localized: "Open \(p.key); ⌘-click for a new window"))")
                 Image(systemName: "chevron.forward").font(.caption2.weight(.bold)).foregroundStyle(.tertiary)
             }
             RemoteImage(url: store.issue?.fields.issuetype.iconUrl, placeholder: "circle").frame(width: 14, height: 14)
@@ -470,6 +480,7 @@ struct IssueDetailView: View {
             }
         }
         .font(.callout).foregroundStyle(.secondary)
+        .fixedSize()  // two keys and two icons: never "CON…"
     }
 
     private func header(_ issue: Issue) -> some View {

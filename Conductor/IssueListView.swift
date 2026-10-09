@@ -451,6 +451,7 @@ struct IssueListView: View {
                     }
                     .font(.subheadline).foregroundStyle(.secondary)
                 }
+                .fixedSize(horizontal: true, vertical: false)  // never "47 issue…": the toolbar fits around it
                 .padding(.leading, 14)
             }
             .glassTitle()

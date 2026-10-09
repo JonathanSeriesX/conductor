@@ -226,6 +226,8 @@ final class AccountState: Identifiable {
         prefetched = c.prefetched
         transitionsByWorkflow = c.transitions
         lists = c.lists
+        // The rows of the cached lists are what an issue page knows about its subtasks and links before the network.
+        for issues in lists.values { for i in issues where peek[i.key] == nil { peek[i.key] = i } }
         starred = Set(projects.filter { $0.favourite == true }.map(\.key))
         // Edit screens are the biggest file by far (a megabyte on a busy site) and only an issue page reads them.
         let account = account
