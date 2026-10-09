@@ -43,6 +43,15 @@ struct ListActions {
     let sort: Binding<ListFilters.Sort>?
 }
 
+extension ListActions: Equatable {
+    /// By what the menus show; the closures are new on every list pass, and publishing them each time made
+    /// SwiftUI warn that the focused value changed several times per frame.
+    static func == (a: Self, b: Self) -> Bool {
+        (a.saveFilter == nil) == (b.saveFilter == nil) && (a.openBoard == nil) == (b.openBoard == nil)
+            && a.sort?.wrappedValue == b.sort?.wrappedValue
+    }
+}
+
 extension FocusedValues {
     @Entry var issueActions: IssueActions?
     @Entry var listActions: ListActions?

@@ -234,9 +234,10 @@ struct GlassCard<Content: View>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             if let title {
-                HStack(spacing: 6) {
+                // The gap before the bullet equals the space after it.
+                HStack(spacing: 3) {
                     Text(title).font(.headline).foregroundStyle(.secondary)
-                    if let hint { Text(hint).font(.subheadline).foregroundStyle(.quaternary) }
+                    if let hint { Text(hint).font(.subheadline).foregroundStyle(.tertiary) }
                 }
             }
             content
@@ -266,9 +267,9 @@ func issues(_ n: Int, more: Bool = false) -> String {
     -> some View
 {
     VStack(alignment: .leading, spacing: 4) {
-        HStack(spacing: 4) {
+        HStack(spacing: 2) {
             Text(name).textCase(.uppercase).font(.caption2.weight(.semibold)).foregroundStyle(.tertiary)
-            if let hint { Text(hint).font(.caption2).foregroundStyle(.quaternary) }  // "• A to assign", fainter still
+            if let hint { Text(hint).font(.caption2).foregroundStyle(.tertiary.opacity(0.8)) }  // "• A to assign"
         }
         value()
     }
@@ -328,7 +329,7 @@ struct WindowEventMonitor: NSViewRepresentable {
 }
 
 /// The first table (a SwiftUI List) under a view, depth first.
-func firstTable(in v: NSView) -> NSTableView? {
+@MainActor func firstTable(in v: NSView) -> NSTableView? {
     if let t = v as? NSTableView { return t }
     for s in v.subviews { if let t = firstTable(in: s) { return t } }
     return nil

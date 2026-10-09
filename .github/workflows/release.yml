@@ -60,9 +60,10 @@ jobs:
           xcrun notarytool log "$ID" "${AUTH[@]}"
           xcrun stapler staple "$APP"
           spctl --assess --type execute --verbose=2 "$APP"
+      # One name for every release, so .../releases/latest/download/Conductor.zip always serves the newest build.
       - name: Package
-        run: ditto -c -k --keepParent "$APP" Conductor-${GITHUB_REF_NAME#v}.zip
+        run: ditto -c -k --keepParent "$APP" Conductor.zip
       - name: Release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" Conductor-*.zip --generate-notes
+        run: gh release create "$GITHUB_REF_NAME" Conductor.zip --generate-notes
