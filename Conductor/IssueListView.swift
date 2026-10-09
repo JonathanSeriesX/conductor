@@ -103,16 +103,7 @@ final class IssueListStore {
         let stale = rows.prefix(limit).filter { $0.state.prefetched[$0.issue.key] != $0.issue.fields.updated }
         for group in Dictionary(grouping: stale, by: \.state.id).values {
             guard let st = group.first?.state else { continue }
-            let jql = "issuekey in (" + group.map { "\"\($0.issue.key)\"" }.joined(separator: ",") + ")"
-            Task { @MainActor in
-                guard let page = try? await st.client.search(jql: jql, fields: st.client.detailFields) else { return }
-                for issue in page.issues {
-                    DiskCache.saveAsync(issue, account: st.account, name: "issue-\(issue.key)")
-                    st.peek[issue.key] = issue
-                    st.prefetched[issue.key] = issue.fields.updated
-                }
-                DiskCache.saveAsync(st.prefetched, account: st.account, name: "prefetched")
-            }
+            Task { @MainActor in await st.fetchDetails(group.map(\.issue.key)) }
         }
     }
 
@@ -238,7 +229,8 @@ final class IssueListStore {
     private func fetchPage(gen: Int, replacing: Bool) async {
         guard let (st, jql, cacheable) = single else { return }
         isLoading = true
-        defer { isLoading = false }
+        // Not for a superseded page: the load that replaced it is still running under the same flag.
+        defer { if gen == generation { isLoading = false } }
         do {
             let page = try await Self.fetch(jql: jql, state: st, nextPageToken: nextToken, cache: cacheable)
             guard gen == generation else { return }
@@ -445,7 +437,14 @@ struct IssueListView: View {
                 .padding(.leading, 14)
             }
             .glassTitle()
-            NewIssueToolbarItem()
+            ToolbarItem(id: "new") {
+                Button {
+                    session.createIssueRequested = true
+                } label: {
+                    Label("New Issue", systemImage: "square.and.pencil")
+                }
+                .help("New issue (⌘N)")
+            }
             ToolbarItem(id: "board") {
                 if let b = boardTarget {
                     Button {

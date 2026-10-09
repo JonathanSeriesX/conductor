@@ -318,7 +318,9 @@ struct SidebarView: View {
                                 }
                             }
                         }
-                        Button("Refresh", systemImage: "arrow.clockwise") { Task { try? await st.load() } }
+                        Button("Refresh", systemImage: "arrow.clockwise") {
+                            Task { do { try await st.load() } catch { st.error = error.localizedDescription } }
+                        }
                         Divider()
                         Button(
                             "Sign Out of \(st.title)…", systemImage: "rectangle.portrait.and.arrow.forward",

@@ -230,11 +230,6 @@ struct JiraClient: Sendable {
         _ = try await request("issue/\(key)/assignee", method: "PUT", body: Body(accountId: accountId))
     }
 
-    func addComment(_ key: String, text: String) async throws {
-        struct Body: Encodable { let body: ADFNode }
-        _ = try await request("issue/\(key)/comment", method: "POST", body: Body(body: .document(text: text)))
-    }
-
     func addComment(_ key: String, body: ADFNode) async throws {
         struct Body: Encodable { let body: ADFNode }
         _ = try await request("issue/\(key)/comment", method: "POST", body: Body(body: body))
@@ -282,8 +277,6 @@ struct JiraClient: Sendable {
         struct Body: Encodable { let fields: [String: JSONValue] }
         _ = try await request("issue/\(key)", method: "PUT", body: Body(fields: fields))
     }
-
-    func priorities() async throws -> [Priority] { try await get("priority") }
 
     /// Every label on the site, for suggestions while typing one.
     func labels() async throws -> [String] {
@@ -390,10 +383,6 @@ struct JiraClient: Sendable {
         _ = try await request("issue/\(key)/worklog/\(id)", query: ["adjustEstimate": "leave"], method: "DELETE")
     }
 
-    /// Transitions available from one status, as seen on a representative issue. Status and type decide the
-    /// workflow within a project, so one fetch serves every row that shares them.
-    func transitionsCached(for issue: Issue) async throws -> [Transition] { try await transitions(issue.key) }
-
     func watchers(_ key: String) async throws -> [JiraUser] {
         struct R: Decodable { let watchers: [JiraUser] }
         let r: R = try await get("issue/\(key)/watchers")
@@ -422,9 +411,10 @@ struct JiraClient: Sendable {
         try await get("board/\(id)/configuration", base: agile)
     }
 
-    func sprints(board: Int, states: String = "active,future") async throws -> [Sprint] {
+    /// A board's active and future sprints.
+    func sprints(board: Int) async throws -> [Sprint] {
         let p: SprintPage = try await get(
-            "board/\(board)/sprint", query: ["state": states, "maxResults": "50"], base: agile)
+            "board/\(board)/sprint", query: ["state": "active,future", "maxResults": "50"], base: agile)
         return p.values
     }
 
@@ -504,6 +494,7 @@ enum Keychain {
         guard !accounts.isEmpty, let data = try? JSONEncoder().encode(accounts) else { return }
         var q = query
         q[kSecValueData as String] = data
-        SecItemAdd(q as CFDictionary, nil)
+        let status = SecItemAdd(q as CFDictionary, nil)
+        if status != errSecSuccess { NSLog("Keychain write failed: %d", status) }
     }
 }

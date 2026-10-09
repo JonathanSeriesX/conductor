@@ -228,7 +228,7 @@ struct CreateIssueView: View {
 
             HStack(alignment: .top, spacing: 18) {
                 if m.has("assignee") {
-                    labeled("Assignee") {
+                    field("Assignee") {
                         Button {
                             showAssign = true
                         } label: {
@@ -251,7 +251,7 @@ struct CreateIssueView: View {
                     .frame(minWidth: 180, alignment: .leading)
                 }
                 if m.has("priority"), !m.priorities.isEmpty {
-                    labeled("Priority") {
+                    field("Priority") {
                         Picker("Priority", selection: $m.priority) {
                             Text("Default").tag(Optional<Priority>.none)
                             ForEach(m.priorities, id: \.id) { p in Text(p.name).tag(Optional(p)) }
@@ -260,7 +260,7 @@ struct CreateIssueView: View {
                     }
                 }
                 if m.has("parent") || m.parentRequired {
-                    labeled(m.parentRequired ? "Parent (required)" : "Parent / Epic") {
+                    field(m.parentRequired ? "Parent (required)" : "Parent / Epic") {
                         Button {
                             showParent = true
                         } label: {
@@ -281,7 +281,7 @@ struct CreateIssueView: View {
             }
 
             if m.has("labels") {
-                labeled("Labels") {
+                field("Labels") {
                     Wrap {
                         ForEach(m.labels, id: \.self) { l in Chip(text: l) { m.labels.removeAll { $0 == l } } }
                         TextField("Add label", text: $labelDraft)
@@ -357,8 +357,8 @@ struct CreateIssueView: View {
                 return e
             }
         )
+        .focusSoon($summaryFocused)
         .task {
-            DispatchQueue.main.async { summaryFocused = true }
             let last = UserDefaults.standard.string(forKey: "lastCreateProject")
             // The request's project, else the one used last time, else a starred one, else the first.
             if let id = request.accountID, let st = session.state(id),
@@ -417,7 +417,11 @@ struct CreateIssueView: View {
     private func clone(_ key: String) {
         guard let c = m.state?.client else { return }
         Task {
-            guard let i = try? await c.issue(key) else { return }
+            let i: Issue
+            do { i = try await c.issue(key) } catch {
+                m.error = error.localizedDescription
+                return
+            }
             if let t = m.types.first(where: { $0.id == i.fields.issuetype.id }) { m.type = t }
             m.summary = i.fields.summary
             var mentions: [String: String] = [:]
@@ -434,13 +438,6 @@ struct CreateIssueView: View {
     private var parentJQL: String {
         let level = m.type?.isSubtask == true ? 0 : (m.type?.hierarchyLevel ?? 0) + 1
         return "project = \"\(m.project?.key ?? "")\" AND hierarchyLevel = \(level) ORDER BY updated DESC"
-    }
-
-    private func labeled<V: View>(_ title: LocalizedStringKey, @ViewBuilder _ content: () -> V) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title).textCase(.uppercase).font(.caption2.weight(.semibold)).foregroundStyle(.tertiary)
-            content()
-        }
     }
 
     private func addLabel() {

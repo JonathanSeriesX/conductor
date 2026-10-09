@@ -91,25 +91,13 @@ final class AccountState: Identifiable {
             guard let page = try? await client.search(jql: jql, nextPageToken: token) else { break }
             // Rows unchanged since the last pass already have their details on disk.
             let stale = page.issues.filter { prefetched[$0.key] != $0.fields.updated }
-            if !stale.isEmpty,
-                let full = try? await client.search(
-                    jql: "issuekey in (" + stale.map { "\"\($0.key)\"" }.joined(separator: ",") + ")",
-                    fields: client.detailFields)
-            {
-                for i in full.issues {
-                    DiskCache.saveAsync(i, account: account, name: "issue-\(i.key)")
-                    peek[i.key] = i
-                    prefetched[i.key] = i.fields.updated
-                }
-                issues += full.issues
-            }
+            issues += await fetchDetails(stale.map(\.key))
             for i in page.issues where !stale.contains(where: { $0.key == i.key }) { issues.append(i) }
             seen += page.issues.count
             warmLabel = String(localized: "Downloading issues… \(min(seen, total)) of \(total)")
             warmProgress = min(0.7, 0.7 * Double(seen) / Double(total))
             token = page.isLast == true ? nil : page.nextPageToken
         } while token != nil
-        DiskCache.saveAsync(prefetched, account: account, name: "prefetched")
         Spotlight.index(issues, host: host)
 
         // Workflows: one representative issue per project, type and status.
@@ -162,6 +150,23 @@ final class AccountState: Identifiable {
         }
         warmProgress = 1
     }
+
+    /// Full records of `keys` in one request, each saved as `issue-KEY` for the issue page and kept as a peek;
+    /// `prefetched` remembers the revision so the next pass skips it. Empty when the request fails.
+    @discardableResult
+    func fetchDetails(_ keys: [String]) async -> [Issue] {
+        guard !keys.isEmpty else { return [] }
+        let jql = "issuekey in (" + keys.map { "\"\($0)\"" }.joined(separator: ",") + ")"
+        guard let page = try? await client.search(jql: jql, fields: client.detailFields) else { return [] }
+        for i in page.issues {
+            DiskCache.saveAsync(i, account: account, name: "issue-\(i.key)")
+            peek[i.key] = i
+            prefetched[i.key] = i.fields.updated
+        }
+        DiskCache.saveAsync(prefetched, account: account, name: "prefetched")
+        return page.issues
+    }
+
     private var customTitle: String
     /// Name of a `Palette` colour; chosen by the user or dealt from the palette by sidebar position.
     var colorName: String
@@ -483,7 +488,7 @@ final class Session {
 
     /// Adds (or re-adds) an account after validating it.
     @discardableResult
-    func add(_ account: Account, persist: Bool = true) async throws -> AccountState {
+    func add(_ account: Account) async throws -> AccountState {
         let st = AccountState(account: account)
         try await st.load()
         if st.colorName.isEmpty { st.setColor(Palette.next(avoiding: states.map(\.colorName))) }
@@ -492,7 +497,7 @@ final class Session {
         states.append(st)
         stored.append(account)
         unreachable[account.id] = nil
-        if persist { Keychain.save(stored) }
+        Keychain.save(stored)
         return st
     }
 

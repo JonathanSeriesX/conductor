@@ -254,6 +254,14 @@ func issues(_ n: Int, more: Bool = false) -> String {
     more ? String(localized: "\(n)+ issues") : String(localized: "\(n) issues")
 }
 
+/// A small-caps caption over a value: the issue page's fields and the New Issue window's.
+@MainActor func field<V: View>(_ name: LocalizedStringKey, @ViewBuilder _ value: () -> V) -> some View {
+    VStack(alignment: .leading, spacing: 4) {
+        Text(name).textCase(.uppercase).font(.caption2.weight(.semibold)).foregroundStyle(.tertiary)
+        value()
+    }
+}
+
 extension View {
     func errorAlert(_ error: Binding<String?>) -> some View {
         alert(
@@ -264,6 +272,12 @@ extension View {
         } message: {
             Text(error.wrappedValue ?? "")
         }
+    }
+
+    /// Puts the keyboard in `focus` as the view appears. Focus set in the same pass that creates the field is
+    /// lost; one turn of the run loop later it sticks.
+    func focusSoon(_ focus: FocusState<Bool>.Binding) -> some View {
+        task { DispatchQueue.main.async { focus.wrappedValue = true } }
     }
 }
 
