@@ -9,7 +9,7 @@ struct SettingsView: View {
             Tab("Notifications", systemImage: "bell") { NotificationSettings() }
             Tab("Advanced", systemImage: "slider.horizontal.3") { AdvancedSettings() }
         }
-        .frame(width: 460)
+        .frame(width: 460, height: 420)  // the grouped forms scroll and report no height of their own
     }
 }
 

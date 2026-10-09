@@ -97,7 +97,12 @@ final class CreateIssueModel {
             try await c.createFields(project: key, issueType: typeID)
         }
         if let now { setFields(now) } else { isLoadingMeta = true }
-        if let list = await fresh.value, type?.id == typeID { setFields(list) }
+        if let list = await fresh.value {
+            if type?.id == typeID { setFields(list) }
+        } else if fields.isEmpty, type?.id == typeID, !Connectivity.shared.isOffline {
+            // `has` assumes the usual fields while none are known, which would hide a create screen that failed to load.
+            error = String(localized: "Couldn't load the fields for \(t.name).")
+        }
         isLoadingMeta = false
     }
 
@@ -399,6 +404,12 @@ struct CreateIssueView: View {
             let (now, fresh) = st.memo("labels") { try await c.labels() }
             if let now { allLabels = now }
             if let list = await fresh.value { allLabels = list }
+        }
+        // The assignee popover opens on this list from memory rather than after its own request.
+        .task(id: m.project?.key) {
+            guard let st = m.state, let key = m.project?.key else { return }
+            let c = st.client
+            _ = st.memo("assignable-\(key)") { try await c.assignableUsers(project: key, query: "") }
         }
         // A fixed field loses its error.
         .onChange(of: m.summary) { m.error = nil }

@@ -381,6 +381,8 @@ final class Session {
     var reloadTick = 0
     /// Bumped after any write to an issue, so every list redraws with the change; issue pages reload themselves.
     var listTick = 0
+    /// Per issue key, so a page of the same issue in another window follows a write made here.
+    var writeTicks: [String: Int] = [:]
     var addAccountRequested = false
     /// What the list window showed last, so one opened afresh (⌘0) continues there. In memory only: a fresh
     /// launch follows the "Open at launch" setting instead.

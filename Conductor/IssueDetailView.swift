@@ -242,6 +242,9 @@ struct IssueDetailView: View {
     @FocusState private var editCommentFocused: Bool
     @FocusState private var commentFocused: Bool
     @State private var commentRequest = 0
+    /// The load this page's own write would trigger: `perform` has refreshed the issue already.
+    @State private var ownLoad = ""
+    private var loadID: String { "\(key)|\(session.reloadTick)|\(session.writeTicks[key] ?? 0)" }
 
     var body: some View {
         Group {
@@ -265,7 +268,8 @@ struct IssueDetailView: View {
         // crashed applying saved customizations while it swapped with the empty column's in one pass.
         .toolbar { toolbar }
         .focusedSceneValue(\.issueActions, actions)
-        .task(id: "\(key)|\(session.reloadTick)") { if let jira { await store.load(jira, key: key) } }
+        // A write to this issue in another window bumps its tick, so this page follows it.
+        .task(id: loadID) { if let jira, loadID != ownLoad { await store.load(jira, key: key) } }
         // The same view serves one issue after another (a fresh view would take the toolbar with it for a frame).
         .onChange(of: target) {
             summaryDraft = nil
@@ -296,6 +300,19 @@ struct IssueDetailView: View {
         }
         .animation(.easeOut(duration: 0.15), value: isDropTargeted)
         .onPasteCommand(of: [.fileURL, .png, .tiff, .image]) { _ in pasteAttachment() }
+        // onPasteCommand needs the focus; this takes ⌘V with files or an image while no text view has it.
+        .background(
+            WindowEventMonitor(mask: .keyDown) { e in
+                guard e.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
+                    e.charactersIgnoringModifiers == "v", !(e.window?.firstResponder is NSTextView),
+                    store.issue != nil,
+                    NSPasteboard.general.canReadObject(
+                        forClasses: [NSURL.self, NSImage.self], options: [.urlReadingFileURLsOnly: true])
+                else { return e }
+                pasteAttachment()
+                return nil
+            }
+        )
         .confirmationDialog(
             pendingDelete?.title ?? "",
             isPresented: Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } }),
@@ -305,6 +322,7 @@ struct IssueDetailView: View {
                 pendingDelete?.perform()
                 pendingDelete = nil
             }
+            .keyboardShortcut(.defaultAction)
             Button("Cancel", role: .cancel) { pendingDelete = nil }
         } message: {
             Text("This can't be undone.")
@@ -1224,6 +1242,7 @@ struct IssueDetailView: View {
             canEditDescription: store.canEdit("description"),
             isEditing: summaryDraft != nil || descriptionDraft != nil || editingComment != nil,
             back: back,
+            embedded: embedded,
             perform: perform
         )
     }
@@ -1273,7 +1292,11 @@ struct IssueDetailView: View {
         guard let jira else { return Task { false } }
         return Task {
             let ok = await store.perform(jira, key: key, op)
-            if ok { session.listTick += 1 }
+            if ok {
+                ownLoad = "\(key)|\(session.reloadTick)|\((session.writeTicks[key] ?? 0) + 1)"
+                session.writeTicks[key, default: 0] += 1
+                session.listTick += 1
+            }
             return ok
         }
     }
@@ -1474,7 +1497,7 @@ struct AttachmentTile: View {
                 ZStack {
                     if attachment.thumbnail != nil {
                         // Behind a clear colour, so a wide thumbnail cannot widen the tile into its neighbour.
-                        Color.clear.overlay { RemoteImage(url: attachment.thumbnail) }.clipped()
+                        Color.clear.overlay { RemoteImage(url: attachment.thumbnail, fit: true) }.clipped()
                     } else {
                         Image(systemName: icon).font(.title).foregroundStyle(.secondary)
                     }
@@ -1869,8 +1892,16 @@ struct ParentPicker: View {
         .frame(width: 320)
         .focusSoon($focused)
         .task(id: query) {
+            guard let c = jira?.client else { return }
+            if query.isEmpty {
+                // The picker answers nothing to an empty query; the scope's own search lists the candidates.
+                let page = try? await c.search(jql: jql)
+                results = (page?.issues ?? []).filter { $0.key != key }
+                    .map { IssuePickerResult.Item(key: $0.key, summaryText: $0.fields.summary) }
+                return
+            }
             try? await Task.sleep(for: .milliseconds(250))
-            guard !Task.isCancelled, let c = jira?.client else { return }
+            guard !Task.isCancelled else { return }
             results = ((try? await c.pickIssues(query: query, excluding: key, jql: jql)) ?? []).filter { $0.key != key }
         }
     }

@@ -93,6 +93,8 @@ struct Backdrop: View {
 struct RemoteImage: View {
     let url: URL?
     var placeholder: String = "photo"
+    /// The whole image inside the frame (a thumbnail) rather than the frame filled with it (an avatar, an icon).
+    var fit = false
     @Environment(Session.self) private var session
     @State private var loaded: NSImage?
 
@@ -109,7 +111,7 @@ struct RemoteImage: View {
     var body: some View {
         Group {
             if let image {
-                Image(nsImage: image).resizable().scaledToFill()
+                Image(nsImage: image).resizable().aspectRatio(contentMode: fit ? .fit : .fill)
             } else {
                 Image(systemName: placeholder).resizable().scaledToFit().padding(2).foregroundStyle(.tertiary)
             }
@@ -161,13 +163,15 @@ private struct InactiveDim: ViewModifier {
     func body(content: Content) -> some View { content.grayscale(active ? 0 : 1).opacity(active ? 1 : 0.6) }
 }
 
-/// "Today", "Yesterday", "Last week", "In 3 days": whole days from today, in the user's language, as Mail dates
-/// its rows.
+/// "Today", "Yesterday", "In 3 days", "Next month": whole days from today, in the user's language, as Mail dates
+/// its rows. Within two weeks the count is exact; "next week" alone would cover 6 to 13 days.
 @MainActor func relativeDay(_ date: Date) -> String {
     let cal = Calendar.current
     let day = cal.startOfDay(for: date)
     let today = cal.startOfDay(for: .now)
-    if day == today { return String(localized: "Today") }  // the formatter would say "Now"
+    let days = cal.dateComponents([.day], from: today, to: day).day ?? 0
+    if days == 0 { return String(localized: "Today") }  // the formatter would say "Now"
+    if abs(days) > 1, abs(days) <= 13 { return relativeDayFormatter.localizedString(from: DateComponents(day: days)) }
     return relativeDayFormatter.localizedString(for: day, relativeTo: today)
 }
 

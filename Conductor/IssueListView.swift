@@ -44,6 +44,10 @@ struct DisplayRow: Identifiable {
                 return la != lb ? (sort.descending ? la > lb : la < lb) : a.id < b.id
             }
         }
+        // Jira lists undated issues first under "duedate DESC"; here the dated ones come first either way.
+        if sort.field == .due {
+            top = top.filter { $0.issue.fields.duedate != nil } + top.filter { $0.issue.fields.duedate == nil }
+        }
         var out: [DisplayRow] = []
         for r in top {
             let kids = children[r.id] ?? []
@@ -274,14 +278,17 @@ struct IssueListView: View {
     private var state: AccountState? { filters.account.flatMap(session.state) ?? session.states.first }
     /// Ticks when the app comes to the front or every few minutes, so the list never sits stale for long.
     @State private var refreshTick = 0
+    /// The last count shown, kept on screen while a new list has nothing yet.
+    @State private var shownSubtitle = ""
     private var loadKey: String { "\(filters)|\(session.reloadTick)|\(session.listTick)|\(refreshTick)" }
-    /// What the clear button goes back to: the chips reset; the account, the project (the list itself) and the
-    /// search stay.
+    /// What the clear button goes back to: the sidebar entry the list came from, or the bare project; the search
+    /// and the sort order stay. It shows only once the chips differ from that.
     private var cleared: ListFilters {
-        var f = ListFilters()
+        var f = session.preset(matching: filters)?.filters ?? ListFilters()
         f.account = filters.account
         f.project = filters.project
         f.text = filters.text
+        f.sort = filters.sort
         return f
     }
 
@@ -410,6 +417,7 @@ struct IssueListView: View {
             {
                 session.open(url: url)
                 filters.text = ""
+                searchFocused = false  // or the recent-searches panel stays under the field
                 return
             }
             session.recordSearch(filters.text)
@@ -419,7 +427,7 @@ struct IssueListView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(session.title(for: filters)).font(.headline)
                     HStack(spacing: 4) {
-                        if !subtitle.isEmpty { Text(verbatim: "\(subtitle) ·") }
+                        if !shownSubtitle.isEmpty { Text(verbatim: "\(shownSubtitle) ·") }
                         Menu {
                             SortMenuItems(sort: $filters.sort)
                         } label: {
@@ -485,6 +493,7 @@ struct IssueListView: View {
             await store.load(filters, session: session)
         }
         .task(id: filters.text) { await updateSuggestions() }
+        .onChange(of: subtitle, initial: true) { if let s = subtitle { shownSubtitle = s } }
         .task {
             // ponytail: a fixed 3-minute reload; a per-list "updated since" poll would be lighter if it ever matters.
             while !Task.isCancelled {
@@ -560,10 +569,10 @@ struct IssueListView: View {
         return BoardTarget(accountID: id, projectKey: key)
     }
 
-    /// Counts the rows on screen: a subtask folded under its parent is not one of them.
-    private var subtitle: String {
-        guard !store.rows.isEmpty else { return "" }
-        return issues(displayRows.count, more: store.nextToken != nil)
+    /// Counts the rows on screen: a subtask folded under its parent is not one of them. Nil while a list loads
+    /// with nothing to show yet.
+    private var subtitle: String? {
+        store.rows.isEmpty && store.isLoading ? nil : issues(displayRows.count, more: store.nextToken != nil)
     }
 
     // MARK: Row actions
@@ -718,7 +727,6 @@ struct IssueListView: View {
                     }
                 }
                 .padding(.horizontal, 10).padding(.vertical, 8)
-                .inactiveDim()
             }
         }
         .background(.bar)
@@ -739,7 +747,14 @@ struct IssueListView: View {
             return
         }
         let fields = state?.jqlFields ?? []
-        guard filters.isRawJQL || fields.contains(where: { q.lowercased().hasPrefix($0.value.lowercased()) }) else {
+        // A lone word of two letters or more that starts a field name ("sta") completes to it; a longer plain
+        // search ("fix the login") is left alone.
+        let startsField =
+            q.count >= 2 && !q.contains(" ") && fields.contains { $0.value.lowercased().hasPrefix(q.lowercased()) }
+        guard
+            filters.isRawJQL || startsField
+                || fields.contains(where: { q.lowercased().hasPrefix($0.value.lowercased()) })
+        else {
             // Tuples are not Equatable, so SwiftUI cannot tell [] from []; a write here redraws the list per keystroke.
             if !suggestions.isEmpty { suggestions = [] }
             return
@@ -1058,8 +1073,11 @@ struct FilterChip: View {
     let active: Bool
     let menus: ChipMenuController
     let items: [ChipItem]
+    @Environment(\.appearsActive) private var appearsActive
 
     var body: some View {
+        // Behind another window a set chip goes grey with dark text, as Mail's selection does.
+        let lit = active && appearsActive
         Button {
             menus.toggle(id)
         } label: {
@@ -1070,8 +1088,14 @@ struct FilterChip: View {
             }
             .font(.caption.weight(.medium))
             .padding(.horizontal, 8).padding(.vertical, 4)
-            .foregroundStyle(active ? Color.white : .primary)
-            .background(active ? Color.accentColor : Color.primary.opacity(0.07), in: .capsule)
+            .foregroundStyle(lit ? Color.white : .primary)
+            .background(
+                lit
+                    ? Color.accentColor
+                    : active
+                        ? Color(nsColor: .unemphasizedSelectedContentBackgroundColor) : Color.primary.opacity(0.07),
+                in: .capsule
+            )
             .contentShape(.capsule)
         }
         .buttonStyle(.plain)

@@ -132,7 +132,7 @@ struct RootView: View {
                 } detail: {
                     if let sel = selection {
                         // Nil-safe: SwiftUI reads the binding once more after Escape emptied the selection.
-                        IssueWindow(target: Binding($selection, or: sel), embedded: true).equatable()
+                        IssueWindow(target: Binding($selection, or: sel), embedded: true)
                     } else {
                         ContentUnavailableView("No Issue Selected", systemImage: "doc.text")
                             .frame(maxWidth: .infinity, maxHeight: .infinity).background(Backdrop())
@@ -170,6 +170,15 @@ struct RootView: View {
             selection = nil  // another list: the preview would otherwise show an issue that is not in it
             storedFilters = (try? JSONEncoder().encode(new)).flatMap { String(data: $0, encoding: .utf8) } ?? ""
             session.lastFilters = new
+        }
+        // The window's stored list can arrive after its first appearance, behind the launch default; the writes
+        // above always match `filters`, so a value that differs is the system's and wins.
+        .onChange(of: storedFilters) { _, new in
+            if let data = new.data(using: .utf8), let f = try? JSONDecoder().decode(ListFilters.self, from: data),
+                f != filters, f.account.map({ session.state($0) != nil }) ?? true
+            {
+                filters = f
+            }
         }
         .onChange(of: session.navigationRequest) { _, req in
             if let req {

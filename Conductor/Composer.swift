@@ -450,18 +450,19 @@ struct PeoplePicker: View {
     @State private var query = ""
     @State private var users: [JiraUser] = []
 
+    /// "Assign to me" stands in for my own row, so I am not listed twice.
+    private var me: JiraUser? { jira?.me.flatMap { $0.accountId == current?.accountId ? nil : $0 } }
+    private var others: [JiraUser] { users.filter { $0.accountId != me?.accountId } }
     /// Rows on offer: me, Unassigned, and the matches. The list's height follows, since a popover sizes itself
     /// to its content and a scroll view has no height of its own.
-    private var rowCount: Int {
-        users.count + (jira?.me != nil && jira?.me?.accountId != current?.accountId ? 1 : 0) + (current != nil ? 1 : 0)
-    }
+    private var rowCount: Int { others.count + (me != nil ? 1 : 0) + (current != nil ? 1 : 0) }
 
     var body: some View {
         VStack(spacing: 8) {
             TextField("Search people", text: $query).textFieldStyle(.roundedBorder)
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
-                    if let me = jira?.me, me.accountId != current?.accountId {
+                    if let me {
                         row {
                             onPick(me)
                         } label: {
@@ -475,7 +476,7 @@ struct PeoplePicker: View {
                             Label("Unassigned", systemImage: "person.slash")
                         }
                     }
-                    ForEach(users) { u in
+                    ForEach(others) { u in
                         row {
                             onPick(u)
                         } label: {
