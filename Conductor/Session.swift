@@ -639,8 +639,16 @@ final class Session {
         savePresets()
     }
 
+    /// Into the Bin on the way out, so a deleted filter can come back as it was.
     func removePreset(_ id: String) {
-        customPresets.removeAll { $0.id.uuidString == id }
+        guard let p = customPresets.first(where: { $0.id.uuidString == id }) else { return }
+        Bin.shared.put(.preset(p), account: p.filters.account, key: "")
+        customPresets.removeAll { $0.id == p.id }
+        savePresets()
+    }
+
+    func restorePreset(_ p: CustomPreset) {
+        customPresets.append(p)
         savePresets()
     }
 
@@ -784,7 +792,7 @@ enum Palette {
         case "teal": String(localized: "Teal")
         case "cyan": String(localized: "Cyan")
         case "brown": String(localized: "Brown")
-        case "gray": String(localized: "Gray")
+        case "gray": String(localized: "Grey")
         default: String(localized: "Blue")
         }
     }

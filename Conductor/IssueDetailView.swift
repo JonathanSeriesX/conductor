@@ -231,7 +231,8 @@ struct IssueDetailView: View {
     /// When a link in the description was last clicked, so that click does not also start editing.
     @State private var linkOpened: Date?
     @State private var editOriginal = ""
-    @State private var editingComment: Comment?
+    /// The comment whose editor is open. An id, not the comment: the draft outlives the page's copy of the issue.
+    @State private var editingCommentID: String?
     @State private var editDraft = ""
     @State private var editMentions: [String: String] = [:]
     @State private var showAssign = false
@@ -247,8 +248,6 @@ struct IssueDetailView: View {
     @State private var isDropTargeted = false
     /// The key was just copied; a tick shows beside it for a moment.
     @State private var copied = false
-    /// A destructive action waiting for the user's confirmation: what it is and what it does.
-    @State private var pendingDelete: (title: String, verb: String, perform: () -> Void)?
     @FocusState private var summaryFocused: Bool
     @FocusState private var descriptionFocused: Bool
     @FocusState private var editCommentFocused: Bool
@@ -286,17 +285,22 @@ struct IssueDetailView: View {
         }
         // The same view serves one issue after another (a fresh view would take the toolbar with it for a frame).
         .onChange(of: target) { old, _ in
-            commitSummary(of: old.key)
+            commitSummary(of: old)
             summaryDraft = nil
-            descriptionDraft = nil
             descriptionCaret = nil
-            editingComment = nil
             caretPending = false
             for show in [
                 $showAssign, $showLabels, $showLink, $showLogWork, $showDueDate, $showRemind, $showParent,
                 $showWatchers, $showStatus, $showPriority,
             ] { show.wrappedValue = false }
+            unstash()
         }
+        // The open editors and their text are the issue's, kept on disk: back from another issue, or after a
+        // relaunch, they are as they were. Every change goes straight to the store; the switch only reads it.
+        .onAppear(perform: unstash)
+        .onChange(of: descriptionDraft) { stash() }
+        .onChange(of: editDraft) { stash() }
+        .onChange(of: editingCommentID) { stash() }
         .errorAlert($store.error)
         .quickLookPreview($store.previewURL)
         .dropDestination(for: URL.self) { urls, _ in
@@ -328,20 +332,6 @@ struct IssueDetailView: View {
                 return nil
             }
         )
-        .confirmationDialog(
-            pendingDelete?.title ?? "",
-            isPresented: Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } }),
-            titleVisibility: .visible
-        ) {
-            Button(pendingDelete?.verb ?? String(localized: "Delete"), role: .destructive) {
-                pendingDelete?.perform()
-                pendingDelete = nil
-            }
-            .keyboardShortcut(.defaultAction)
-            Button("Cancel", role: .cancel) { pendingDelete = nil }
-        } message: {
-            Text("This can't be undone.")
-        }
     }
 
     /// "• M to add": the key the current scheme binds to `action`, worded by `phrase`, for a caption; nil when none.
@@ -349,10 +339,28 @@ struct IssueDetailView: View {
         Shortcuts.hint(for: action).map { "• " + phrase($0) }
     }
 
-    /// Asks first, then runs the write. Jira has no undo for these.
-    private func confirmDelete(
-        _ title: String, verb: String = String(localized: "Delete"), _ perform: @escaping () -> Void
-    ) { pendingDelete = (title, verb, perform) }
+    private func stash() {
+        Drafts.shared.update(target) {
+            $0.description = descriptionDraft
+            $0.descriptionMentions = descriptionMentions
+            $0.descriptionOriginal = descriptionOriginal
+            $0.editingComment = editingCommentID
+            $0.edit = editDraft
+            $0.editMentions = editMentions
+            $0.editOriginal = editOriginal
+        }
+    }
+
+    private func unstash() {
+        let d = Drafts.shared[target]
+        descriptionDraft = d.description
+        descriptionMentions = d.descriptionMentions
+        descriptionOriginal = d.descriptionOriginal
+        editingCommentID = d.editingComment
+        editDraft = d.edit
+        editMentions = d.editMentions
+        editOriginal = d.editOriginal
+    }
 
     // MARK: Layout
 
@@ -779,9 +787,7 @@ struct IssueDetailView: View {
                         if store.canEdit("parent") {
                             Divider()
                             Button("Replace…", systemImage: "arrow.triangle.2.circlepath") { showParent = true }
-                            Button("Remove", systemImage: "minus.circle", role: .destructive) {
-                                run { try await $0.editIssue(key, fields: ["parent": .null]) }
-                            }
+                            Button("Remove", systemImage: "minus.circle", role: .destructive) { setParent(nil) }
                         }
                     }
                 } else {
@@ -802,10 +808,7 @@ struct IssueDetailView: View {
                         "project = \"\(issue.fields.project?.key ?? "")\" AND hierarchyLevel = \((issue.fields.issuetype.hierarchyLevel ?? 0) + 1) ORDER BY updated DESC"
                 ) { new in
                     showParent = false
-                    run {
-                        try await $0.editIssue(
-                            key, fields: ["parent": new.map { .object(["key": .string($0)]) } ?? .null])
-                    }
+                    setParent(new)
                 }
             }
         }
@@ -999,8 +1002,14 @@ struct IssueDetailView: View {
                         Button("Save As…", systemImage: "square.and.arrow.down") { saveAs(a) }
                         Divider()
                         Button("Delete", systemImage: "trash", role: .destructive) {
-                            confirmDelete(String(localized: "Delete “\(a.filename)”?")) {
-                                run { try await $0.deleteAttachment(id: a.id) }
+                            // The bytes first, so the Bin can upload them again.
+                            let account = target.accountID
+                            run { c in
+                                let data = try await c.data(for: a.content)
+                                try await c.deleteAttachment(id: a.id)
+                                await Bin.shared.put(
+                                    .attachment(filename: a.filename, file: Bin.store(data, a.filename)),
+                                    account: account, key: key)
                             }
                         }
                     }
@@ -1063,10 +1072,15 @@ struct IssueDetailView: View {
                             )
                             .contextMenu {
                                 Button("Remove Link", systemImage: "link.badge.minus", role: .destructive) {
-                                    confirmDelete(
-                                        String(localized: "Remove the link to \(o.key)?"),
-                                        verb: String(localized: "Remove")
-                                    ) { run { try await $0.deleteLink(id: link.id) } }
+                                    // `link(type:from:to:)` reads "from <outward> to": this issue is `from`
+                                    // when its side of the link carries the outward wording.
+                                    let account = target.accountID
+                                    let (from, to) = link.outwardIssue != nil ? (key, o.key) : (o.key, key)
+                                    run {
+                                        try await $0.deleteLink(id: link.id)
+                                        await Bin.shared.put(
+                                            .link(type: link.type.name, from: from, to: to), account: account, key: key)
+                                    }
                                 }
                             }
                         }
@@ -1094,8 +1108,14 @@ struct IssueDetailView: View {
                     }
                     Spacer()
                     if w.author?.accountId == jira?.me?.accountId {
-                        DeleteButton(title: "Delete this work log?", help: "Delete work log") {
-                            run { try await $0.deleteWorklog(key, id: w.id) }
+                        DeleteButton(help: "Delete work log") {
+                            let account = target.accountID
+                            run {
+                                try await $0.deleteWorklog(key, id: w.id)
+                                await Bin.shared.put(
+                                    .worklog(seconds: w.timeSpentSeconds, comment: w.comment, started: w.started),
+                                    account: account, key: key)
+                            }
                         }
                     }
                 }
@@ -1124,7 +1144,7 @@ struct IssueDetailView: View {
                                 Text("· edited").font(.caption).foregroundStyle(.tertiary)
                             }
                             Spacer()
-                            if c.author?.accountId == jira?.me?.accountId, editingComment == nil {
+                            if c.author?.accountId == jira?.me?.accountId, editingCommentID == nil {
                                 // Plain buttons, not a menu: editing your own comment is a one-click thing.
                                 Button {
                                     beginCommentEdit(c)
@@ -1132,12 +1152,16 @@ struct IssueDetailView: View {
                                     Label("Edit", systemImage: "pencil").labelStyle(.iconOnly)
                                 }
                                 .buttonStyle(.plain).foregroundStyle(.tertiary).help("Edit comment")
-                                DeleteButton(title: "Delete this comment?", help: "Delete comment") {
-                                    run { try await $0.deleteComment(key, id: c.id) }
+                                DeleteButton(help: "Delete comment") {
+                                    let account = target.accountID
+                                    run {
+                                        try await $0.deleteComment(key, id: c.id)
+                                        await Bin.shared.put(.comment(c.body), account: account, key: key)
+                                    }
                                 }
                             }
                         }
-                        if editingComment?.id == c.id {
+                        if editingCommentID == c.id {
                             Composer(
                                 text: $editDraft, mentions: $editMentions, placeholder: "Edit comment",
                                 uploadImage: uploadPasted, focus: $editCommentFocused,
@@ -1163,7 +1187,7 @@ struct IssueDetailView: View {
             }
             Divider()
             CommentComposer(
-                target: target, disabled: store.isWorking || editingComment != nil, focusRequest: commentRequest,
+                target: target, disabled: store.isWorking || editingCommentID != nil, focusRequest: commentRequest,
                 uploadImage: uploadPasted, focus: $commentFocused
             ) { doc in
                 await run { try await $0.addComment(key, body: doc) }.value
@@ -1275,7 +1299,7 @@ struct IssueDetailView: View {
             transitions: store.transitions,
             canEditSummary: store.canEdit("summary"),
             canEditDescription: store.canEdit("description"),
-            isEditing: summaryDraft != nil || descriptionDraft != nil || editingComment != nil,
+            isEditing: summaryDraft != nil || descriptionDraft != nil || editingCommentID != nil,
             back: back,
             embedded: embedded,
             perform: perform
@@ -1355,8 +1379,24 @@ struct IssueDetailView: View {
     }
 
     private func transition(_ id: String) {
-        guard let t = store.transitions.first(where: { $0.id == id }) else { return }
-        optimistic({ $0.status = t.to }) { try await $0.transition(key, to: id) }
+        guard let t = store.transitions.first(where: { $0.id == id }), let old = store.issue?.fields.status else {
+            return
+        }
+        let account = target.accountID
+        optimistic({ $0.status = t.to }) {
+            try await $0.transition(key, to: id)
+            await Bin.shared.put(.status(old), account: account, key: key)
+        }
+    }
+
+    /// Sets, replaces or removes the parent; the old one goes to the Bin.
+    private func setParent(_ new: String?) {
+        let old = store.issue?.fields.parent?.key
+        let account = target.accountID
+        run {
+            try await $0.editIssue(key, fields: ["parent": new.map { .object(["key": .string($0)]) } ?? .null])
+            await Bin.shared.put(.parent(old), account: account, key: key)
+        }
     }
 
     /// Puts the caret under the click that opened the editor, or at the end when a key opened it (⌘E).
@@ -1396,13 +1436,16 @@ struct IssueDetailView: View {
 
     /// Leaving for another issue commits an open summary edit, as Finder commits a rename and Jira a blurred field,
     /// instead of dropping it. Empty or too long is dropped: there is no page left to complain on.
-    private func commitSummary(of key: String) {
-        guard let jira, let draft = summaryDraft?.trimmingCharacters(in: .whitespacesAndNewlines), !draft.isEmpty,
+    private func commitSummary(of old: IssueTarget) {
+        // The old issue's own account: the page may have moved to an issue of another one.
+        guard let client = session.state(old.accountID)?.client,
+            let draft = summaryDraft?.trimmingCharacters(in: .whitespacesAndNewlines), !draft.isEmpty,
             draft.count <= 255, draft != store.issue?.fields.summary
         else { return }
+        let key = old.key
         Task {
             do {
-                try await jira.client.editIssue(key, fields: ["summary": .string(draft)])
+                try await client.editIssue(key, fields: ["summary": .string(draft)])
                 session.writeTicks[key, default: 0] += 1
                 session.listTick += 1
             } catch {
@@ -1418,18 +1461,11 @@ struct IssueDetailView: View {
         descriptionMentions = mentions
     }
 
-    /// Escape or Cancel with changes asks first; an untouched draft just closes.
+    /// Escape or Cancel closes at once, no question asked: a draft is only ever lost by this deliberate step,
+    /// never by a switch to another issue or a relaunch.
     private func cancelDescriptionEdit() {
-        let close = {
-            descriptionDraft = nil
-            descriptionCaret = nil
-        }
-        if descriptionDraft == descriptionOriginal {
-            close()
-        } else {
-            confirmDelete(
-                String(localized: "Discard the changes to the description?"), verb: String(localized: "Discard"), close)
-        }
+        descriptionDraft = nil
+        descriptionCaret = nil
     }
 
     private func saveDescription() {
@@ -1459,25 +1495,18 @@ struct IssueDetailView: View {
         editDraft = c.body.markdown(mentions: &mentions)
         editOriginal = editDraft
         editMentions = mentions
-        editingComment = c
+        editingCommentID = c.id
     }
 
-    private func cancelCommentEdit() {
-        if editDraft == editOriginal {
-            editingComment = nil
-        } else {
-            confirmDelete(String(localized: "Discard the changes to this comment?"), verb: String(localized: "Discard"))
-            {
-                editingComment = nil
-            }
-        }
-    }
+    private func cancelCommentEdit() { editingCommentID = nil }
 
     private func saveCommentEdit(_ c: Comment) {
-        editingComment = nil
+        editingCommentID = nil
         guard editDraft != editOriginal else { return }
         let doc = ADFNode.document(markdown: editDraft, mentions: editMentions)
-        Task { if !(await run { try await $0.updateComment(key, id: c.id, body: doc) }.value) { editingComment = c } }
+        Task {
+            if !(await run { try await $0.updateComment(key, id: c.id, body: doc) }.value) { editingCommentID = c.id }
+        }
     }
 
     private func preview(_ a: Attachment) {
@@ -1592,9 +1621,6 @@ struct AttachmentTile: View {
 
 /// Owns the comment draft, so each keystroke re-evaluates this small view and not the whole issue page.
 struct CommentComposer: View {
-    /// Drafts by issue, so a switch to another issue (which rebuilds the page) and back loses nothing typed.
-    /// ponytail: memory only; quitting the app drops them. Persist on disk if that is ever reported.
-    @MainActor private static var drafts: [IssueTarget: (text: String, mentions: [String: String])] = [:]
     let target: IssueTarget
     let disabled: Bool
     let focusRequest: Int
@@ -1617,10 +1643,21 @@ struct CommentComposer: View {
                     .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || disabled))
         )
         .onChange(of: focusRequest) { focus.wrappedValue = true }
-        // A cached issue swaps in without rebuilding the page, so the composer lives on: swap its draft by hand.
-        .onAppear { (text, mentions) = Self.drafts[target] ?? ("", [:]) }
-        .onChange(of: target) { _, new in (text, mentions) = Self.drafts[new] ?? ("", [:]) }
-        .onChange(of: text) { Self.drafts[target] = (text, mentions) }
+        // The draft is the issue's, on disk (see `Drafts`); the composer lives on from one issue to the next, so it
+        // swaps its text by hand.
+        .onAppear { load(target) }
+        .onChange(of: target) { _, new in load(new) }
+        .onChange(of: text) {
+            Drafts.shared.update(target) {
+                $0.comment = text
+                $0.commentMentions = mentions
+            }
+        }
+    }
+
+    private func load(_ t: IssueTarget) {
+        let d = Drafts.shared[t]
+        (text, mentions) = (d.comment, d.commentMentions)
     }
 
     private func post() {
@@ -1813,38 +1850,14 @@ struct LabelsEditor: View {
     }
 }
 
-/// A bin that asks first, right where it is: Return deletes, Escape keeps. The attachment and link menus still
-/// use the confirmation dialog, since a menu item has no place to hang a popover from.
+/// A bin icon that deletes at once and asks nothing: what it deletes lands in the Bin (Window menu) to be put back.
 struct DeleteButton: View {
-    let title: LocalizedStringKey
     let help: LocalizedStringKey
     let perform: () -> Void
-    @State private var confirming = false
 
     var body: some View {
-        Button {
-            confirming = true
-        } label: {
-            Label("Delete", systemImage: "trash").labelStyle(.iconOnly)
-        }
-        .buttonStyle(.plain).foregroundStyle(.tertiary).help(help)
-        .popover(isPresented: $confirming, arrowEdge: .bottom) {
-            VStack(alignment: .leading, spacing: 10) {
-                Text(title).font(.headline)
-                Text("This can't be undone.").foregroundStyle(.secondary)
-                HStack {
-                    Spacer()
-                    Button("Cancel") { confirming = false }.glassButton().keyboardShortcut(.cancelAction)
-                    Button("Delete", role: .destructive) {
-                        confirming = false
-                        perform()
-                    }
-                    .glassButton(prominent: true).tint(.red).keyboardShortcut(.defaultAction)  // red, as the dialogs' Delete
-                }
-            }
-            .padding(14)
-            .frame(width: 260)
-        }
+        Button(action: perform) { Label("Delete", systemImage: "trash").labelStyle(.iconOnly) }
+            .buttonStyle(.plain).foregroundStyle(.tertiary).help(help)
     }
 }
 

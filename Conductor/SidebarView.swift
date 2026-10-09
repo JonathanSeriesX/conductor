@@ -285,7 +285,6 @@ struct SidebarView: View {
     @State private var renamingPreset: Preset?
     @State private var newTitle = ""
     @State private var signingOut: AccountState?
-    @State private var deletingPreset: Preset?
 
     var body: some View {
         let selection = Binding<ListFilters?>(
@@ -312,7 +311,7 @@ struct SidebarView: View {
                             newTitle = st.title
                             renaming = st
                         }
-                        Menu("Color") {
+                        Menu("Colour") {
                             ForEach(Palette.names, id: \.self) { name in
                                 Toggle(
                                     isOn: Binding(get: { st.colorName == name }, set: { if $0 { st.setColor(name) } })
@@ -421,17 +420,6 @@ struct SidebarView: View {
         } message: {
             Text("The token is removed from the Keychain. Cached issues stay until the cache is cleared.")
         }
-        .confirmationDialog(
-            "Delete the filter “\(deletingPreset?.name ?? "")”?",
-            isPresented: Binding(get: { deletingPreset != nil }, set: { if !$0 { deletingPreset = nil } }),
-            titleVisibility: .visible
-        ) {
-            Button("Delete", role: .destructive) {
-                if let p = deletingPreset { session.removePreset(p.id) }
-                deletingPreset = nil
-            }
-            Button("Cancel", role: .cancel) { deletingPreset = nil }
-        }
         .alert(
             "Rename Filter",
             isPresented: Binding(get: { renamingPreset != nil }, set: { if !$0 { renamingPreset = nil } })
@@ -478,7 +466,8 @@ struct SidebarView: View {
                         newTitle = p.name
                         renamingPreset = p
                     }
-                    Button("Delete…", systemImage: "trash", role: .destructive) { deletingPreset = p }
+                    // No question: the filter goes to the Bin (Window menu) and can come back from there.
+                    Button("Delete", systemImage: "trash", role: .destructive) { session.removePreset(p.id) }
                 } else {
                     Button("Hide", systemImage: "eye.slash") { session.hidePreset(p.id) }
                 }

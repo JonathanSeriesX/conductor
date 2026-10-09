@@ -127,6 +127,7 @@ struct AppCommands: Commands {
         CommandGroup(before: .windowList) {
             // Mail's "Message Viewer" ⌘0: the list window, after it was closed behind an issue window.
             Button("Issues") { showMain() }.keyboardShortcut("0")
+            Button("Bin") { openWindow(id: "bin") }
             Divider()
         }
         CommandGroup(before: .sidebar) {
