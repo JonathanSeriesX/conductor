@@ -51,7 +51,11 @@ struct Composer: View {
             formatBar
             if let error { Text(error).font(.caption).foregroundStyle(.red) }
         }
-        .onChange(of: isFocused) { _, on in if on, let caret { placeCaret(at: caret) } }
+        .onChange(of: isFocused) { _, on in
+            guard on else { return }
+            tune()
+            if let caret { placeCaret(at: caret) }
+        }
         .onChange(of: text) { _, new in
             // A trailing "@name" drives the suggestion list; anything else dismisses it. A name just accepted
             // from the list (followed by its space) is complete and must not open the list again.
@@ -188,6 +192,22 @@ struct Composer: View {
 
     private func focusEditor() {
         if let focus { focus.wrappedValue = true } else { ownFocus = true }
+    }
+
+    /// The text view's own switches, set once it is first responder: no Writing Tools (and no Siri button beside
+    /// the caret, which macOS 27 adds with them whatever the SwiftUI environment says), no smart quotes or dashes,
+    /// which would corrupt code and tables.
+    private func tune(attempt: Int = 0) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            guard let tv = NSApp.keyWindow?.firstResponder as? NSTextView, !tv.isFieldEditor else {
+                if attempt < 10 { tune(attempt: attempt + 1) }
+                return
+            }
+            tv.writingToolsBehavior = .none
+            tv.isAutomaticQuoteSubstitutionEnabled = false
+            tv.isAutomaticDashSubstitutionEnabled = false
+            tv.isAutomaticTextReplacementEnabled = false
+        }
     }
 
     /// The character under `point`, asked of the text view once AppKit has made it first responder.
@@ -474,12 +494,28 @@ struct PeoplePicker: View {
         .padding(10)
         .frame(width: 280)
         .task(id: query) {
-            try? await Task.sleep(for: .milliseconds(250))
-            guard !Task.isCancelled, let c = jira?.client else { return }
+            guard let st = jira else { return }
+            let (c, q) = (st.client, query)
+            let name: String
+            let fetch: @Sendable () async throws -> [JiraUser]
             switch scope {
-            case .issue(let key): users = (try? await c.assignableUsers(key, query: query)) ?? []
-            case .project(let key): users = (try? await c.assignableUsers(project: key, query: query)) ?? []
+            case .issue(let key):
+                name = "assignable-issue-\(key)"
+                fetch = { try await c.assignableUsers(key, query: q) }
+            case .project(let key):
+                name = "assignable-\(key)"
+                fetch = { try await c.assignableUsers(project: key, query: q) }
             }
+            if q.isEmpty {
+                // The list a picker opens with comes from the cache and corrects itself behind; typing searches the site.
+                let (now, fresh) = st.memo(name, fetch: fetch)
+                if let now { users = now }
+                if let list = await fresh.value, query.isEmpty { users = list }
+                return
+            }
+            try? await Task.sleep(for: .milliseconds(250))
+            guard !Task.isCancelled else { return }
+            users = (try? await fetch()) ?? []
         }
     }
 

@@ -51,6 +51,8 @@ extension CustomizableToolbarContent {
             ToolbarSpacer(.flexible)
         } else {
             self
+            // Sequoia has no ToolbarSpacer; a Spacer item is its flexible space, and pushes the buttons trailing.
+            ToolbarItem(id: "flex") { Spacer() }
         }
     }
 }
@@ -63,6 +65,7 @@ extension ToolbarContent {
             ToolbarSpacer(.flexible)
         } else {
             self
+            ToolbarItem { Spacer() }
         }
     }
 }
@@ -141,10 +144,40 @@ struct Avatar: View {
         .clipShape(.circle)
         // A ring on a selected row, so an orange avatar still reads on the orange selection.
         .overlay { if prominence == .increased { Circle().stroke(.white.opacity(0.9), lineWidth: 1.5) } }
+        .inactiveDim()
         .help(user?.displayName ?? String(localized: "Unassigned"))
         .accessibilityLabel(user?.displayName ?? String(localized: "Unassigned"))
     }
 }
+
+extension View {
+    /// Greys a coloured element while its window is inactive, as the system does with sidebar icons and the
+    /// selection. Text stays as it is; chips, pills, icons and avatars lose their colour.
+    func inactiveDim() -> some View { modifier(InactiveDim()) }
+}
+
+private struct InactiveDim: ViewModifier {
+    @Environment(\.appearsActive) private var active
+    func body(content: Content) -> some View { content.grayscale(active ? 0 : 1).opacity(active ? 1 : 0.6) }
+}
+
+/// "Today", "Yesterday", "Last week", "In 3 days": whole days from today, in the user's language, as Mail dates
+/// its rows.
+@MainActor func relativeDay(_ date: Date) -> String {
+    let cal = Calendar.current
+    let day = cal.startOfDay(for: date)
+    let today = cal.startOfDay(for: .now)
+    if day == today { return String(localized: "Today") }  // the formatter would say "Now"
+    return relativeDayFormatter.localizedString(for: day, relativeTo: today)
+}
+
+@MainActor private let relativeDayFormatter: RelativeDateTimeFormatter = {
+    let f = RelativeDateTimeFormatter()
+    f.dateTimeStyle = .named
+    f.unitsStyle = .full
+    f.formattingContext = .beginningOfSentence
+    return f
+}()
 
 extension StatusCategory {
     var color: Color {
@@ -169,6 +202,7 @@ struct StatusPill: View {
             .padding(.horizontal, 8).padding(.vertical, 3)
             .foregroundStyle(tint)
             .background(tint.opacity(prominence == .increased ? 0.28 : 0.16), in: .capsule)
+            .inactiveDim()
     }
 }
 
@@ -184,6 +218,7 @@ struct PriorityIcon: View {
             .frame(width: size, height: size)
             .padding(2)  // constant so the glyph does not shift when the disc appears
             .background(prominence == .increased ? .white.opacity(0.9) : .clear, in: .circle)
+            .inactiveDim()
             .help(priority.name)
     }
 }

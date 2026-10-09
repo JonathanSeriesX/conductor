@@ -16,7 +16,7 @@ struct SettingsView: View {
 private struct GeneralSettings: View {
     @AppStorage("defaultSource") private var defaultSource = "assigned"
     @AppStorage("hideDone") private var hideDone = true
-    @AppStorage("shortcutScheme") private var shortcutScheme = ShortcutScheme.mac.rawValue
+    @AppStorage("shortcutScheme") private var shortcutScheme = ShortcutScheme.jira.rawValue
     @Environment(Session.self) private var session
 
     var body: some View {

@@ -128,6 +128,7 @@ struct Issue: Codable, Hashable, Sendable, Identifiable {
         let labels: [String]?
         let created: Date?
         let updated: Date?
+        let lastViewed: Date?
         let project: Project?
         let parent: IssueRef?
         let subtasks: [IssueRef]?

@@ -461,3 +461,32 @@ final class CacheTests: XCTestCase {
         XCTAssertEqual(DiskCache.recentLists(account: account)[name]?.map(\.key), ["T-1"])
     }
 }
+
+final class RowDateTests: XCTestCase {
+    /// The date on a row follows the sort: updated, created, due, or created for orders that are not dates.
+    func testSortPicksTheDateItOrdersBy() throws {
+        let decoder = JiraClient(
+            account: Account(site: URL(string: "https://x.atlassian.net")!, email: "e", token: "t")
+        ).decoder
+        let issue = try decoder.decode(
+            Issue.self,
+            from: Data(
+                #"{"id":"1","key":"ES-1","fields":{"summary":"s","created":"2026-10-01T09:00:00.000Z","updated":"2026-10-05T09:00:00.000Z","duedate":"2026-10-31","status":{"id":"1","name":"To Do","statusCategory":{"key":"new","name":"To Do"}},"issuetype":{"id":"1","name":"Task"}}}"#
+                    .utf8))
+        func date(_ f: ListFilters.Sort.Field) -> Date? { ListFilters.Sort(field: f, descending: true).date(of: issue) }
+        XCTAssertEqual(date(.updated), issue.fields.updated)
+        XCTAssertEqual(date(.viewed), issue.fields.updated, "no lastViewed on this row: the update stands in")
+        XCTAssertEqual(date(.created), issue.fields.created)
+        XCTAssertEqual(date(.priority), issue.fields.created)
+        XCTAssertEqual(date(.key), issue.fields.created)
+        XCTAssertEqual(date(.due).map(DueDate.string), "2026-10-31")
+    }
+
+    @MainActor func testRelativeDayNamesWholeDays() {
+        let cal = Calendar.current
+        XCTAssertEqual(relativeDay(.now), "Today")
+        XCTAssertEqual(relativeDay(cal.date(byAdding: .day, value: -1, to: .now)!), "Yesterday")
+        XCTAssertEqual(relativeDay(cal.date(byAdding: .day, value: 1, to: .now)!), "Tomorrow")
+        XCTAssertEqual(relativeDay(cal.date(byAdding: .day, value: 5, to: .now)!), "In 5 days")
+    }
+}

@@ -42,7 +42,9 @@ final class CreateIssueModel {
             return Priority(id: id, name: name, iconUrl: o["iconUrl"]?.string.flatMap(URL.init))
         } ?? []
     }
-    func has(_ id: String) -> Bool { fields.contains { $0.fieldId == id } }
+    /// Before the create screen is known the usual fields are assumed, so the window opens at its full height
+    /// rather than growing as they arrive.
+    func has(_ id: String) -> Bool { fields.isEmpty || fields.contains { $0.fieldId == id } }
     var parentRequired: Bool { type?.isSubtask == true || fields.first { $0.fieldId == "parent" }?.required == true }
     /// Required fields on this site that the window cannot fill; creation would be rejected.
     var unsupportedRequired: [String] {
@@ -58,10 +60,20 @@ final class CreateIssueModel {
             && !isWorking && !isLoadingMeta
     }
 
-    func loadTypes(_ c: JiraClient) async {
+    /// The project's issue types, from the account's cache at once and from the network behind it.
+    func loadTypes(_ st: AccountState) async {
         guard let p = project else { return }
-        isLoadingMeta = true
-        types = (try? await c.createIssueTypes(project: p.key)) ?? []
+        let (c, key) = (st.client, p.key)
+        let (now, fresh) = st.memo("createmeta-\(key)") { try await c.createIssueTypes(project: key) }
+        isLoadingMeta = now == nil
+        if let now { await setTypes(now, st) }
+        if let list = await fresh.value, project?.key == key { await setTypes(list, st) }
+        isLoadingMeta = false
+    }
+
+    private func setTypes(_ list: [IssueType], _ st: AccountState) async {
+        if types != list { types = list }
+        let before = type?.id
         if !types.contains(where: { $0.id == type?.id }) {
             let candidates = types.filter { parentKey.isEmpty ? !$0.isSubtask : $0.isSubtask }
             // Task is the everyday default; Epic is rarely what someone means by ⌘N.
@@ -70,18 +82,28 @@ final class CreateIssueModel {
                 ?? candidates.first { $0.name.caseInsensitiveCompare("Epic") != .orderedSame } ?? candidates.first
                 ?? types.first
         }
-        await loadFields(c)
+        // A changed type loads its fields through the window's onChange; an unchanged one is asked for here.
+        if type?.id == before { await loadFields(st) }
     }
 
-    func loadFields(_ c: JiraClient) async {
+    /// The fields of the chosen type, cached the same way.
+    func loadFields(_ st: AccountState) async {
         guard let p = project, let t = type else {
             isLoadingMeta = false
             return
         }
-        isLoadingMeta = true
-        fields = (try? await c.createFields(project: p.key, issueType: t.id)) ?? []
-        if let pr = priority, !priorities.contains(pr) { priority = nil }
+        let (c, key, typeID) = (st.client, p.key, t.id)
+        let (now, fresh) = st.memo("createmeta-\(key)-\(typeID)") {
+            try await c.createFields(project: key, issueType: typeID)
+        }
+        if let now { setFields(now) } else { isLoadingMeta = true }
+        if let list = await fresh.value, type?.id == typeID { setFields(list) }
         isLoadingMeta = false
+    }
+
+    private func setFields(_ list: [CreateField]) {
+        if fields != list { fields = list }
+        if let pr = priority, !priorities.contains(pr) { priority = nil }
     }
 
     func payload() throws -> [String: JSONValue] {
@@ -114,7 +136,7 @@ struct CreateIssueView: View {
     /// Every label on the site, for suggestions under the field.
     @State private var allLabels: [String] = []
     @FocusState private var summaryFocused: Bool
-    @State private var confirmDiscard = false
+    @State private var showClone = false
     private var parentKey: String? { request.parentKey }
     private var hasDraft: Bool { !m.summary.isEmpty || !m.text.isEmpty }
     private var labelMatches: [String] {
@@ -162,6 +184,22 @@ struct CreateIssueView: View {
                 .fixedSize()
                 if m.isLoadingMeta { ProgressView().controlSize(.small) }
                 Spacer()
+                // Start from an issue of yours: its type, summary, description, assignee, priority, labels and parent.
+                Button("Clone from an issue…", systemImage: "doc.on.doc") { showClone = true }
+                    .buttonStyle(.link)
+                    .disabled(m.project == nil)
+                    .popover(isPresented: $showClone, arrowEdge: .bottom) {
+                        ParentPicker(
+                            current: nil,
+                            jql:
+                                "project = \"\(m.project?.key ?? "")\" AND reporter = currentUser() ORDER BY created DESC",
+                            title: "Clone", verb: "Clone"
+                        ) { picked in
+                            showClone = false
+                            if let picked { clone(picked) }
+                        }
+                        .environment(\.jira, m.state)
+                    }
             }
 
             TextField("Summary", text: $m.summary, axis: .vertical)
@@ -170,7 +208,11 @@ struct CreateIssueView: View {
                 .focused($summaryFocused)
                 .lineLimit(1...3)
                 .padding(10)
-                .background(.quaternary.opacity(0.4), in: .rect(cornerRadius: 10))
+                // The padding is part of the field: a click anywhere in the box focuses it.
+                .background {
+                    RoundedRectangle(cornerRadius: 10).fill(.quaternary.opacity(0.4))
+                        .onTapGesture { summaryFocused = true }
+                }
                 // The same ring the description gets, so the focus is always visible.
                 .overlay(
                     RoundedRectangle(cornerRadius: 10)
@@ -280,8 +322,7 @@ struct CreateIssueView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer()
-                Button("Cancel") { if hasDraft { confirmDiscard = true } else { dismiss() } }.glassButton()
-                    .keyboardShortcut(.cancelAction)
+                Button("Cancel") { requestClose() }.glassButton().keyboardShortcut(.cancelAction)
                 Button(action: create) {
                     if m.isWorking {
                         ProgressView().controlSize(.small).frame(width: 60)
@@ -299,10 +340,23 @@ struct CreateIssueView: View {
         .background(Backdrop())
         .writingToolsBehavior(.disabled)  // macOS 27 pins a Siri button beside every text view otherwise
         .navigationTitle(parentKey == nil ? "New Issue" : "New Subtask of \(parentKey!)")
-        .confirmationDialog("Discard this issue?", isPresented: $confirmDiscard, titleVisibility: .visible) {
-            Button("Discard", role: .destructive) { dismiss() }
-            Button("Keep Editing", role: .cancel) {}
-        }
+        .background(CloseButtonHook(close: requestClose))
+        .background(
+            WindowEventMonitor(mask: .keyDown) { e in
+                // Escape leaves the field it is in; the next one (or ⌘W, Cancel, the close button) closes the
+                // window, asking first when there is a draft.
+                let mods = e.modifierFlags.intersection(.deviceIndependentFlagsMask)
+                if e.keyCode == 53, mods.isEmpty, e.window?.firstResponder is NSTextView {
+                    e.window?.makeFirstResponder(nil)
+                    return nil
+                }
+                if mods == .command, e.charactersIgnoringModifiers == "w" {
+                    requestClose(e.window)
+                    return nil
+                }
+                return e
+            }
+        )
         .task {
             DispatchQueue.main.async { summaryFocused = true }
             let last = UserDefaults.standard.string(forKey: "lastCreateProject")
@@ -324,20 +378,57 @@ struct CreateIssueView: View {
             }
             m.parentKey = parentKey ?? ""
             syncState()
-            if let c = m.state?.client { await m.loadTypes(c) }
+            if let st = m.state { await m.loadTypes(st) }
         }
         .onChange(of: m.choice) {
             syncState()
-            if let c = m.state?.client { Task { await m.loadTypes(c) } }
+            if let st = m.state { Task { await m.loadTypes(st) } }
         }
-        .onChange(of: m.type) { if let c = m.state?.client { Task { await m.loadFields(c) } } }
-        .task(id: m.state?.id) { allLabels = (try? await m.state?.client.labels()) ?? [] }
+        .onChange(of: m.type) { if let st = m.state { Task { await m.loadFields(st) } } }
+        .task(id: m.state?.id) {
+            guard let st = m.state else { return }
+            let c = st.client
+            let (now, fresh) = st.memo("labels") { try await c.labels() }
+            if let now { allLabels = now }
+            if let list = await fresh.value { allLabels = list }
+        }
         // A fixed field loses its error.
         .onChange(of: m.summary) { m.error = nil }
         .onChange(of: m.parentKey) { m.error = nil }
     }
 
     private func syncState() { m.state = m.choice.flatMap { session.state($0.accountID) } }
+
+    /// Closes at once without a draft; with one, asks first. An AppKit sheet answers after it is gone, so the
+    /// window closes cleanly (the SwiftUI dialog's Discard raced its own dismissal and did nothing).
+    private func requestClose(_ window: NSWindow? = NSApp.keyWindow) {
+        guard hasDraft, let window else {
+            dismiss()
+            return
+        }
+        let alert = NSAlert()
+        alert.messageText = String(localized: "Discard this issue?")
+        alert.addButton(withTitle: String(localized: "Keep Editing"))
+        alert.addButton(withTitle: String(localized: "Discard")).hasDestructiveAction = true
+        alert.beginSheetModal(for: window) { if $0 == .alertSecondButtonReturn { window.close() } }
+    }
+
+    /// Fills the form from an existing issue.
+    private func clone(_ key: String) {
+        guard let c = m.state?.client else { return }
+        Task {
+            guard let i = try? await c.issue(key) else { return }
+            if let t = m.types.first(where: { $0.id == i.fields.issuetype.id }) { m.type = t }
+            m.summary = i.fields.summary
+            var mentions: [String: String] = [:]
+            m.text = i.fields.description?.markdown(mentions: &mentions) ?? ""
+            m.mentions = mentions
+            m.assignee = i.fields.assignee
+            m.priority = m.priorities.first { $0.id == i.fields.priority?.id }
+            m.labels = i.fields.labels ?? []
+            if parentKey == nil { m.parentKey = i.fields.parent?.key ?? "" }
+        }
+    }
 
     /// Parents one level up in the same project: standard issues for a subtask, epics for the rest.
     private var parentJQL: String {
@@ -375,5 +466,23 @@ struct CreateIssueView: View {
                 openWindow(id: "issue", value: IssueTarget(accountID: st.id, key: created.key))
             } catch { m.error = error.localizedDescription }
         }
+    }
+}
+
+/// Routes the window's close button through `close`, so a draft can ask before it goes. ⌘W and Escape reach the
+/// same place through the key monitor; SwiftUI offers no windowShouldClose.
+private struct CloseButtonHook: NSViewRepresentable {
+    let close: (NSWindow?) -> Void
+    func makeNSView(context: Context) -> Probe { Probe() }
+    func updateNSView(_ view: Probe, context: Context) { view.close = close }
+
+    final class Probe: NSView {
+        var close: (NSWindow?) -> Void = { _ in }
+        override func viewDidMoveToWindow() {
+            guard let button = window?.standardWindowButton(.closeButton) else { return }
+            button.target = self
+            button.action = #selector(tap)
+        }
+        @objc private func tap() { close(window) }
     }
 }

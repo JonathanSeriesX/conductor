@@ -74,7 +74,7 @@ struct JiraClient: Sendable {
     /// complete there at once; only the description, comments, attachments and links wait for the full record.
     var listFields: String {
         var f =
-            "summary,status,assignee,reporter,priority,issuetype,created,updated,project,watches,parent,subtasks,labels,duedate,components,fixVersions,timetracking"
+            "summary,status,assignee,reporter,priority,issuetype,created,updated,lastViewed,project,watches,parent,subtasks,labels,duedate,components,fixVersions,timetracking"
         if let sprintField { f += "," + sprintField }
         for p in pointsFields { f += "," + p }
         return f

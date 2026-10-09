@@ -143,8 +143,9 @@ final class IssueDetailStore {
             if self.key == key { sprints = list }
         }
         if full, allLabels.isEmpty, canEdit("labels") {
-            let list = (try? await client.labels()) ?? []
-            if self.key == key { allLabels = list }
+            let (now, fresh) = state.memo("labels") { try await client.labels() }
+            if let now, self.key == key { allLabels = now }
+            if let list = await fresh.value, self.key == key { allLabels = list }
         }
     }
 
@@ -240,6 +241,8 @@ struct IssueDetailView: View {
     @State private var showStatus = false
     @State private var showPriority = false
     @State private var isDropTargeted = false
+    /// The key was just copied; a tick shows beside it for a moment.
+    @State private var copied = false
     /// A destructive action waiting for the user's confirmation: what it is and what it does.
     @State private var pendingDelete: (title: String, verb: String, perform: () -> Void)?
     @FocusState private var summaryFocused: Bool
@@ -403,27 +406,49 @@ struct IssueDetailView: View {
         }
     }
 
-    /// Parent → key. The parent opens on a click (⌘-click beside); the text can be selected and copied, so the
-    /// click rides a simultaneous gesture, as on the summary.
+    /// Parent → key. A click on the parent opens it (⌘-click beside); a click on the key copies it. Not selectable
+    /// text: a double-click selected "CON" of "CON-7", and the parent is a link, not a quotation.
     private var crumb: some View {
         HStack(spacing: 6) {
             if let p = store.issue?.fields.parent {
-                HStack(spacing: 4) {
-                    RemoteImage(url: p.fields.issuetype?.iconUrl).frame(width: 14, height: 14)
-                    Text(p.key).monospaced()
-                    Text(p.fields.summary).lineLimit(1)
+                Button {
+                    open(p.key)
+                } label: {
+                    HStack(spacing: 4) {
+                        RemoteImage(url: p.fields.issuetype?.iconUrl).frame(width: 14, height: 14)
+                        Text(p.key).monospaced()
+                        Text(p.fields.summary).lineLimit(1)
+                    }
+                    .contentShape(.rect)
                 }
-                .contentShape(.rect)
-                .simultaneousGesture(TapGesture().onEnded { open(p.key) })
+                .buttonStyle(.plain)
                 .help("Open \(p.key); ⌘-click for a new window")
                 Image(systemName: "chevron.forward").font(.caption2.weight(.bold)).foregroundStyle(.tertiary)
             }
             RemoteImage(url: store.issue?.fields.issuetype.iconUrl, placeholder: "circle").frame(width: 14, height: 14)
                 .accessibilityLabel(store.issue?.fields.issuetype.name ?? String(localized: "Issue type"))
-            Text(key).monospaced()
+            Button {
+                copyToPasteboard(key)
+                withAnimation(.easeOut(duration: 0.15)) { copied = true }
+                Task {
+                    try? await Task.sleep(for: .seconds(1.2))
+                    withAnimation(.easeOut(duration: 0.3)) { copied = false }
+                }
+            } label: {
+                Text(key).monospaced().contentShape(.rect)
+            }
+            .buttonStyle(.plain)
+            .help("Click to copy \(key)")
+            // The tick hangs off the end so the key, and the toolbar around it, never shift.
+            .overlay(alignment: .trailing) {
+                if copied {
+                    Image(systemName: "checkmark").font(.caption.weight(.bold)).foregroundStyle(.green)
+                        .offset(x: 18).transition(.opacity)
+                        .accessibilityLabel("Copied")
+                }
+            }
         }
         .font(.callout).foregroundStyle(.secondary)
-        .textSelection(.enabled)
     }
 
     private func header(_ issue: Issue) -> some View {
@@ -451,19 +476,20 @@ struct IssueDetailView: View {
                         placeCaret(in: $0.object as? NSTextView)
                     }
             } else {
-                // Selectable, and a click (not a drag) edits, as on the web. A simultaneous gesture, because
-                // selectable text keeps plain taps for itself.
+                // A click edits, as on the web; a right-click is the issue's menu. Not selectable text, whose
+                // menu (Cut, Paste, Font…) treated the title as a writing field.
                 Text(issue.fields.summary)
                     .font(.system(.largeTitle, design: .rounded, weight: .semibold))
-                    .textSelection(.enabled)
                     .contentShape(.rect)
-                    .simultaneousGesture(
-                        TapGesture().onEnded {
-                            guard store.canEdit("summary") else { return }
-                            editClick = NSEvent.mouseLocation
-                            caretPending = true
-                            summaryDraft = issue.fields.summary
-                        })
+                    .onTapGesture {
+                        guard store.canEdit("summary") else { return }
+                        editClick = NSEvent.mouseLocation
+                        caretPending = true
+                        summaryDraft = issue.fields.summary
+                    }
+                    .contextMenu {
+                        if let jira { IssueMenu(issue: issue, state: jira) { op in run { _ in try await op() } } }
+                    }
             }
         }
     }
@@ -1834,6 +1860,9 @@ struct ParentPicker: View {
     let current: String?
     /// Scope of the search: the same project, one hierarchy level up.
     var jql: String
+    /// "Clone" when the New Issue window borrows the picker to copy an issue.
+    var title: LocalizedStringKey = "Parent"
+    var verb: LocalizedStringKey = "Set"
     var onSave: (String?) -> Void
     @Environment(\.jira) private var jira
     @State private var query = ""
@@ -1842,7 +1871,7 @@ struct ParentPicker: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Parent").font(.headline)
+            Text(title).font(.headline)
             TextField("Key or search", text: $query).textFieldStyle(.roundedBorder).focused($focused)
                 // ↩ takes the typed key when the search found it, else the first result; an ineligible key stays put.
                 .onSubmit {
@@ -1865,7 +1894,7 @@ struct ParentPicker: View {
             HStack {
                 if current != nil { Button("Clear") { onSave(nil) }.glassButton() }
                 Spacer()
-                Button("Set") { if let r = results.first { onSave(r.key) } }.glassButton(prominent: true)
+                Button(verb) { if let r = results.first { onSave(r.key) } }.glassButton(prominent: true)
                     .disabled(results.isEmpty)
             }
         }

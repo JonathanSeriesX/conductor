@@ -84,6 +84,17 @@ struct ListFilters: Hashable, Codable {
                 case .key: String(localized: "Key", comment: "Sort by issue key")
                 }
             }
+            /// "sorted by date updated": the list header names the date each row shows.
+            var headerTitle: String {
+                switch self {
+                case .updated: String(localized: "date updated", comment: "List header: sorted by …")
+                case .created: String(localized: "date created", comment: "List header: sorted by …")
+                case .viewed: String(localized: "date viewed", comment: "List header: sorted by …")
+                case .due: String(localized: "due date", comment: "List header: sorted by …")
+                case .priority: String(localized: "priority", comment: "List header: sorted by …")
+                case .key: String(localized: "key", comment: "List header: sorted by …")
+                }
+            }
             var jql: String {
                 switch self {
                 case .updated: "updated"
@@ -99,11 +110,24 @@ struct ListFilters: Hashable, Codable {
         var descending = true
         var clause: String { "\(field.jql) \(descending ? "DESC" : "ASC")" }
 
+        /// The date a row shows at its trailing edge: the one the list is sorted by, else when it was created.
+        func date(of i: Issue) -> Date? {
+            switch field {
+            case .updated: i.fields.updated
+            case .viewed: i.fields.lastViewed ?? i.fields.updated
+            case .due: i.fields.duedate.flatMap(DueDate.parse)
+            case .created, .priority, .key: i.fields.created
+            }
+        }
+
         /// Client-side counterpart of `clause`, for merging pages from several sites into one list.
         func areInOrder(_ a: Issue, _ b: Issue) -> Bool {
             let r: ComparisonResult
             switch field {
-            case .updated, .viewed: r = (a.fields.updated ?? .distantPast).compare(b.fields.updated ?? .distantPast)
+            case .updated: r = (a.fields.updated ?? .distantPast).compare(b.fields.updated ?? .distantPast)
+            case .viewed:
+                r = (a.fields.lastViewed ?? a.fields.updated ?? .distantPast).compare(
+                    b.fields.lastViewed ?? b.fields.updated ?? .distantPast)
             case .created: r = (a.fields.created ?? .distantPast).compare(b.fields.created ?? .distantPast)
             case .due: r = (a.fields.duedate ?? "").compare(b.fields.duedate ?? "")  // "2026-10-31": sorts as text
             case .priority:
