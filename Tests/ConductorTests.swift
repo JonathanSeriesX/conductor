@@ -74,6 +74,32 @@ final class JQLTests: XCTestCase {
             "DESC is the highest priority (lowest id) first, as in JQL")
         XCTAssertTrue(ListFilters.Sort(field: .key, descending: false).areInOrder(a, b), "keys compare numerically")
     }
+
+    /// Jira puts undated issues first under "duedate DESC"; the list puts them last whichever way it sorts.
+    @MainActor func testDueDateOrderPutsUndatedLast() throws {
+        func issue(_ key: String, due: String?) throws -> Issue {
+            let d = due.map { "\"\($0)\"" } ?? "null"
+            return try JSONDecoder().decode(
+                Issue.self,
+                from: Data(
+                    #"{"id":"\#(key)","key":"\#(key)","fields":{"summary":"s","duedate":\#(d),"status":{"id":"1","name":"To Do","statusCategory":{"key":"new","name":"To Do"}},"issuetype":{"id":"1","name":"Task"}}}"#
+                        .utf8))
+        }
+        let early = try issue("A-1", due: "2026-10-01")
+        let late = try issue("A-2", due: "2026-10-20")
+        let none = try issue("A-3", due: nil)
+        let desc = ListFilters.Sort(field: .due, descending: true)
+        let asc = ListFilters.Sort(field: .due, descending: false)
+        XCTAssertEqual([none, early, late].sorted(by: desc.areInOrder).map(\.key), ["A-2", "A-1", "A-3"])
+        XCTAssertEqual([none, late, early].sorted(by: asc.areInOrder).map(\.key), ["A-1", "A-2", "A-3"])
+        // The rows as drawn, from a page the server ordered with the undated first.
+        let st = AccountState(account: Account(site: URL(string: "https://x.atlassian.net")!, email: "e", token: "t"))
+        let rows = [none, late, early].map { ListRow(issue: $0, state: st) }
+        XCTAssertEqual(DisplayRow.nest(rows, expanded: [], sort: desc).map(\.row.issue.key), ["A-2", "A-1", "A-3"])
+        XCTAssertEqual(
+            DisplayRow.nest(rows, expanded: [], sort: asc).map(\.row.issue.key), ["A-2", "A-1", "A-3"],
+            "the server's order among the dated rows stands")
+    }
 }
 
 final class ADFTests: XCTestCase {
@@ -491,9 +517,14 @@ final class RowDateTests: XCTestCase {
 
     @MainActor func testRelativeDayNamesWholeDays() {
         let cal = Calendar.current
+        func day(_ n: Int) -> Date { cal.date(byAdding: .day, value: n, to: .now)! }
         XCTAssertEqual(relativeDay(.now), "Today")
-        XCTAssertEqual(relativeDay(cal.date(byAdding: .day, value: -1, to: .now)!), "Yesterday")
-        XCTAssertEqual(relativeDay(cal.date(byAdding: .day, value: 1, to: .now)!), "Tomorrow")
-        XCTAssertEqual(relativeDay(cal.date(byAdding: .day, value: 5, to: .now)!), "In 5 days")
+        XCTAssertEqual(relativeDay(day(-1)), "Yesterday")
+        XCTAssertEqual(relativeDay(day(1)), "Tomorrow")
+        XCTAssertEqual(relativeDay(day(5)), "In 5 days")
+        XCTAssertEqual(relativeDay(day(8)), "In 8 days", "a count, not \"next week\", up to two weeks out")
+        XCTAssertEqual(relativeDay(day(13)), "In 13 days")
+        XCTAssertEqual(relativeDay(day(-9)), "9 days ago")
+        XCTAssertFalse(relativeDay(day(30)).contains("days"), "further out the named style stands")
     }
 }

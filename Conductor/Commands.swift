@@ -20,6 +20,8 @@ struct IssueActions {
     let isEditing: Bool
     /// Set while the page can go back to the issue it came from.
     let back: (() -> Void)?
+    /// In the main window's preview column; a window of its own already is the issue's window.
+    let embedded: Bool
     let perform: (Action) -> Void
 }
 
@@ -30,7 +32,7 @@ extension IssueActions: Equatable {
         a.key == b.key && a.watching == b.watching && a.assignedToMe == b.assignedToMe
             && a.transitions == b.transitions && a.canEditSummary == b.canEditSummary
             && a.canEditDescription == b.canEditDescription && a.isEditing == b.isEditing
-            && (a.back == nil) == (b.back == nil)
+            && (a.back == nil) == (b.back == nil) && a.embedded == b.embedded
     }
 }
 
@@ -160,7 +162,8 @@ struct AppCommands: Commands {
         }
         CommandMenu("Issue") {
             item("Open in Browser", .openInBrowser, "o", [.command, .shift])
-            item("Open in New Window", .openInWindow, "o")
+            // A window group keeps one window per issue, so from an issue's own window there is nothing to open.
+            item("Open in New Window", .openInWindow, "o").disabled(issue?.embedded != true)
             Divider()
             item("Copy Link", .copyLink, "c", [.command, .shift])
             item("Copy as Markdown", .copyMarkdown, "c", [.command, .option])
@@ -218,12 +221,10 @@ struct AppCommands: Commands {
 }
 
 /// An issue with its own back trail: the content of an issue window and of the main window's preview column.
-struct IssueWindow: View, Equatable {
+struct IssueWindow: View {
     /// The window's value, or the main window's selection: a change from outside starts a fresh trail.
     @Binding var target: IssueTarget
     var embedded = false
-    /// The main window re-evaluates on every filter change and focus move; the preview only has to follow its target.
-    nonisolated static func == (a: Self, b: Self) -> Bool { a.target == b.target && a.embedded == b.embedded }
     /// Issues this window showed before the current one, so a jump to a subtask or link can come back.
     @State private var trail: [IssueTarget] = []
     @State private var navigating = false

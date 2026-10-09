@@ -170,6 +170,10 @@ final class BoardStore {
         guard let issue = issues.first(where: { $0.key == key }), !targets.contains(issue.fields.status.id) else {
             return
         }
+        // The card sits in its new column from the drop on, while Jira works; a failure puts it back. Only it is
+        // fetched afterwards, so the rest of the board stays exactly where it was instead of reloading page by page.
+        moving[key] = column.statuses.first?.id
+        defer { moving[key] = nil }
         do {
             let transitions = try await client.transitions(key)
             guard let t = transitions.first(where: { targets.contains($0.to.id) }) else {
@@ -178,10 +182,7 @@ final class BoardStore {
                 )
                 return
             }
-            // The card sits in its new column while Jira works; only it is fetched afterwards, so the rest of the
-            // board stays exactly where it was instead of reloading page by page.
             moving[key] = t.to.id
-            defer { moving[key] = nil }
             try await client.transition(key, to: t.id)
             let fresh = try await client.issue(key)
             if let i = issues.firstIndex(where: { $0.key == key }) { issues[i] = fresh }
@@ -411,7 +412,10 @@ struct BoardView: View {
         VStack(alignment: .leading, spacing: 18) {
             ForEach(swimlanes.lanes(store.issues)) { lane in
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("\(lane.title)  ·  \(lane.issues.count)").font(.headline).lineLimit(1)
+                    let drawn = store.columns.reduce(0) {
+                        $0 + store.issues(in: $1, from: lane.issues, fold: swimlanes != .parent).count
+                    }
+                    Text("\(lane.title)  ·  \(drawn)").font(.headline).lineLimit(1)
                     HStack(alignment: .top, spacing: 12) {
                         ForEach(store.columns) { column in
                             BoardColumn(
@@ -582,7 +586,6 @@ struct BoardColumn: View {
     private var cards: some View {
         LazyVStack(spacing: 8) {
             ForEach(issues) { issue in
-                if issue.id != issues.first?.id { Divider().padding(.horizontal, 6) }
                 BoardCard(issue: issue, selected: selection == issue.key)
                     .draggable(issue.key)
                     .onTapGesture(count: 2) {

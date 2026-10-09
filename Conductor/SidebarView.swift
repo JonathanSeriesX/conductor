@@ -129,7 +129,14 @@ struct ListFilters: Hashable, Codable {
                 r = (a.fields.lastViewed ?? a.fields.updated ?? .distantPast).compare(
                     b.fields.lastViewed ?? b.fields.updated ?? .distantPast)
             case .created: r = (a.fields.created ?? .distantPast).compare(b.fields.created ?? .distantPast)
-            case .due: r = (a.fields.duedate ?? "").compare(b.fields.duedate ?? "")  // "2026-10-31": sorts as text
+            case .due:
+                // "2026-10-31" sorts as text; an undated issue goes last whichever way the dates run.
+                switch (a.fields.duedate, b.fields.duedate) {
+                case (nil, nil): r = .orderedSame
+                case (nil, _): return false
+                case (_, nil): return true
+                case (let da?, let db?): r = da.compare(db)
+                }
             case .priority:
                 // Jira's priority ids count up from the highest, so "priority DESC" is the lowest id first.
                 let (pa, pb) = (Int(a.fields.priority?.id ?? "") ?? .max, Int(b.fields.priority?.id ?? "") ?? .max)
@@ -315,6 +322,7 @@ struct SidebarView: View {
                                     } icon: {
                                         Image(nsImage: Palette.swatch(name))
                                     }
+                                    .labelStyle(.titleAndIcon)  // a menu shows titles alone unless told otherwise
                                 }
                             }
                         }
