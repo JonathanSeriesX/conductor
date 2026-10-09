@@ -23,6 +23,17 @@ struct IssueActions {
     let perform: (Action) -> Void
 }
 
+extension IssueActions: Equatable {
+    /// Compared by what the menus show. Without this, every evaluation of the page published a "new" value (the
+    /// closures), its window re-rendered on the focused value, which re-evaluated the page: 16 passes per load.
+    static func == (a: Self, b: Self) -> Bool {
+        a.key == b.key && a.watching == b.watching && a.assignedToMe == b.assignedToMe
+            && a.transitions == b.transitions && a.canEditSummary == b.canEditSummary
+            && a.canEditDescription == b.canEditDescription && a.isEditing == b.isEditing
+            && (a.back == nil) == (b.back == nil)
+    }
+}
+
 /// What the issue list in the key window can do.
 struct ListActions {
     let saveFilter: (() -> Void)?
@@ -208,10 +219,12 @@ struct AppCommands: Commands {
 
 /// An issue in a window of its own, so two can sit side by side. Links inside it navigate in place.
 /// An issue with its own back trail: the content of an issue window and of the main window's preview column.
-struct IssueWindow: View {
+struct IssueWindow: View, Equatable {
     /// The window's value, or the main window's selection: a change from outside starts a fresh trail.
     @Binding var target: IssueTarget
     var embedded = false
+    /// The main window re-evaluates on every filter change and focus move; the preview only has to follow its target.
+    nonisolated static func == (a: Self, b: Self) -> Bool { a.target == b.target && a.embedded == b.embedded }
     /// Issues this window showed before the current one, so a jump to a subtask or link can come back.
     @State private var trail: [IssueTarget] = []
     @State private var navigating = false

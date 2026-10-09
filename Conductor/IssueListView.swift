@@ -323,7 +323,6 @@ struct IssueListView: View {
                                 : selected ? Color(nsColor: .unemphasizedSelectedContentBackgroundColor) : .clear
                         )
                         .padding(.horizontal, 8)
-                        .background(NativeSelectionOff())
                 )
                 .onAppear { if d.id == shown.last?.id { Task { await store.loadMore() } } }
                 // Drag a row into Slack, a browser or a note as its Jira link.
@@ -353,6 +352,7 @@ struct IssueListView: View {
             }
         }
         .listStyle(.inset)
+        .background(NativeSelectionOff())
         .contextMenu(forSelectionType: IssueTarget.self) { targets in
             if let t = targets.first, let row = store.rows.first(where: { $0.target == t }) { rowMenu(row) }
         } primaryAction: { targets in
@@ -741,7 +741,8 @@ struct IssueListView: View {
         }
         let fields = state?.jqlFields ?? []
         guard filters.isRawJQL || fields.contains(where: { q.lowercased().hasPrefix($0.value.lowercased()) }) else {
-            suggestions = []
+            // Tuples are not Equatable, so SwiftUI cannot tell [] from []; a write here redraws the list per keystroke.
+            if !suggestions.isEmpty { suggestions = [] }
             return
         }
         // "status = In" → values for status; "sta" → field names.
@@ -765,13 +766,13 @@ struct IssueListView: View {
             return
         }
         guard let last = q.split(separator: " ", omittingEmptySubsequences: false).last else {
-            suggestions = []
+            if !suggestions.isEmpty { suggestions = [] }
             return
         }
         let head = q.dropLast(last.count)
         let word = last.lowercased()
         guard !word.isEmpty else {
-            suggestions = []
+            if !suggestions.isEmpty { suggestions = [] }
             return
         }
         suggestions =
@@ -1093,16 +1094,28 @@ struct SortMenuItems: View {
     }
 }
 
-/// Turns off the table's own selection drawing; the rows paint theirs.
+/// Turns off the table's own selection drawing; the rows paint theirs. Behind the list rather than inside a
+/// row: a platform view in a row put the first frame back by ~60 ms.
 private struct NativeSelectionOff: NSViewRepresentable {
     func makeNSView(context: Context) -> Finder { Finder() }
     func updateNSView(_ view: Finder, context: Context) {}
     final class Finder: NSView {
-        override func viewDidMoveToWindow() {
-            var v: NSView? = self
-            while let s = v, !(s is NSTableView) { v = s.superview }
-            (v as? NSTableView)?.selectionHighlightStyle = .none
-            (v as? NSTableView)?.allowsTypeSelect = false  // letters are shortcuts here, not a jump to a row
+        override func viewDidMoveToWindow() { find(attempt: 0) }
+
+        /// The table is a sibling subtree: the nearest ancestor with one below it, short of the split view that
+        /// also holds the sidebar's. It can arrive a turn after this view, hence the retries.
+        private func find(attempt: Int) {
+            guard window != nil else { return }
+            var v = superview
+            while let s = v, !(s is NSSplitView) {
+                if let table = firstTable(in: s) {
+                    table.selectionHighlightStyle = .none
+                    table.allowsTypeSelect = false  // letters are shortcuts here, not a jump to a row
+                    return
+                }
+                v = s.superview
+            }
+            if attempt < 10 { DispatchQueue.main.async { self.find(attempt: attempt + 1) } }
         }
     }
 }
