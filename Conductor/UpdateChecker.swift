@@ -24,13 +24,14 @@ final class UpdateChecker {
 
     func check(interactive: Bool) {
         Task {
-            UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: "lastUpdateCheck")
             do {
                 var req = URLRequest(url: releases)
                 req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
                 let (data, resp) = try await URLSession.shared.data(for: req)
                 guard (resp as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
                 let r = try JSONDecoder().decode(Release.self, from: data)
+                // Stamped only once GitHub answered: a launch without network checks again next time.
+                UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: "lastUpdateCheck")
                 let latest = r.tag_name.trimmingCharacters(in: CharacterSet(charactersIn: "vV"))
                 if Self.isNewer(latest, than: current) {
                     if UserDefaults.standard.string(forKey: "skippedVersion") == latest, !interactive { return }

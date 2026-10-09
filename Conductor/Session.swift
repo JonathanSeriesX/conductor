@@ -293,6 +293,24 @@ final class AccountState: Identifiable {
         for p in starredProjects { await BoardStore.prefetch(p.key, state: self) }
     }
 
+    /// A value kept in memory and on disk under `name`: what is known already comes back at once (nil the first
+    /// time) and `fresh` resolves when the network answers (nil when it fails), so a picker or window opens full
+    /// and corrects itself behind.
+    func memo<T: Codable & Sendable>(_ name: String, fetch: @escaping @Sendable () async throws -> T)
+        -> (now: T?, fresh: Task<T?, Never>)
+    {
+        let now = memos[name] as? T ?? DiskCache.load(T.self, account: account, name: name)
+        if let now { memos[name] = now }
+        let fresh = Task<T?, Never> { @MainActor in
+            guard let value = try? await fetch() else { return nil }
+            memos[name] = value
+            DiskCache.saveAsync(value, account: account, name: name)
+            return value
+        }
+        return (now, fresh)
+    }
+    @ObservationIgnored private var memos: [String: Any] = [:]
+
     func linkTypes() async -> [LinkType] {
         if let linkTypesCache { return linkTypesCache }
         if let disk: [LinkType] = await DiskCache.loadAsync(account: account, name: "linkTypes") {
@@ -564,12 +582,14 @@ final class Session {
         return preset(matching: f)?.name ?? String(localized: "Issues")
     }
 
-    /// The sidebar entry these filters came from. The status chip is left out of the comparison: a preset is
-    /// built with whatever the Hide Done default is at the time, and flipping that setting must not unname a list.
+    /// The sidebar entry these filters came from. The status chip and the sort order are left out of the
+    /// comparison: a preset is built with whatever the Hide Done default is at the time, and neither flipping that
+    /// setting nor re-sorting the list must unname it.
     func preset(matching f: ListFilters) -> Preset? {
         func same(_ a: ListFilters, _ b: ListFilters) -> Bool {
             var (a, b) = (a, b)
             (a.status, b.status) = (.any, .any)
+            (a.sort, b.sort) = (ListFilters.Sort(), ListFilters.Sort())
             return a == b
         }
         let all = presets(account: nil) + states.flatMap { presets(account: $0) }

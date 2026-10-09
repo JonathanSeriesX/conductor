@@ -41,7 +41,7 @@ enum ShortcutScheme: String, CaseIterable {
     case mac, jira, linear
 
     static var current: ShortcutScheme {
-        ShortcutScheme(rawValue: UserDefaults.standard.string(forKey: "shortcutScheme") ?? "") ?? .mac
+        ShortcutScheme(rawValue: UserDefaults.standard.string(forKey: "shortcutScheme") ?? "") ?? .jira
     }
 
     var title: String {

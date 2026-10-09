@@ -69,6 +69,7 @@ final class IssueListStore {
     private var single: (AccountState, String, Bool)?
     /// The query whose rows (cached or fresh) are on screen.
     private var shownKey = ""
+    private var shown = ListFilters()
     private var sort = ListFilters.Sort()
 
     /// One page of a query for one account. With `cache` on, the page is saved to disk, indexed for
@@ -127,6 +128,7 @@ final class IssueListStore {
         if unbounded {
             rows = []
             shownKey = ""
+            shown = f
             isLoading = false
             return
         }
@@ -139,12 +141,21 @@ final class IssueListStore {
         // page lands, so the list never collapses to the fastest site and then grows back.
         var byAccount: [UUID: [ListRow]] = Dictionary(grouping: rows, by: \.state.id)
         if shownKey != queryKey {
-            byAccount = cacheable ? await Self.cachedRows(queries) : [:]
-            guard gen == generation else { return }
+            var resorted = shown
+            resorted.sort = f.sort
+            if resorted == f, !rows.isEmpty {
+                // Only the order changed: the same rows change places at once, nothing is fetched to draw them.
+                // The server's page lands behind (on a list longer than a page its first page can differ).
+                byAccount = byAccount.mapValues { $0.sorted { f.sort.areInOrder($0.issue, $1.issue) } }
+            } else {
+                byAccount = cacheable ? await Self.cachedRows(queries) : [:]
+                guard gen == generation else { return }
+            }
             show(merged(byAccount))
             // Only now: a load superseded before its rows reached the screen must not let the next one skip them.
             shownKey = queryKey
         }
+        shown = f
         isLoading = true
         if f.account == nil {
             let tasks = queries.map { st, jql in
@@ -255,6 +266,7 @@ struct IssueListView: View {
     @Environment(Session.self) private var session
     @Environment(\.openWindow) private var openWindow
     @Environment(\.layoutDirection) private var layoutDirection
+    @Environment(\.appearsActive) private var active
     @State private var store = IssueListStore()
     @State private var suggestions: [(display: String, completion: String)] = []
     @State private var savingFilter = false
@@ -286,24 +298,32 @@ struct IssueListView: View {
         List(selection: $selection) {
             ForEach(shown) { d in
                 let row = d.row
+                // The open issue stays in the accent colour while the window is active, as in Notes and Mail;
+                // behind another window it goes grey like any selection.
                 let selected = selection == row.target
+                let emphasized = selected && active
                 IssueRow(
                     issue: row.issue,
                     site: isUnified && session.states.count > 1 ? (row.state.title, row.state.color) : nil,
+                    date: filters.sort.date(of: row.issue), dayOnly: filters.sort.field == .due,
                     depth: d.depth, folded: d.children.count, expanded: expanded.contains(d.id),
                     toggle: d.children.isEmpty
                         ? nil : { withAnimation(.snappy(duration: 0.25)) { expanded.formSymmetricDifference([d.id]) } }
                 )
                 .id(row.issue.fields.summary)  // a new view after an edit, so the table measures the row again
                 .tag(row.target)
-                // The open issue stays in the accent colour while the preview has the focus, as in Notes and Mail;
-                // the table's own highlight, grey without focus, is off.
-                .foregroundStyle(selected ? AnyShapeStyle(.white) : AnyShapeStyle(.foreground))
-                .environment(\.backgroundProminence, selected ? .increased : .standard)
+                // The table's own highlight, grey without focus, is off: the rows paint theirs.
+                .foregroundStyle(emphasized ? AnyShapeStyle(.white) : AnyShapeStyle(.foreground))
+                .environment(\.backgroundProminence, emphasized ? .increased : .standard)
                 .listRowBackground(
-                    RoundedRectangle(cornerRadius: 6).fill(selected ? Color.accentColor : .clear).padding(
-                        .horizontal, 8
-                    ).background(NativeSelectionOff())
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(
+                            emphasized
+                                ? Color.accentColor
+                                : selected ? Color(nsColor: .unemphasizedSelectedContentBackgroundColor) : .clear
+                        )
+                        .padding(.horizontal, 8)
+                        .background(NativeSelectionOff())
                 )
                 .onAppear { if d.id == shown.last?.id { Task { await store.loadMore() } } }
                 // Drag a row into Slack, a browser or a note as its Jira link.
@@ -412,7 +432,7 @@ struct IssueListView: View {
                             SortMenuItems(sort: $filters.sort)
                         } label: {
                             HStack(spacing: 2) {
-                                Text("sorted by \(filters.sort.field.title)")
+                                Text("sorted by \(filters.sort.field.headerTitle)")
                                 Image(systemName: filters.sort.descending ? "arrow.down" : "arrow.up")
                                     .font(.caption2.weight(.bold))
                             }
@@ -699,6 +719,7 @@ struct IssueListView: View {
                     }
                 }
                 .padding(.horizontal, 10).padding(.vertical, 8)
+                .inactiveDim()
             }
         }
         .background(.bar)
@@ -773,12 +794,17 @@ struct SiteBadge: View {
         Text(name).font(.caption2.weight(.semibold)).foregroundStyle(tint).fixedSize()
             .padding(.horizontal, 5).padding(.vertical, 2)
             .background(tint.opacity(prominence == .increased ? 0.28 : 0.16), in: .rect(cornerRadius: 4))
+            .inactiveDim()
     }
 }
 
 struct IssueRow: View {
     let issue: Issue
     var site: (name: String, color: Color)?
+    /// On the summary line's trailing end, as Mail dates its rows: the date the list is sorted by.
+    var date: Date?
+    /// A due date is a calendar day; its tooltip shows no time.
+    var dayOnly = false
     /// 1 for a subtask drawn under its parent.
     var depth = 0
     /// Subtasks folded under this row; a chevron shows when there are any.
@@ -797,6 +823,7 @@ struct IssueRow: View {
                 .frame(width: 16, height: 16)
                 .padding(2).background(selected ? .white.opacity(0.9) : .clear, in: .rect(cornerRadius: 5)).padding(-2)
                 .padding(.top, 2)
+                .inactiveDim()
                 .help(issue.fields.issuetype.name)
             VStack(alignment: .leading, spacing: 5) {
                 if depth == 0, issue.fields.issuetype.isSubtask, let parent = issue.fields.parent {
@@ -808,8 +835,18 @@ struct IssueRow: View {
                     }
                     .font(.caption).foregroundStyle(dim).lineLimit(1)
                 }
-                Text(issue.fields.summary).lineLimit(2).strikethrough(issue.isDone).foregroundStyle(
-                    issue.isDone ? dim : selected ? .white : .primary)
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(issue.fields.summary).lineLimit(2).strikethrough(issue.isDone).foregroundStyle(
+                        issue.isDone ? dim : selected ? .white : .primary)
+                    Spacer(minLength: 0)
+                    if let date {
+                        Text(relativeDay(date)).font(.caption).foregroundStyle(dim).fixedSize()
+                            .help(
+                                dayOnly
+                                    ? date.formatted(date: .long, time: .omitted)
+                                    : date.formatted(date: .abbreviated, time: .shortened))
+                    }
+                }
                 HStack(spacing: 8) {
                     // Key and status never wrap or truncate; the count is the first to give, down to "1/3".
                     Text(issue.key).font(.caption.monospaced()).foregroundStyle(dim).fixedSize()
@@ -860,7 +897,7 @@ struct IssueMenu: View {
     let issue: Issue
     let state: AccountState
     /// Runs a write and refreshes whatever the owner shows.
-    var write: (@escaping () async throws -> Void) -> Void
+    var write: (@escaping @Sendable () async throws -> Void) -> Void
     @Environment(Session.self) private var session
     @Environment(\.openWindow) private var openWindow
 
