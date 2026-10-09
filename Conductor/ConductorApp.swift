@@ -123,10 +123,7 @@ struct RootView: View {
                 }
             } else if session.isSignedIn {
                 NavigationSplitView {
-                    SidebarView(
-                        selection: Binding(
-                            get: { session.preset(matching: filters)?.filters ?? filters },
-                            set: { if let f = $0 { filters = f } }))
+                    SidebarView(filters: $filters)
                 } content: {
                     IssueListView(filters: $filters, selection: $selection)
                         // No narrower than 420: below that keys wrap and pills clip. Half a 1100-wide window
@@ -135,7 +132,7 @@ struct RootView: View {
                 } detail: {
                     if let sel = selection {
                         // Nil-safe: SwiftUI reads the binding once more after Escape emptied the selection.
-                        IssueWindow(target: Binding($selection, or: sel), embedded: true)
+                        IssueWindow(target: Binding($selection, or: sel), embedded: true).equatable()
                     } else {
                         ContentUnavailableView("No Issue Selected", systemImage: "doc.text")
                             .frame(maxWidth: .infinity, maxHeight: .infinity).background(Backdrop())

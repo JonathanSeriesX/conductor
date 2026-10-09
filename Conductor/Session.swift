@@ -25,6 +25,8 @@ final class AccountState: Identifiable {
     /// First pages of lists by cache name ("list-<hash of JQL>"): the recent ones from disk at launch, then every
     /// one fetched, so a list opens with rows in its first frame instead of after a disk read.
     @ObservationIgnored var lists: [String: [Issue]] = [:]
+    /// Each board as it was last drawn, by project key, so a board window reopens without a disk read and decode.
+    @ObservationIgnored var boardSnapshots: [String: BoardStore.Snapshot] = [:]
     @ObservationIgnored private var linkTypesCache: [LinkType]?
     @ObservationIgnored private var sprintsByProject: [String: [Sprint]] = [:]
     /// Transitions per "project|type|status", so a row's context menu can offer them without a round trip.

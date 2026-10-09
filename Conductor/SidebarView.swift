@@ -269,7 +269,8 @@ struct SidebarView: View {
     @Environment(Session.self) private var session
     @Environment(\.openWindow) private var openWindow
     @Environment(\.appearsActive) private var active
-    @Binding var selection: ListFilters?
+    /// The list's filters. The row that lights up is the preset they came from, chips and sort aside.
+    @Binding var filters: ListFilters
     @State private var showAddAccount = false
     @State private var collapsed: Set<UUID> = []
     @State private var expandedAllProjects: Set<UUID> = []
@@ -280,7 +281,9 @@ struct SidebarView: View {
     @State private var deletingPreset: Preset?
 
     var body: some View {
-        List(selection: $selection) {
+        let selection = Binding<ListFilters?>(
+            get: { session.preset(matching: filters)?.filters ?? filters }, set: { if let f = $0 { filters = f } })
+        List(selection: selection) {
             if session.states.count > 1 {
                 Section("All Accounts") {
                     ForEach(session.presets(account: nil)) { presetRow($0, color: nil) }
@@ -351,7 +354,8 @@ struct SidebarView: View {
                         .help("Try to reconnect now. Conductor also retries on its own every 20 seconds.")
                     }
                 }
-                let warming = session.states.filter { $0.warmProgress != nil && $0.warmIsFirst }
+                // `warmIsFirst` first: reading `warmProgress` of a catch-up pass would redraw the sidebar on every tick.
+                let warming = session.states.filter { $0.warmIsFirst && $0.warmProgress != nil }
                 if !warming.isEmpty {
                     // One bar for every account: the first download of an account, or a catch-up after launch.
                     VStack(alignment: .leading, spacing: 4) {
@@ -492,9 +496,9 @@ struct SidebarView: View {
     }
 
     private func projectRow(_ p: Project, _ st: AccountState) -> some View {
-        var filters = ListFilters()
-        filters.account = st.id
-        filters.project = p.key
+        var row = ListFilters()
+        row.account = st.id
+        row.project = p.key
         return Label {
             Text(p.name)
         } icon: {
@@ -503,7 +507,7 @@ struct SidebarView: View {
                 .clipShape(.rect(cornerRadius: 4))
                 .grayscale(active ? 0 : 1).opacity(active ? 1 : 0.5)
         }
-        .tag(filters)
+        .tag(row)
         .onTapGesture(count: 2) { openWindow(id: "board", value: BoardTarget(accountID: st.id, projectKey: p.key)) }
         .contextMenu {
             Button("Open Board", systemImage: "rectangle.split.3x1") {
@@ -511,7 +515,7 @@ struct SidebarView: View {
             }
             Button("Open on Web", systemImage: "safari") { NSWorkspace.shared.open(st.client.boardURL(project: p.key)) }
             Button("New Issue in \(p.name)…", systemImage: "plus") {
-                selection = filters
+                filters = row
                 session.createIssueRequested = true
             }
         }

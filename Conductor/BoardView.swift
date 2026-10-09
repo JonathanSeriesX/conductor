@@ -36,6 +36,7 @@ final class BoardStore {
         let snap = Snapshot(
             boards: boards, board: board, config: config, sprints: sprints, sprint: sprint, quickFilters: quickFilters,
             issues: issues)
+        state.boardSnapshots[projectKey] = snap
         DiskCache.saveAsync(snap, account: state.account, name: "board-\(projectKey)")
     }
 
@@ -62,7 +63,9 @@ final class BoardStore {
     /// Last run's board, read on the spot rather than after a hop to another thread: a board window calls this
     /// as it appears, so its first frame has the columns and cards instead of a blank window.
     func restore(_ state: AccountState, project: String) {
-        guard issues.isEmpty, let snap: Snapshot = DiskCache.load(account: state.account, name: "board-\(project)")
+        guard issues.isEmpty,
+            let snap = state.boardSnapshots[project]
+                ?? DiskCache.load(Snapshot.self, account: state.account, name: "board-\(project)")
         else { return }
         apply(snap)
     }
@@ -81,6 +84,7 @@ final class BoardStore {
         self.state = state
         projectKey = project
         let client = state.client
+        if issues.isEmpty, let snap = state.boardSnapshots[project] { apply(snap) }
         if issues.isEmpty,
             let snap: Snapshot = await DiskCache.loadAsync(account: state.account, name: "board-\(project)")
         {

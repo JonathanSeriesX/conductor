@@ -301,16 +301,16 @@ struct WindowEventMonitor: NSViewRepresentable {
     }
 }
 
+/// The first table (a SwiftUI List) under a view, depth first.
+func firstTable(in v: NSView) -> NSTableView? {
+    if let t = v as? NSTableView { return t }
+    for s in v.subviews { if let t = firstTable(in: s) { return t } }
+    return nil
+}
+
 extension NSWindow {
     /// Puts the keyboard on the issue list (the window's table), or on nothing when there is none.
-    func focusList() {
-        func table(in v: NSView) -> NSTableView? {
-            if let t = v as? NSTableView { return t }
-            for s in v.subviews { if let t = table(in: s) { return t } }
-            return nil
-        }
-        makeFirstResponder(contentView.flatMap(table))
-    }
+    func focusList() { makeFirstResponder(contentView.flatMap(firstTable)) }
 }
 
 /// A closed popover leaves the keyboard on the window's first key view when it had a text field of its own: the
