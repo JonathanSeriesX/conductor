@@ -458,7 +458,11 @@ struct JiraClient: Sendable {
 
 // MARK: - Keychain
 
-enum Keychain {
+@MainActor enum Keychain {
+    /// The last read failed for a reason other than "no item": the data protection keychain is locked (-25308 until
+    /// the session's first unlock). The accounts are still in there; nothing may write until a read succeeds.
+    private(set) static var isUnavailable = false
+
     /// The data protection keychain grants access by entitlement (team + bundle id), so a rebuilt binary never
     /// raises the "wants to use your confidential information" dialog that the legacy keychain's per-binary ACL
     /// does. It needs a signing team; ad-hoc builds (CI releases) stay on the legacy keychain.
@@ -482,19 +486,27 @@ enum Keychain {
         q[kSecMatchLimit as String] = kSecMatchLimitOne
         var out: CFTypeRef?
         let status = SecItemCopyMatching(q as CFDictionary, &out)
+        isUnavailable = status != errSecSuccess && status != errSecItemNotFound
         guard status == errSecSuccess, let data = out as? Data else {
-            if status != errSecItemNotFound { NSLog("Keychain read failed: %d", status) }
+            if isUnavailable { NSLog("Keychain read failed: %d", status) }
             return []
         }
         return (try? JSONDecoder().decode([Account].self, from: data)) ?? []
     }
 
     static func save(_ accounts: [Account]) {
-        SecItemDelete(query as CFDictionary)
-        guard !accounts.isEmpty, let data = try? JSONEncoder().encode(accounts) else { return }
-        var q = query
-        q[kSecValueData as String] = data
-        let status = SecItemAdd(q as CFDictionary, nil)
+        guard !isUnavailable, let data = try? JSONEncoder().encode(accounts) else { return }
+        if accounts.isEmpty {
+            SecItemDelete(query as CFDictionary)
+            return
+        }
+        // Updated in place: a delete followed by a failed add (the keychain locked) left no accounts at all.
+        var status = SecItemUpdate(query as CFDictionary, [kSecValueData as String: data] as CFDictionary)
+        if status == errSecItemNotFound {
+            var q = query
+            q[kSecValueData as String] = data
+            status = SecItemAdd(q as CFDictionary, nil)
+        }
         if status != errSecSuccess { NSLog("Keychain write failed: %d", status) }
     }
 }
