@@ -188,7 +188,8 @@ final class IssueDetailStore {
             if !error.isCancelled { self.error = error.localizedDescription }
             return false
         }
-        await load(state, key: key, full: false)
+        // The page may show another issue by now: refreshing this one would put its body under that key.
+        if self.key == key { await load(state, key: key, full: false) }
         return true
     }
 }
@@ -280,9 +281,12 @@ struct IssueDetailView: View {
         .toolbar { toolbar }
         .focusedSceneValue(\.issueActions, actions)
         // A write to this issue in another window bumps its tick, so this page follows it.
-        .task(id: loadID) { if let jira, loadID != ownLoad { await store.load(jira, key: key) } }
+        .task(id: loadID) {
+            if let jira, store.key != key || loadID != ownLoad { await store.load(jira, key: key) }
+        }
         // The same view serves one issue after another (a fresh view would take the toolbar with it for a frame).
-        .onChange(of: target) {
+        .onChange(of: target) { old, _ in
+            commitSummary(of: old.key)
             summaryDraft = nil
             descriptionDraft = nil
             descriptionCaret = nil
@@ -342,7 +346,7 @@ struct IssueDetailView: View {
 
     /// "• M to add": the key the current scheme binds to `action`, worded by `phrase`, for a caption; nil when none.
     private func hint(_ action: IssueActions.Action, _ phrase: (String) -> String) -> String? {
-        ShortcutScheme.hint(for: action).map { "• " + phrase($0) }
+        Shortcuts.hint(for: action).map { "• " + phrase($0) }
     }
 
     /// Asks first, then runs the write. Jira has no undo for these.
@@ -453,11 +457,13 @@ struct IssueDetailView: View {
                     .contentShape(.rect)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel(Text(verbatim: "\(p.key) \(p.fields.summary)"))
                 .help("\(p.fields.summary)\n\(String(localized: "Open \(p.key); ⌘-click for a new window"))")
                 Image(systemName: "chevron.forward").font(.caption2.weight(.bold)).foregroundStyle(.tertiary)
             }
+            // Decorative: the Type field names the type, and in a toolbar the icon's label became the copy button's.
             RemoteImage(url: store.issue?.fields.issuetype.iconUrl, placeholder: "circle").frame(width: 14, height: 14)
-                .accessibilityLabel(store.issue?.fields.issuetype.name ?? String(localized: "Issue type"))
+                .accessibilityHidden(true)
             Button {
                 copyToPasteboard(key)
                 withAnimation(.easeOut(duration: 0.15)) { copied = true }
@@ -469,6 +475,7 @@ struct IssueDetailView: View {
                 Text(key).monospaced().contentShape(.rect)
             }
             .buttonStyle(.plain)
+            .accessibilityLabel("Copy \(key)")
             .help("Click to copy \(key)")
             // The tick hangs off the end so the key, and the toolbar around it, never shift.
             .overlay(alignment: .trailing) {
@@ -531,7 +538,7 @@ struct IssueDetailView: View {
             HStack(spacing: 6) {
                 Text("Description").font(.headline).foregroundStyle(.secondary)
                 if let h = hint(.editDescription, { String(localized: "\($0) to edit") }) {
-                    Text(h).font(.subheadline).foregroundStyle(.quaternary)
+                    Text(h).font(.subheadline).foregroundStyle(.secondary)
                 }
             }
             if descriptionDraft != nil {
@@ -1156,7 +1163,7 @@ struct IssueDetailView: View {
             }
             Divider()
             CommentComposer(
-                disabled: store.isWorking || editingComment != nil, focusRequest: commentRequest,
+                target: target, disabled: store.isWorking || editingComment != nil, focusRequest: commentRequest,
                 uploadImage: uploadPasted, focus: $commentFocused
             ) { doc in
                 await run { try await $0.addComment(key, body: doc) }.value
@@ -1318,6 +1325,7 @@ struct IssueDetailView: View {
     @discardableResult
     private func run(_ op: @escaping @Sendable (JiraClient) async throws -> Void) -> Task<Bool, Never> {
         guard let jira else { return Task { false } }
+        let key = key
         return Task {
             let ok = await store.perform(jira, key: key, op)
             if ok {
@@ -1376,11 +1384,29 @@ struct IssueDetailView: View {
         }
         summaryDraft = nil
         guard draft != store.issue?.fields.summary else { return }
+        let key = key
         Task {
             if !(await optimistic({ $0.summary = draft }) {
                 try await $0.editIssue(key, fields: ["summary": .string(draft)])
-            }.value) {
+            }.value), self.key == key {
                 summaryDraft = draft
+            }
+        }
+    }
+
+    /// Leaving for another issue commits an open summary edit, as Finder commits a rename and Jira a blurred field,
+    /// instead of dropping it. Empty or too long is dropped: there is no page left to complain on.
+    private func commitSummary(of key: String) {
+        guard let jira, let draft = summaryDraft?.trimmingCharacters(in: .whitespacesAndNewlines), !draft.isEmpty,
+            draft.count <= 255, draft != store.issue?.fields.summary
+        else { return }
+        Task {
+            do {
+                try await jira.client.editIssue(key, fields: ["summary": .string(draft)])
+                session.writeTicks[key, default: 0] += 1
+                session.listTick += 1
+            } catch {
+                if !error.isCancelled { store.error = error.localizedDescription }
             }
         }
     }
@@ -1566,6 +1592,10 @@ struct AttachmentTile: View {
 
 /// Owns the comment draft, so each keystroke re-evaluates this small view and not the whole issue page.
 struct CommentComposer: View {
+    /// Drafts by issue, so a switch to another issue (which rebuilds the page) and back loses nothing typed.
+    /// ponytail: memory only; quitting the app drops them. Persist on disk if that is ever reported.
+    @MainActor private static var drafts: [IssueTarget: (text: String, mentions: [String: String])] = [:]
+    let target: IssueTarget
     let disabled: Bool
     let focusRequest: Int
     let uploadImage: (Data, String) async throws -> URL
@@ -1587,6 +1617,10 @@ struct CommentComposer: View {
                     .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || disabled))
         )
         .onChange(of: focusRequest) { focus.wrappedValue = true }
+        // A cached issue swaps in without rebuilding the page, so the composer lives on: swap its draft by hand.
+        .onAppear { (text, mentions) = Self.drafts[target] ?? ("", [:]) }
+        .onChange(of: target) { _, new in (text, mentions) = Self.drafts[new] ?? ("", [:]) }
+        .onChange(of: text) { Self.drafts[target] = (text, mentions) }
     }
 
     private func post() {

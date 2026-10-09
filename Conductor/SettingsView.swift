@@ -16,8 +16,21 @@ struct SettingsView: View {
 private struct GeneralSettings: View {
     @AppStorage("defaultSource") private var defaultSource = "assigned"
     @AppStorage("hideDone") private var hideDone = true
-    @AppStorage("shortcutScheme") private var shortcutScheme = ShortcutScheme.jira.rawValue
     @Environment(Session.self) private var session
+    /// The app's own AppleLanguages override, as System Settings › Language & Region › Applications writes it;
+    /// empty follows the system. Read once: the picker, not the defaults, is the source while the pane is open.
+    @State private var language =
+        (UserDefaults.standard.persistentDomain(forName: Bundle.main.bundleIdentifier!)?["AppleLanguages"]
+        as? [String])?.first ?? ""
+    /// Every language the app ships, by its own name, English first.
+    private static let languages: [(code: String, name: String)] = {
+        let codes = Bundle.main.localizations.filter { $0 != "Base" }
+        let named = codes.map { code -> (code: String, name: String) in
+            let name = Locale(identifier: code).localizedString(forIdentifier: code) ?? code
+            return (code, name.localizedCapitalized)
+        }
+        return named.sorted { a, b in a.code == "en" || (b.code != "en" && a.name < b.name) }
+    }()
 
     var body: some View {
         Form {
@@ -32,13 +45,29 @@ private struct GeneralSettings: View {
                     Button("Show \(session.hiddenPresets.count) Hidden Sidebar Items") { session.showHiddenPresets() }
                 }
             }
-            Section("Keyboard") {
-                Picker("Shortcuts", selection: $shortcutScheme) {
-                    ForEach(ShortcutScheme.allCases, id: \.rawValue) { Text(verbatim: $0.title).tag($0.rawValue) }
+            Section("Language") {
+                Picker("Language", selection: $language) {
+                    Text("System Default").tag("")
+                    Divider()
+                    ForEach(Self.languages, id: \.code) { Text(verbatim: $0.name).tag($0.code) }
                 }
-                if let scheme = ShortcutScheme(rawValue: shortcutScheme), scheme != .mac {
-                    Text("Single keys while no text field has the focus: \(scheme.legend)")
-                        .font(.caption).foregroundStyle(.secondary)
+                .onChange(of: language) { _, code in
+                    if code.isEmpty {
+                        UserDefaults.standard.removeObject(forKey: "AppleLanguages")
+                    } else {
+                        UserDefaults.standard.set([code], forKey: "AppleLanguages")
+                    }
+                }
+                HStack {
+                    Text("Takes effect the next time Conductor opens.").font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Relaunch Now") {
+                        let config = NSWorkspace.OpenConfiguration()
+                        config.createsNewApplicationInstance = true
+                        NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: config) { _, _ in
+                            DispatchQueue.main.async { NSApp.terminate(nil) }
+                        }
+                    }
                 }
             }
         }

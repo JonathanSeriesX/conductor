@@ -57,78 +57,38 @@ extension FocusedValues {
     @Entry var listActions: ListActions?
 }
 
-/// Single-key shortcuts after Jira's or Linear's, on top of the ⌘ ones in the menus. They act while no text
-/// field has the focus, so typing is never hijacked; that is why they are not menu key equivalents.
-enum ShortcutScheme: String, CaseIterable {
-    case mac, jira, linear
+/// Jira's single keys on top of the ⌘ ones in the menus. They act while no text field has the focus, so typing
+/// is never hijacked; that is why they are not menu key equivalents.
+enum Shortcuts {
+    enum Key: Equatable { case newIssue, search, issue(IssueActions.Action) }
 
-    static var current: ShortcutScheme {
-        ShortcutScheme(rawValue: UserDefaults.standard.string(forKey: "shortcutScheme") ?? "") ?? .jira
-    }
+    /// ponytail: the keys Jira documents that map onto an action this app has; extend as needed.
+    static let keys: [(Character, Key)] = [
+        ("c", .newIssue), ("/", .search), ("e", .issue(.editSummary)), ("a", .issue(.assign)),
+        ("i", .issue(.assignToMe)), ("m", .issue(.comment)), ("w", .issue(.watch)), ("l", .issue(.editLabels)),
+    ]
 
-    var title: String {
-        switch self {
-        case .mac: "macOS"
-        case .jira: "Jira"
-        case .linear: "Linear"
-        }
-    }
-
-    enum Key: Equatable {
-        case newIssue, search, issue(IssueActions.Action)
-        var title: String {
-            switch self {
-            case .newIssue: String(localized: "New Issue…")
-            case .search: String(localized: "Find Issues")
-            case .issue(.editSummary): String(localized: "Edit Summary")
-            case .issue(.assign): String(localized: "Assign…")
-            case .issue(.assignToMe): String(localized: "Assign to Me")
-            case .issue(.comment): String(localized: "Add Comment")
-            case .issue(.watch): String(localized: "Watch This Issue")
-            case .issue(.changeStatus): String(localized: "Change Status")
-            case .issue(.changePriority): String(localized: "Priority")
-            case .issue(.editLabels): String(localized: "Labels")
-            case .issue(let a): String(describing: a)
-            }
-        }
-    }
-
-    /// ponytail: the keys each tool documents that map onto an action this app has; extend as needed.
-    var keys: [(Character, Key)] {
-        switch self {
-        case .mac: []
-        case .jira:
-            [
-                ("c", .newIssue), ("/", .search), ("e", .issue(.editSummary)), ("a", .issue(.assign)),
-                ("i", .issue(.assignToMe)), ("m", .issue(.comment)), ("w", .issue(.watch)), ("l", .issue(.editLabels)),
-            ]
-        case .linear:
-            [
-                ("c", .newIssue), ("/", .search), ("a", .issue(.assign)), ("i", .issue(.assignToMe)),
-                ("s", .issue(.changeStatus)), ("p", .issue(.changePriority)), ("l", .issue(.editLabels)),
-            ]
-        }
-    }
-
-    /// The Issue menu's ⌘ shortcuts (mirrors AppCommands), for captions when the scheme binds no single key.
+    /// The Issue menu's ⌘ shortcuts (mirrors AppCommands), for the captions.
     private static let menuKeys: [IssueActions.Action: String] = [
         .editSummary: "⌘E", .editDescription: "⌘⌥E", .comment: "⌘⇧M", .assign: "⌘⇧A", .assignToMe: "⌘⇧I",
         .attach: "⌘⌥A", .link: "⌘⇧L", .logWork: "⌘⌥L", .subtask: "⌘⇧N", .remind: "⌘⌥R",
     ]
 
-    /// "M" or "⌘⇧M": what a caption tells the user to press for `action`; nil when nothing is bound.
+    /// "M or ⌘⇧M", "W", "⌘⌥E": what a caption tells the user to press for `action`; nil when nothing is bound.
     static func hint(for action: IssueActions.Action) -> String? {
-        current.keys.first { $0.1 == .issue(action) }.map { String($0.0).uppercased() } ?? menuKeys[action]
+        let single = keys.first { $0.1 == .issue(action) }.map { String($0.0).uppercased() }
+        switch (single, menuKeys[action]) {
+        case (let s?, let m?): return String(localized: "\(s) or \(m)")
+        case (let s?, nil): return s
+        case (nil, let m): return m
+        }
     }
-
-    /// "c New Issue… · a Assign…", for Settings.
-    var legend: String { keys.map { "\($0.0) \($0.1.title)" }.joined(separator: " · ") }
 
     /// Runs the key's action and swallows the event; hands back anything else, and everything while text is edited.
     @MainActor static func handle(_ e: NSEvent, issue: IssueActions?, session: Session) -> NSEvent? {
         guard e.modifierFlags.intersection(.deviceIndependentFlagsMask).isEmpty,
             !(e.window?.firstResponder is NSTextView), let ch = e.charactersIgnoringModifiers?.first,
-            let key = current.keys.first(where: { $0.0 == ch })?.1
+            let key = keys.first(where: { $0.0 == ch })?.1
         else { return e }
         switch key {
         case .newIssue: session.createIssueRequested = true
@@ -310,7 +270,7 @@ struct IssueWindow: View {
                         e.window?.focusList()
                         return nil
                     }
-                    return ShortcutScheme.handle(e, issue: issueActions, session: session)
+                    return Shortcuts.handle(e, issue: issueActions, session: session)
                 }
         )
     }
