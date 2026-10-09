@@ -265,6 +265,9 @@ struct IssueWindow: View, Equatable {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(Backdrop())
+                // Signed out of every account: the window has nothing left to show. With other accounts still in,
+                // it stays, so a restored window is not lost behind a sign-out of one account.
+                .task { if !session.isSignedIn { dismiss() } }
             }
         }
         .writingToolsBehavior(.disabled)

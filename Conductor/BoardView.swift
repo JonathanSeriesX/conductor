@@ -314,6 +314,7 @@ struct BoardView: View {
                 } actions: {
                     Button("Close") { dismiss() }
                 }
+                .task { if !session.isSignedIn { dismiss() } }  // signed out of every account: nothing to show
             } else if store.isLoading || state == nil, store.issues.isEmpty {
                 ProgressView()
             } else if store.boards.isEmpty {
