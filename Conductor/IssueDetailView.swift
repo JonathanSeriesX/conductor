@@ -201,6 +201,8 @@ struct IssueDetailView: View {
     var back: (() -> Void)? = nil
     /// In the main window's preview column rather than a window of its own.
     var embedded = false
+    /// False while the window goes back along its trail: the title then slides the other way.
+    var forward = true
     @Environment(Session.self) private var session
     @Environment(\.jira) private var jira
     @Environment(\.openWindow) private var openWindow
@@ -409,7 +411,7 @@ struct IssueDetailView: View {
                     }
                 }
                 .padding(.horizontal, 20).padding(.bottom, 20)
-                .padding(.top, embedded ? 10 : 20)  // the crumb sits on the line of the list's chips
+                .padding(.top, embedded ? 10 : 17)  // the crumb sits on the line of the list's chips
             }
             // The toolbar has no background, so blur what scrolls under it instead of letting buttons sit on text.
             .softScrollEdge()
@@ -542,13 +544,7 @@ struct IssueDetailView: View {
     }
 
     private func descriptionCard(_ issue: Issue) -> some View {
-        GlassCard {
-            HStack(spacing: 6) {
-                Text("Description").font(.headline).foregroundStyle(.secondary)
-                if let h = hint(.editDescription, { String(localized: "\($0) to edit") }) {
-                    Text(h).font(.subheadline).foregroundStyle(.secondary)
-                }
-            }
+        GlassCard(title: "Description", hint: hint(.editDescription) { String(localized: "\($0) to edit") }) {
             if descriptionDraft != nil {
                 Composer(
                     text: Binding($descriptionDraft, or: ""), mentions: $descriptionMentions,
@@ -700,7 +696,7 @@ struct IssueDetailView: View {
     }
 
     @ViewBuilder private func assigneeField(_ issue: Issue) -> some View {
-        field("Assignee", hint: hint(.assign) { String(localized: "\($0) to assign") }) {
+        field("Assignee", hint: hint(.assign) { String(localized: "\($0) to assign to…") }) {
             Button {
                 showAssign = true
             } label: {
@@ -1210,7 +1206,22 @@ struct IssueDetailView: View {
         // The window's title is the crumb; the preview column draws it above the summary and keeps its actions
         // at the leading edge, with no spacer.
         if !embedded {
-            ToolbarItem(placement: .navigation) { crumb.padding(.leading, 4) }.glassTitle()
+            ToolbarItem(placement: .navigation) {
+                // A step along the trail pushes the title: the new key comes in from the side it came from and
+                // the old one leaves the other way, as a navigation bar's does.
+                ZStack(alignment: .leading) {
+                    crumb.id(key)
+                        .transition(
+                            .asymmetric(
+                                insertion: .move(edge: forward ? .trailing : .leading).combined(with: .opacity),
+                                removal: .move(edge: forward ? .leading : .trailing).combined(with: .opacity)))
+                }
+                .padding(.trailing, 28)  // room for the "copied" tick, which hangs off the key's end
+                .clipped()
+                .padding(.leading, 4)
+                .animation(.easeOut(duration: 0.25), value: key)
+            }
+            .glassTitle()
         }
         ToolbarItem {
             Button {

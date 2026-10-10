@@ -270,7 +270,7 @@ struct CreateIssueView: View {
                             Text("Default").tag(Optional<Priority>.none)
                             ForEach(m.priorities, id: \.id) { p in Text(p.name).tag(Optional(p)) }
                         }
-                        .labelsHidden().frame(maxWidth: 160)
+                        .labelsHidden().frame(maxWidth: 160, alignment: .leading)
                     }
                 }
                 if m.has("parent") || m.parentRequired {

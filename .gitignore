@@ -6,4 +6,4 @@ xcuserdata/
 build-tests/
 .dev.env
 .env
-qa-report*
+qa/

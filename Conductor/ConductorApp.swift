@@ -16,6 +16,7 @@ struct ConductorApp: App {
         UserDefaults.standard.set(true, forKey: "NSQuitAlwaysKeepsWindows")
         MenuClickThrough.install()
         PopoverFocusReturn.install()
+        Shortcuts.guardTyping()
     }
 
     var body: some Scene {
@@ -132,8 +133,12 @@ struct RootView: View {
     @Environment(\.openSettings) private var openSettings
     @AppStorage("defaultSource") private var defaultSource = "assigned"
     @SceneStorage("filters") private var storedFilters = ""
+    /// The previewed issue, so it comes back with the window after ⌘Q.
+    @SceneStorage("selection") private var storedSelection = ""
     @State private var filters = ListFilters()
     @State private var selection: IssueTarget?
+    /// The list toolbar's title item, measured: the list column is never narrower than its toolbar.
+    @State private var listTitleWidth: CGFloat = 0
     @FocusedValue(\.issueActions) private var issueActions
     @State private var restored = false
 
@@ -155,10 +160,14 @@ struct RootView: View {
                 NavigationSplitView {
                     SidebarView(filters: $filters)
                 } content: {
-                    IssueListView(filters: $filters, selection: $selection)
+                    IssueListView(filters: $filters, selection: $selection, titleWidth: $listTitleWidth)
                         // No narrower than 420: below that keys wrap and pills clip. Half a 1100-wide window
-                        // on a 13" MacBook Air, after the sidebar.
-                        .navigationSplitViewColumnWidth(min: 420, ideal: 460)
+                        // on a 13" MacBook Air, after the sidebar. And never narrower than its toolbar: the
+                        // title never truncates, so a long "sorted by" (German) would otherwise push the
+                        // toolbar past the column and its divider off the split. Only here: the modifier is
+                        // ignored deeper down.
+                        // ponytail: 150 stands for the three buttons and the toolbar's insets; remeasure if they change.
+                        .navigationSplitViewColumnWidth(min: max(420, listTitleWidth + 150), ideal: 460)
                 } detail: {
                     if let sel = selection {
                         // Nil-safe: SwiftUI reads the binding once more after Escape emptied the selection.
@@ -196,13 +205,22 @@ struct RootView: View {
         .onAppear { restoreOnce() }
         .onChange(of: session.states.count) { restoreOnce() }
         .onChange(of: session.isRestoring) { restoreOnce() }
-        .onChange(of: filters) { _, new in
-            selection = nil  // another list: the preview would otherwise show an issue that is not in it
+        .onChange(of: filters) { old, new in
+            // Another list: the preview would otherwise show an issue that is not in it. A search typed or cleared
+            // is not another list: the open issue stays, so Escape clears the search first and the selection next.
+            var sameButText = old
+            sameButText.text = new.text
+            if sameButText != new { selection = nil }
             storedFilters = (try? JSONEncoder().encode(new)).flatMap { String(data: $0, encoding: .utf8) } ?? ""
             session.lastFilters = new
         }
         // The window's stored list can arrive after its first appearance, behind the launch default; the writes
         // above always match `filters`, so a value that differs is the system's and wins.
+        .onChange(of: selection) { _, new in
+            storedSelection =
+                new.flatMap { try? JSONEncoder().encode($0) }.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+        }
+        .onChange(of: storedSelection) { restoreSelection() }  // the system's value can arrive late, as the list's
         .onChange(of: storedFilters) { _, new in
             if let data = new.data(using: .utf8), let f = try? JSONDecoder().decode(ListFilters.self, from: data),
                 f != filters, f.account.map({ session.state($0) != nil }) ?? true
@@ -261,9 +279,19 @@ struct RootView: View {
         // A popover's Escape arrives tagged with the main window on Tahoe; the popover (a child window) must close, not the preview.
         if NSApp.keyWindow !== e.window || e.window?.childWindows?.contains(where: \.isVisible) == true { return e }
         if let tv = e.window?.firstResponder as? NSTextView, let window = e.window {
-            // The search field clears itself; a comment box just gives the keyboard back to the list.
-            if tv.isFieldEditor, !tv.string.isEmpty { return e }
+            // A field editor here is the search field's (the summary editor returned above; popover fields come
+            // with their window): it no longer clears itself on Tahoe, so clear it. A comment box just gives the
+            // keyboard back to the list.
+            if tv.isFieldEditor {
+                guard tv.delegate is NSSearchField else { return e }
+                filters.text = ""
+            }
             window.focusList()
+            return nil
+        }
+        // The ladder: a search with text clears before the selection does, wherever the keyboard is.
+        if !filters.text.isEmpty {
+            filters.text = ""
             return nil
         }
         if let back = issueActions?.back { back() } else { selection = nil }
@@ -275,6 +303,16 @@ struct RootView: View {
         openWindow(id: "issue", value: target)
         session.pendingOpen = nil
         NSApp.activate()
+    }
+
+    /// Puts the previewed issue back, one turn of the run loop later: the list restored in the same pass clears
+    /// the selection (see onChange(of: filters)), and this has to land after that.
+    private func restoreSelection() {
+        guard let data = storedSelection.data(using: .utf8),
+            let t = try? JSONDecoder().decode(IssueTarget.self, from: data), t != selection,
+            session.state(t.accountID) != nil
+        else { return }
+        DispatchQueue.main.async { selection = t }
     }
 
     /// Puts the window back on the list it showed, once the accounts are known.
@@ -294,6 +332,7 @@ struct RootView: View {
             } else if let f = session.filters(for: Smart(rawValue: defaultSource) ?? .assigned) {
                 filters = f
             }
+            restoreSelection()
         }
         // Requests made before this window existed, e.g. from Spotlight or a notification after the window was closed.
         if let req = session.navigationRequest {

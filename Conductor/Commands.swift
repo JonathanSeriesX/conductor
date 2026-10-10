@@ -68,19 +68,27 @@ enum Shortcuts {
         ("i", .issue(.assignToMe)), ("m", .issue(.comment)), ("w", .issue(.watch)), ("l", .issue(.editLabels)),
     ]
 
-    /// The Issue menu's ⌘ shortcuts (mirrors AppCommands), for the captions.
+    /// The Issue menu's ⌘ shortcuts (mirrors AppCommands) for the actions Jira gives no single key.
     private static let menuKeys: [IssueActions.Action: String] = [
-        .editSummary: "⌘E", .editDescription: "⌘⌥E", .comment: "⌘⇧M", .assign: "⌘⇧A", .assignToMe: "⌘⇧I",
-        .attach: "⌘⌥A", .link: "⌘⇧L", .logWork: "⌘⌥L", .subtask: "⌘⇧N", .remind: "⌘⌥R",
+        .editDescription: "⌘⌥E", .attach: "⌘⌥A", .link: "⌘⇧L", .logWork: "⌘⌥L", .subtask: "⌘⇧N", .remind: "⌘⌥R",
     ]
 
-    /// "M or ⌘⇧M", "W", "⌘⌥E": what a caption tells the user to press for `action`; nil when nothing is bound.
+    /// "M", "W", "⌘⌥E": what a caption tells the user to press for `action`; nil when nothing is bound.
     static func hint(for action: IssueActions.Action) -> String? {
-        let single = keys.first { $0.1 == .issue(action) }.map { String($0.0).uppercased() }
-        switch (single, menuKeys[action]) {
-        case (let s?, let m?): return String(localized: "\(s) or \(m)")
-        case (let s?, nil): return s
-        case (nil, let m): return m
+        keys.first { $0.1 == .issue(action) }.map { String($0.0).uppercased() } ?? menuKeys[action]
+    }
+
+    /// The Issue menu lists the single keys as key equivalents, and a bare key equivalent would beat the text
+    /// view being typed into (in any window: a picker popover's search field too). Typed into a text view, the
+    /// key goes straight to it, past the menu.
+    @MainActor static func guardTyping() {
+        NSEvent.addLocalMonitorForEvents(matching: .keyDown) { e in
+            guard e.modifierFlags.intersection(.deviceIndependentFlagsMask).isEmpty,
+                let tv = e.window?.firstResponder as? NSTextView, let ch = e.charactersIgnoringModifiers?.first,
+                keys.contains(where: { $0.0 == ch })
+            else { return e }
+            tv.keyDown(with: e)
+            return nil
         }
     }
 
@@ -158,15 +166,16 @@ struct AppCommands: Commands {
             } else {
                 Button("Change Status") {}.disabled(true)
             }
-            item("Assign…", .assign, "a", [.command, .shift])
-            item("Assign to Me", .assignToMe, "i", [.command, .shift]).disabled(issue?.assignedToMe == true)
-            item(issue?.watching == true ? "Stop Watching This Issue" : "Watch This Issue", .watch)
+            item("Assign…", .assign, "a", [])
+            item("Assign to Me", .assignToMe, "i", []).disabled(issue?.assignedToMe == true)
+            item(issue?.watching == true ? "Stop Watching This Issue" : "Watch This Issue", .watch, "w", [])
             item("Remind Me…", .remind, "r", [.command, .option])
             Divider()
-            item("Edit Summary", .editSummary, "e").disabled(issue?.canEditSummary != true)
+            item("Edit Summary", .editSummary, "e", []).disabled(issue?.canEditSummary != true)
             item("Edit Description", .editDescription, "e", [.command, .option]).disabled(
                 issue?.canEditDescription != true)
-            item("Add Comment", .comment, "m", [.command, .shift])
+            item("Add Comment", .comment, "m", [])
+            item("Edit Labels…", .editLabels, "l", [])
             item("Attach Files…", .attach, "a", [.command, .option])
             item("Link Issue…", .link, "l", [.command, .shift])
             item("Log Work…", .logWork, "l", [.command, .option])
@@ -209,6 +218,7 @@ struct IssueWindow: View {
     /// Issues this window showed before the current one, so a jump to a subtask or link can come back.
     @State private var trail: [IssueTarget] = []
     @State private var navigating = false
+    @State private var forward = true
     @Environment(Session.self) private var session
     @Environment(\.dismiss) private var dismiss
     @FocusedValue(\.issueActions) private var issueActions
@@ -221,14 +231,16 @@ struct IssueWindow: View {
                     open: {
                         trail.append(target)
                         navigating = true
+                        forward = true
                         target = $0
                     },
                     back: trail.isEmpty
                         ? nil
                         : {
                             navigating = true
+                            forward = false
                             target = trail.removeLast()
-                        }, embedded: embedded
+                        }, embedded: embedded, forward: forward
                 )
                 .environment(\.jira, st)
             } else if session.isRestoring {

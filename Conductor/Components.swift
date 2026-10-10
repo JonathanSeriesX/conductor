@@ -328,6 +328,30 @@ struct WindowEventMonitor: NSViewRepresentable {
     }
 }
 
+/// Lays the window's toolbar out again whenever the column this sits in changes width while the window does
+/// not (a restored sidebar, a wider minimum): the toolbar otherwise keeps its old layout, and the column's title
+/// lands over the sidebar toggle. A window resize does the same, which is why the shift healed on a drag.
+struct ToolbarRelayout: NSViewRepresentable {
+    func makeNSView(context: Context) -> Watcher { Watcher() }
+    func updateNSView(_ view: Watcher, context: Context) {}
+
+    final class Watcher: NSView {
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+        override func setFrameSize(_ size: NSSize) {
+            let changed = size.width != frame.width
+            super.setFrameSize(size)
+            // The toolbar view lays its items out on its own layout pass; nothing public asks for one.
+            if changed,
+                let toolbar = window?.contentView?.superview?.subviews.first(where: {
+                    String(describing: type(of: $0)) == "NSToolbarView"
+                })
+            {
+                toolbar.needsLayout = true
+            }
+        }
+    }
+}
+
 /// The first table (a SwiftUI List) under a view, depth first.
 @MainActor func firstTable(in v: NSView) -> NSTableView? {
     if let t = v as? NSTableView { return t }
