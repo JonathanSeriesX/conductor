@@ -328,39 +328,66 @@ struct WindowEventMonitor: NSViewRepresentable {
     }
 }
 
-/// Lays the window's toolbar out again whenever the column this sits in changes width while the window does
-/// not (a restored sidebar, a wider minimum): the toolbar otherwise keeps its old layout, and the column's title
-/// lands over the sidebar toggle. A window resize does the same, which is why the shift healed on a drag.
+/// Lays the window's toolbar out before a frame is committed whenever a SwiftUI toolbar item has changed width (the
+/// list's count arriving, a longer title). AppKit's own pass cannot: an item that grows during the toolbar's layout
+/// re-requests one that is dropped when the pass returns, and a change SwiftUI applies inside the commit comes after
+/// every pass. Either way the frame would show the new content centred in the old item viewer, the list title over
+/// the sidebar toggle, until the next pass.
 struct ToolbarRelayout: NSViewRepresentable {
     func makeNSView(context: Context) -> Watcher { Watcher() }
     func updateNSView(_ view: Watcher, context: Context) {}
 
     final class Watcher: NSView {
-        override func hitTest(_ point: NSPoint) -> NSView? { nil }
-        override func setFrameSize(_ size: NSSize) {
-            let changed = size.width != frame.width
-            super.setFrameSize(size)
-            if changed { relayoutToolbar() }
-        }
+        nonisolated(unsafe) private var observer: CFRunLoopObserver?
+        private var widths: [ObjectIdentifier: CGFloat] = [:]
 
-        /// A window that has just opened (⌘0 after ⌘W) lays its toolbar out before the split view has placed the
-        /// tracking separators, and nothing lays it out again until the user does something. Once that first
-        /// pass is over, ask for one.
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
+            if let observer { CFRunLoopObserverInvalidate(observer) }
+            observer = nil
             guard window != nil else { return }
-            DispatchQueue.main.async { [weak self] in self?.relayoutToolbar() }
+            // CoreAnimation commits at order 2_000_000; this runs just before, after AppKit's and SwiftUI's passes.
+            observer = CFRunLoopObserverCreateWithHandler(
+                nil, CFRunLoopActivity.beforeWaiting.rawValue, true, 1_999_999
+            ) {
+                [weak self] _, _ in
+                MainActor.assumeIsolated { self?.relayoutIfChanged() }
+            }
+            CFRunLoopAddObserver(CFRunLoopGetMain(), observer, .commonModes)
+        }
+
+        deinit { if let observer { CFRunLoopObserverInvalidate(observer) } }
+
+        /// A window's first content is laid out and flushed inside the call that orders it on screen, with no
+        /// run-loop turn in between; this is the one hook after that layout and before the flush.
+        override func viewWillDraw() {
+            super.viewWillDraw()
+            relayoutIfChanged()
+        }
+
+        private func relayoutIfChanged() {
+            guard let toolbar = toolbarView, let items = window?.toolbar?.items else { return }
+            var changed = toolbar.needsLayout
+            for v in items.compactMap(\.view) where String(describing: type(of: v)).contains("Hosting") {
+                let width = v.fittingSize.width  // asking applies a pending SwiftUI change now, before the commit
+                if widths.updateValue(width, forKey: ObjectIdentifier(v)) != width { changed = true }
+            }
+            guard changed else { return }
+            toolbar.needsLayout = true
+            toolbar.layoutSubtreeIfNeeded()
         }
 
         /// The toolbar view lays its items out on its own layout pass; nothing public asks for one. It sits two
         /// levels under the titlebar container, so the search walks the whole titlebar tree.
-        private func relayoutToolbar() {
-            func toolbarView(_ v: NSView) -> NSView? {
+        private var toolbarView: NSView? {
+            func find(_ v: NSView) -> NSView? {
                 if String(describing: type(of: v)) == "NSToolbarView" { return v }
-                for s in v.subviews { if let t = toolbarView(s) { return t } }
+                for s in v.subviews { if let t = find(s) { return t } }
                 return nil
             }
-            window?.contentView?.superview.flatMap(toolbarView)?.needsLayout = true
+            return window?.contentView?.superview.flatMap(find)
         }
     }
 }
