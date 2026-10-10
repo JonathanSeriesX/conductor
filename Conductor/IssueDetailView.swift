@@ -117,6 +117,7 @@ final class IssueDetailStore {
             if let fresh = try? await t, self.key == key {
                 transitions = fresh
                 DiskCache.saveAsync(fresh, account: state.account, name: "transitions-\(key)")
+                if let i = issue { state.learnTransitions(fresh, of: i) }
             }
             if let fresh = try? await m, self.key == key {
                 editMeta = fresh
@@ -257,6 +258,7 @@ struct IssueDetailView: View {
     @State private var commentRequest = 0
     /// The load this page's own write would trigger: `perform` has refreshed the issue already.
     @State private var ownLoad = ""
+    @Environment(\.scenePhase) private var scenePhase
     private var loadID: String { "\(key)|\(session.reloadTick)|\(session.writeTicks[key] ?? 0)" }
 
     var body: some View {
@@ -281,6 +283,14 @@ struct IssueDetailView: View {
         // crashed applying saved customizations while it swapped with the empty column's in one pass.
         .toolbar { toolbar }
         .focusedSceneValue(\.issueActions, actions)
+        // SwiftUI keeps a closed issue window with its state and shows that same one for the next open of the issue,
+        // with no appear or task; its scene comes back from .background, and the page refreshes itself as Refresh
+        // Issue does. (An AppKit observer on the window for this kept about 8 MB per closed window alive.)
+        .onChange(of: scenePhase) { old, new in
+            if old == .background, new != .background, store.issue != nil, let jira {
+                Task { await store.load(jira, key: key) }
+            }
+        }
         // A write to this issue in another window bumps its tick, so this page follows it.
         .task(id: loadID) {
             if let jira, store.key != key || loadID != ownLoad { await store.load(jira, key: key) }

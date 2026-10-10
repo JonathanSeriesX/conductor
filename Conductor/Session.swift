@@ -68,6 +68,15 @@ final class AccountState: Identifiable {
         DiskCache.saveAsync(editMetaByWorkflow, account: account, name: "workflows-editmeta")
     }
 
+    /// What an issue page just fetched, kept for every issue sharing its workflow: a status added to the workflow
+    /// today reaches the rows' menus, which the warm pass alone would never re-read.
+    func learnTransitions(_ transitions: [Transition], of i: Issue) {
+        let k = Self.workflowKey(i)
+        guard transitionsByWorkflow[k] != transitions else { return }
+        transitionsByWorkflow[k] = transitions
+        DiskCache.saveAsync(transitionsByWorkflow, account: account, name: "workflows-transitions")
+    }
+
     // MARK: Warm pass
 
     /// Everything an issue page needs for what you are likely to open, fetched once and kept up to date:
