@@ -340,14 +340,23 @@ struct ToolbarRelayout: NSViewRepresentable {
         override func setFrameSize(_ size: NSSize) {
             let changed = size.width != frame.width
             super.setFrameSize(size)
-            // The toolbar view lays its items out on its own layout pass; nothing public asks for one.
-            if changed,
-                let toolbar = window?.contentView?.superview?.subviews.first(where: {
-                    String(describing: type(of: $0)) == "NSToolbarView"
-                })
-            {
-                toolbar.needsLayout = true
-            }
+            if changed { relayoutToolbar() }
+        }
+
+        /// A window that has just opened (⌘0 after ⌘W) lays its toolbar out before the split view has placed the
+        /// tracking separators, and nothing lays it out again until the user does something. Once that first
+        /// pass is over, ask for one.
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            guard window != nil else { return }
+            DispatchQueue.main.async { [weak self] in self?.relayoutToolbar() }
+        }
+
+        /// The toolbar view lays its items out on its own layout pass; nothing public asks for one.
+        private func relayoutToolbar() {
+            window?.contentView?.superview?.subviews.first {
+                String(describing: type(of: $0)) == "NSToolbarView"
+            }?.needsLayout = true
         }
     }
 }
