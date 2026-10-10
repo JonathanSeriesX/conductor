@@ -69,6 +69,31 @@ struct ADFNode: Codable, Hashable, Sendable {
 
     func attr(_ k: String) -> String? { attrs?[k]?.string }
 
+    /// Jira Server sends a description or comment as wiki-markup text, not a document; it reads as plain lines.
+    /// ponytail: the markup ({code}, *bold*, h2.) shows as typed; a wiki-markup parser would render it.
+    init(from decoder: Decoder) throws {
+        if let s = try? decoder.singleValueContainer().decode(String.self) {
+            self = .document(text: s)
+            return
+        }
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        type = try c.decode(String.self, forKey: .type)
+        version = try c.decodeIfPresent(Int.self, forKey: .version)
+        text = try c.decodeIfPresent(String.self, forKey: .text)
+        attrs = try c.decodeIfPresent([String: JSONValue].self, forKey: .attrs)
+        marks = try c.decodeIfPresent([ADFMark].self, forKey: .marks)
+        content = try c.decodeIfPresent([ADFNode].self, forKey: .content)
+    }
+
+    init(type: String, version: Int? = nil, text: String? = nil, attrs: [String: JSONValue]? = nil, marks: [ADFMark]? = nil, content: [ADFNode]? = nil) {
+        self.type = type
+        self.version = version
+        self.text = text
+        self.attrs = attrs
+        self.marks = marks
+        self.content = content
+    }
+
     /// Plain-text document from user input: one paragraph per line.
     static func document(text: String) -> ADFNode {
         let paragraphs = text.split(separator: "\n", omittingEmptySubsequences: false).map { line in

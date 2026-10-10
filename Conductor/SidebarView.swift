@@ -311,7 +311,7 @@ struct SidebarView: View {
                             newTitle = st.title
                             renaming = st
                         }
-                        Menu("Colour") {
+                        Menu("Colour", systemImage: "paintpalette") {
                             ForEach(Palette.names, id: \.self) { name in
                                 Toggle(
                                     isOn: Binding(get: { st.colorName == name }, set: { if $0 { st.setColor(name) } })
@@ -511,7 +511,9 @@ struct SidebarView: View {
             Button("Open Board", systemImage: "rectangle.split.3x1") {
                 openWindow(id: "board", value: BoardTarget(accountID: st.id, projectKey: p.key))
             }
-            Button("Open on Web", systemImage: "safari") { NSWorkspace.shared.open(st.client.boardURL(project: p.key)) }
+            Button("Open in Browser", systemImage: "safari") {
+                NSWorkspace.shared.open(st.client.boardURL(project: p.key))
+            }
             Button("New Issue in \(p.name)…", systemImage: "plus") {
                 filters = row
                 session.createIssueRequested = true

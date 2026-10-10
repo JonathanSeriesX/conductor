@@ -122,7 +122,9 @@ final class CreateIssueModel {
         if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, has("description") {
             f["description"] = try JSONValue(ADFNode.document(markdown: text, mentions: mentions))
         }
-        if let a = assignee, has("assignee") { f["assignee"] = .object(["accountId": .string(a.accountId)]) }
+        if let a = assignee, has("assignee") {
+            f["assignee"] = .object([state?.account.isServer == true ? "name" : "accountId": .string(a.accountId)])
+        }
         if let p = priority, has("priority") { f["priority"] = .object(["id": .string(p.id)]) }
         if !labels.isEmpty, has("labels") { f["labels"] = .array(labels.map(JSONValue.string)) }
         let parent = parentKey.trimmingCharacters(in: .whitespaces).uppercased()

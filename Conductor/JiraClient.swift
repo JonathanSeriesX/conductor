@@ -22,7 +22,14 @@ struct Account: Codable, Sendable, Equatable, Identifiable {
 
     var label: String { "\(site.host() ?? "") (\(email))" }
 
-    /// Accepts "team", "team.atlassian.net", or a full URL.
+    /// Jira Server / Data Center: any host Atlassian does not run. It speaks REST v2 (wiki-markup text where Cloud
+    /// has ADF, usernames where Cloud has account ids) and signs in with a personal access token as a bearer.
+    var isServer: Bool {
+        let host = site.host() ?? ""
+        return !["atlassian.net", "jira.com", "jira-dev.com"].contains { host.hasSuffix($0) }
+    }
+
+    /// Accepts "team", "team.atlassian.net", or a full URL; a Server URL keeps its context path ("/jira").
     static func normalizeSite(_ raw: String) -> URL? {
         var s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         if s.isEmpty { return nil }
@@ -30,8 +37,14 @@ struct Account: Codable, Sendable, Equatable, Identifiable {
         guard var comps = URLComponents(string: s), var host = comps.host, !host.isEmpty else { return nil }
         if !host.contains(".") { host += ".atlassian.net" }
         comps.host = host
-        comps.path = ""
+        // A pasted issue or board link: the site is what comes before Jira's own paths.
+        var path = comps.path
+        for marker in ["/browse/", "/secure/", "/projects/", "/issues/", "/jira/software/", "/plugins/", "/rest/"] {
+            if let r = path.range(of: marker) { path = String(path[..<r.lowerBound]) }
+        }
+        comps.path = path.hasSuffix("/") ? String(path.dropLast()) : path
         comps.query = nil
+        comps.fragment = nil
         return comps.url
     }
 }
@@ -64,10 +77,30 @@ struct JiraClient: Sendable {
     /// Every numeric field named like story points; which one a project uses shows up in its editmeta.
     var pointsFields: [String] = []
 
-    private var api: URL { account.site.appending(path: "rest/api/3") }
+    private var server: Bool { account.isServer }
+    private var api: URL { account.site.appending(path: server ? "rest/api/2" : "rest/api/3") }
     private var agile: URL { account.site.appending(path: "rest/agile/1.0") }
     private var authHeader: String {
-        "Basic " + Data("\(account.email):\(account.token)".utf8).base64EncodedString()
+        server
+            ? "Bearer " + account.token
+            : "Basic " + Data("\(account.email):\(account.token)".utf8).base64EncodedString()
+    }
+    /// Server names people by username in queries and payloads where Cloud takes an account id.
+    private var userKey: String { server ? "username" : "accountId" }
+    /// Server has no ADF: a description or comment goes as wiki-markup text, which `markdown` approximates.
+    /// ponytail: Markdown and wiki markup agree on plain text and lists; headings and bold differ.
+    private func text(_ fields: [String: JSONValue]) -> [String: JSONValue] {
+        guard server, let d = fields["description"], d.object != nil, let data = try? JSONEncoder().encode(d),
+            let doc = try? JSONDecoder().decode(ADFNode.self, from: data)
+        else { return fields }
+        var f = fields
+        var mentions: [String: String] = [:]
+        f["description"] = .string(doc.markdown(mentions: &mentions))
+        return f
+    }
+    private func text(_ body: ADFNode) -> JSONValue {
+        var mentions: [String: String] = [:]
+        return server ? .string(body.markdown(mentions: &mentions)) : (try? JSONValue(body)) ?? .null
     }
 
     /// What a list row carries: everything the issue page's right column shows, so a page opened from a row is
@@ -172,6 +205,7 @@ struct JiraClient: Sendable {
     }
 
     func projects() async throws -> [Project] {
+        if server { return try await get("project") }  // the whole list at once; no paging and no favourites
         var all: [Project] = []
         while true {
             let page: ProjectPage = try await get(
@@ -186,16 +220,48 @@ struct JiraClient: Sendable {
 
     /// How many issues a query matches, give or take; enough for a progress bar.
     func approximateCount(jql: String) async throws -> Int {
+        if server {
+            let page: SearchPage = try await get("search", query: ["jql": jql, "maxResults": "0"])
+            return page.total ?? 0
+        }
         struct Body: Encodable { let jql: String }
         struct Count: Decodable { let count: Int }
         let c: Count = try await send("search/approximate-count", method: "POST", body: Body(jql: jql))
         return c.count
     }
 
+    /// Server pages by offset; its `nextPageToken` is the next offset, so callers page the same way.
     func search(jql: String, nextPageToken: String? = nil, fields: String? = nil) async throws -> SearchPage {
         var q = ["jql": jql, "maxResults": "50", "fields": fields ?? listFields]
+        if server {
+            let start = Int(nextPageToken ?? "") ?? 0
+            q["startAt"] = "\(start)"
+            let page: SearchPage = try await get("search", query: q)
+            let end = start + page.issues.count
+            let more = end < (page.total ?? 0) && !page.issues.isEmpty
+            return SearchPage(issues: page.issues, nextPageToken: more ? "\(end)" : nil, isLast: !more, total: page.total)
+        }
         if let nextPageToken { q["nextPageToken"] = nextPageToken }
         return try await get("search/jql", query: q)
+    }
+
+    /// Every change on the issue's History tab, newest first.
+    func changelog(_ key: String) async throws -> [ChangeGroup] {
+        if server {
+            struct R: Decodable {
+                struct C: Decodable { let histories: [ChangeGroup] }
+                let changelog: C
+            }
+            let r: R = try await get("issue/\(key)", query: ["fields": "summary", "expand": "changelog"])
+            return r.changelog.histories.reversed()
+        }
+        var all: [ChangeGroup] = []
+        while true {
+            let page: ChangelogPage = try await get(
+                "issue/\(key)/changelog", query: ["maxResults": "100", "startAt": "\(all.count)"])
+            all += page.values
+            if page.isLast != false || page.values.isEmpty { return all.reversed() }
+        }
     }
 
     func issue(_ key: String) async throws -> Issue {
@@ -216,28 +282,31 @@ struct JiraClient: Sendable {
     }
 
     func assignableUsers(_ key: String, query: String) async throws -> [JiraUser] {
-        try await get("user/assignable/search", query: ["issueKey": key, "query": query, "maxResults": "20"])
+        try await get(
+            "user/assignable/search", query: ["issueKey": key, server ? "username" : "query": query, "maxResults": "20"])
     }
 
     func assign(_ key: String, to accountId: String?) async throws {
         struct Body: Encodable {
             let accountId: String?
+            let key: String
             func encode(to e: Encoder) throws {
                 var c = e.container(keyedBy: AnyKey.self)
-                try c.encode(accountId, forKey: AnyKey("accountId"))
+                try c.encode(accountId, forKey: AnyKey(key))
             }
         }
-        _ = try await request("issue/\(key)/assignee", method: "PUT", body: Body(accountId: accountId))
+        _ = try await request(
+            "issue/\(key)/assignee", method: "PUT", body: Body(accountId: accountId, key: server ? "name" : "accountId"))
     }
 
     func addComment(_ key: String, body: ADFNode) async throws {
-        struct Body: Encodable { let body: ADFNode }
-        _ = try await request("issue/\(key)/comment", method: "POST", body: Body(body: body))
+        struct Body: Encodable { let body: JSONValue }
+        _ = try await request("issue/\(key)/comment", method: "POST", body: Body(body: text(body)))
     }
 
     func updateComment(_ key: String, id: String, body: ADFNode) async throws {
-        struct Body: Encodable { let body: ADFNode }
-        _ = try await request("issue/\(key)/comment/\(id)", method: "PUT", body: Body(body: body))
+        struct Body: Encodable { let body: JSONValue }
+        _ = try await request("issue/\(key)/comment/\(id)", method: "PUT", body: Body(body: text(body)))
     }
 
     func deleteComment(_ key: String, id: String) async throws {
@@ -246,11 +315,13 @@ struct JiraClient: Sendable {
 
     /// People search for @mentions; falls back to assignable users when the site hides the directory.
     func users(matching query: String) async throws -> [JiraUser] {
-        try await get("user/search", query: ["query": query, "maxResults": "8"])
+        try await get("user/search", query: [server ? "username" : "query": query, "maxResults": "8"])
     }
 
     func assignableUsers(project: String, query: String) async throws -> [JiraUser] {
-        try await get("user/assignable/search", query: ["project": project, "query": query, "maxResults": "20"])
+        try await get(
+            "user/assignable/search", query: ["project": project, server ? "username" : "query": query, "maxResults": "20"]
+        )
     }
 
     // MARK: Create & edit
@@ -268,14 +339,14 @@ struct JiraClient: Sendable {
 
     func createIssue(fields: [String: JSONValue]) async throws -> CreatedIssue {
         struct Body: Encodable { let fields: [String: JSONValue] }
-        return try await send("issue", method: "POST", body: Body(fields: fields))
+        return try await send("issue", method: "POST", body: Body(fields: text(fields)))
     }
 
     func editMeta(_ key: String) async throws -> EditMeta { try await get("issue/\(key)/editmeta") }
 
     func editIssue(_ key: String, fields: [String: JSONValue]) async throws {
         struct Body: Encodable { let fields: [String: JSONValue] }
-        _ = try await request("issue/\(key)", method: "PUT", body: Body(fields: fields))
+        _ = try await request("issue/\(key)", method: "PUT", body: Body(fields: text(fields)))
     }
 
     /// Every label on the site, for suggestions while typing one.
@@ -367,7 +438,7 @@ struct JiraClient: Sendable {
     func addWorklog(_ key: String, seconds: Int, comment: ADFNode?, started: Date, adjustsEstimate: Bool) async throws {
         struct Body: Encodable {
             let timeSpentSeconds: Int
-            let comment: ADFNode?
+            let comment: JSONValue?
             let started: String
         }
         let f = DateFormatter()
@@ -375,7 +446,7 @@ struct JiraClient: Sendable {
         f.dateFormat = "yyyy-MM-dd'T'HH:mm:ss.SSSZ"
         _ = try await request(
             "issue/\(key)/worklog", query: ["adjustEstimate": adjustsEstimate ? "auto" : "leave"], method: "POST",
-            body: Body(timeSpentSeconds: seconds, comment: comment, started: f.string(from: started)))
+            body: Body(timeSpentSeconds: seconds, comment: comment.map(text), started: f.string(from: started)))
     }
 
     func deleteWorklog(_ key: String, id: String) async throws {
@@ -396,7 +467,7 @@ struct JiraClient: Sendable {
             // The body is the bare account id as a JSON string, not an object; Jira answers 400 to `{"accountId": …}`.
             _ = try await request("issue/\(key)/watchers", method: "POST", body: accountId)
         } else {
-            _ = try await request("issue/\(key)/watchers", query: ["accountId": accountId], method: "DELETE")
+            _ = try await request("issue/\(key)/watchers", query: [userKey: accountId], method: "DELETE")
         }
     }
 
@@ -449,10 +520,6 @@ struct JiraClient: Sendable {
         return account.site.appending(path: "secure/RapidBoard.jspa").appending(queryItems: [
             URLQueryItem(name: "rapidView", value: String(board))
         ])
-    }
-    /// `[ES-123: summary](https://site/browse/ES-123)`, for pasting into Slack, Linear or Notion.
-    func markdownLink(_ key: String, summary: String) -> String {
-        "[\(key): \(summary)](\(browseURL(key).absoluteString))"
     }
 }
 

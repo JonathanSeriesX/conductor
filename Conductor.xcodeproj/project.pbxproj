@@ -18,6 +18,7 @@
 		9E2F7A3A2999B0465B02227D /* Composer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 64A370ABEDA85F1D80C87CC1 /* Composer.swift */; };
 		AFC00526AEA862DE19850C17 /* Drafts.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1FCBD6D31DF3FEF97321BAFA /* Drafts.swift */; };
 		EB1CF19AE939CB90031193CF /* Bin.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4AD5E11CBAABB9F49A95606A /* Bin.swift */; };
+		7A1C0F2E5D3B4A6C9E8F0D1A /* History.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A1C0F2E5D3B4A6C9E8F0D1B /* History.swift */; };
 		AB5DA4824EB12873EBFCFF88 /* CreateIssueView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7F99CD4B3FFF216DCD114CA3 /* CreateIssueView.swift */; };
 		BA0EE1C8E62951D2F6F2888A /* SidebarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C7C95BB3217B54AB8E5C42D /* SidebarView.swift */; };
 		BB6870EF82D39B976CC71004 /* Session.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F50480EA57B3B44DC187F40 /* Session.swift */; };
@@ -57,6 +58,7 @@
 		64A370ABEDA85F1D80C87CC1 /* Composer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Composer.swift; sourceTree = "<group>"; };
 		1FCBD6D31DF3FEF97321BAFA /* Drafts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Drafts.swift; sourceTree = "<group>"; };
 		4AD5E11CBAABB9F49A95606A /* Bin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Bin.swift; sourceTree = "<group>"; };
+		7A1C0F2E5D3B4A6C9E8F0D1B /* History.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = History.swift; sourceTree = "<group>"; };
 		67F97E045D86B66441506677 /* JiraClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JiraClient.swift; sourceTree = "<group>"; };
 		6CF4059610D4F1DF83709373 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		7C57F3235ED75AE74B3CB3F6 /* ConductorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConductorTests.swift; sourceTree = "<group>"; };
@@ -98,6 +100,7 @@
 				64A370ABEDA85F1D80C87CC1 /* Composer.swift */,
 				1FCBD6D31DF3FEF97321BAFA /* Drafts.swift */,
 				4AD5E11CBAABB9F49A95606A /* Bin.swift */,
+				7A1C0F2E5D3B4A6C9E8F0D1B /* History.swift */,
 				31CFF25D2D75668F493102AB /* Conductor.entitlements */,
 				50FFC2675F34627ECB4EF79F /* ConductorApp.swift */,
 				7F99CD4B3FFF216DCD114CA3 /* CreateIssueView.swift */,
@@ -250,6 +253,7 @@
 				9E2F7A3A2999B0465B02227D /* Composer.swift in Sources */,
 				AFC00526AEA862DE19850C17 /* Drafts.swift in Sources */,
 				EB1CF19AE939CB90031193CF /* Bin.swift in Sources */,
+				7A1C0F2E5D3B4A6C9E8F0D1A /* History.swift in Sources */,
 				19AE737E4EC1DE2A22F42975 /* ConductorApp.swift in Sources */,
 				AB5DA4824EB12873EBFCFF88 /* CreateIssueView.swift in Sources */,
 				F30762FB07FD7CD6B4C8E30B /* IssueDetailView.swift in Sources */,

@@ -12,8 +12,9 @@ struct LoginView: View {
     @State private var error: String?
 
     @State private var busy = false
+    private var server: Bool { Account.normalizeSite(site).map { Account(site: $0, email: "", token: "").isServer } ?? false }
     private var canSubmit: Bool {
-        Account.normalizeSite(site) != nil && email.contains("@") && !token.isEmpty && !busy
+        Account.normalizeSite(site) != nil && (server || email.contains("@")) && !token.isEmpty && !busy
     }
 
     var body: some View {
@@ -28,12 +29,22 @@ struct LoginView: View {
                 .foregroundStyle(
                     .linearGradient(colors: [.indigo, .cyan], startPoint: .topLeading, endPoint: .bottomTrailing))
             Text(isSheet ? "Add Account" : "Conductor").font(.largeTitle.weight(.semibold))
-            Text("Sign in to Jira Cloud with an API token.").foregroundStyle(.secondary)
+            Text(
+                server
+                    ? "Sign in to Jira Server or Data Center with a personal access token."
+                    : "Sign in to Jira Cloud with an API token."
+            )
+            .foregroundStyle(.secondary).multilineTextAlignment(.center)
 
             VStack(spacing: 10) {
                 TextField("Site", text: $site, prompt: Text("yourteam.atlassian.net"))
-                TextField("Email", text: $email, prompt: Text(verbatim: "you@company.com"))
-                SecureField("API token", text: $token, prompt: Text("API token"))
+                // A personal access token names its user itself; the username only labels the account here.
+                TextField(
+                    server ? "Username" : "Email", text: $email,
+                    prompt: Text(verbatim: server ? "jsmith" : "you@company.com"))
+                SecureField(
+                    server ? "Personal access token" : "API token", text: $token,
+                    prompt: Text(server ? "Personal access token" : "API token"))
             }
             .textFieldStyle(.roundedBorder)
             .autocorrectionDisabled()
@@ -60,11 +71,23 @@ struct LoginView: View {
                 .keyboardShortcut(.defaultAction)
             }
 
-            Link(
-                "Create an API token at id.atlassian.com",
-                destination: URL(string: "https://id.atlassian.com/manage-profile/security/api-tokens")!
-            )
-            .font(.footnote)
+            if server, let url = Account.normalizeSite(site) {
+                Link(
+                    "Create a personal access token in your Jira profile",
+                    destination: url.appending(path: "secure/ViewProfile.jspa").appending(queryItems: [
+                        URLQueryItem(
+                            name: "selectedTab",
+                            value: "com.atlassian.pats.pats-plugin:jira-user-personal-access-tokens")
+                    ])
+                )
+                .font(.footnote)
+            } else {
+                Link(
+                    "Create an API token at id.atlassian.com",
+                    destination: URL(string: "https://id.atlassian.com/manage-profile/security/api-tokens")!
+                )
+                .font(.footnote)
+            }
         }
         .padding(32)
         .frame(width: 400)

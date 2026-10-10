@@ -33,6 +33,7 @@ struct Composer: View {
         VStack(alignment: .leading, spacing: 6) {
             if preview {
                 ADFView(node: .document(markdown: text, mentions: mentions))
+                    .background(ReaderMenu { CopySelection() })
                     .frame(maxWidth: .infinity, minHeight: minHeight, alignment: .topLeading)
                     .padding(10)
                     .background(.quaternary.opacity(0.2), in: .rect(cornerRadius: 10))

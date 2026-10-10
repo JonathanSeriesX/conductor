@@ -547,7 +547,7 @@ struct IssueDetailView: View {
                         summaryDraft = issue.fields.summary
                     }
                     .contextMenu {
-                        if let jira { IssueMenu(issue: issue, state: jira) { op in run { _ in try await op() } } }
+                        if let jira { IssueMenu(issues: [issue], state: jira) { op in run { _ in try await op() } } }
                     }
             }
         }
@@ -581,6 +581,15 @@ struct IssueDetailView: View {
                 ADFView(node: d)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .contentShape(.rect)
+                    // A reader's menu: the selection, then the issue, as on the title.
+                    .background(
+                        ReaderMenu {
+                            CopySelection()
+                            Divider()
+                            if let jira {
+                                IssueMenu(issues: [issue], state: jira) { op in run { _ in try await op() } }
+                            }
+                        })
                     // A link click runs through openURL first; the tap that follows must not open the editor.
                     .environment(
                         \.openURL,
@@ -633,6 +642,15 @@ struct IssueDetailView: View {
                     }
                 }
             }
+        }
+        // The History tab, in a window of its own; grey and small, as the bin icons are.
+        .overlay(alignment: .topTrailing) {
+            Button {
+                perform(.history)
+            } label: {
+                Label("Activity History", systemImage: "clock.arrow.circlepath").labelStyle(.iconOnly)
+            }
+            .buttonStyle(.plain).foregroundStyle(.tertiary).help("Activity history (⌘⌥H)").padding(18)
         }
     }
 
@@ -823,7 +841,7 @@ struct IssueDetailView: View {
         if store.canEdit(jira?.client.sprintField), !store.sprints.isEmpty {
             field("Sprint") {
                 Menu {
-                    Button("No sprint") { setSprint(nil) }
+                    Button("No Sprint") { setSprint(nil) }
                     ForEach(store.sprints) { s in
                         Button {
                             setSprint(s.id)
@@ -923,7 +941,7 @@ struct IssueDetailView: View {
                 }
                 .buttonStyle(.plain)
                 .editable()
-                .help("Who is watching; right-click to watch or stop")
+                .help("Who is watching; right-click to watch or unwatch")
                 .contextMenu { watchToggle(w) }
                 .popover(isPresented: $showWatchers, arrowEdge: .leading) {
                     WatchersView(key: key) { watchToggle(w) }
@@ -938,7 +956,7 @@ struct IssueDetailView: View {
 
     private func watchToggle(_ w: Watches) -> some View {
         Button(
-            w.isWatching ? "Stop Watching This Issue" : "Watch This Issue",
+            w.isWatching ? "Unwatch" : "Watch",
             systemImage: w.isWatching ? "eye.slash" : "eye"
         ) {
             perform(.watch)
@@ -1158,13 +1176,7 @@ struct IssueDetailView: View {
                                     Label("Edit", systemImage: "pencil").labelStyle(.iconOnly)
                                 }
                                 .buttonStyle(.plain).foregroundStyle(.tertiary).help("Edit comment")
-                                DeleteButton(help: "Delete comment") {
-                                    let account = target.accountID
-                                    run {
-                                        try await $0.deleteComment(key, id: c.id)
-                                        await Bin.shared.put(.comment(c.body), account: account, key: key)
-                                    }
-                                }
+                                DeleteButton(help: "Delete comment") { deleteComment(c) }
                             }
                         }
                         if editingCommentID == c.id {
@@ -1187,6 +1199,17 @@ struct IssueDetailView: View {
                             .focusSoon($editCommentFocused)
                         } else {
                             ADFView(node: c.body)
+                                .background(
+                                    ReaderMenu {
+                                        CopySelection()
+                                        if c.author?.accountId == jira?.me?.accountId {
+                                            Divider()
+                                            Button("Edit Comment", systemImage: "pencil") { beginCommentEdit(c) }
+                                            Button("Delete Comment", systemImage: "trash", role: .destructive) {
+                                                deleteComment(c)
+                                            }
+                                        }
+                                    })
                         }
                     }
                 }
@@ -1335,7 +1358,6 @@ struct IssueDetailView: View {
         case .openInWindow: openWindow(id: "issue", value: target)
         case .copyLink: copyToPasteboard(jira.client.browseURL(key).absoluteString)
         case .copyKey: copyToPasteboard(key)
-        case .copyMarkdown: copyToPasteboard(jira.client.markdownLink(key, summary: summary))
         case .assign: showAssign = true
         case .assignToMe:
             let me = jira.me?.accountId
@@ -1363,6 +1385,7 @@ struct IssueDetailView: View {
                 value: CreateRequest(
                     accountID: target.accountID, projectKey: store.issue?.fields.project?.key, parentKey: key))
         case .refresh: Task { await store.load(jira, key: key) }
+        case .history: openWindow(id: "history", value: target)
         }
     }
 
@@ -1520,6 +1543,15 @@ struct IssueDetailView: View {
     }
 
     private func cancelCommentEdit() { editingCommentID = nil }
+
+    /// Deletes at once; the comment lands in the Bin.
+    private func deleteComment(_ c: Comment) {
+        let account = target.accountID
+        run {
+            try await $0.deleteComment(key, id: c.id)
+            await Bin.shared.put(.comment(c.body), account: account, key: key)
+        }
+    }
 
     private func saveCommentEdit(_ c: Comment) {
         editingCommentID = nil

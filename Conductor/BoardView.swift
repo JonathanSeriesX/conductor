@@ -141,7 +141,9 @@ final class BoardStore {
             }
             guard gen == generation else { break }
             all += page.issues
-            issues = all
+            // Cards land page by page only while the board is empty; a refresh behind cards already on screen
+            // would otherwise shrink the board to its first page and grow it back.
+            if issues.isEmpty { issues = all }
             if page.issues.isEmpty || all.count >= page.total { break }
             if all.count >= 2000 {
                 truncated = true
@@ -153,6 +155,17 @@ final class BoardStore {
             saveSnapshot()
             if let state { IssueListStore.prefetchDetails(all.map { ListRow(issue: $0, state: state) }, limit: 200) }
         }
+    }
+
+    /// Refetches the cards a write touched, in place; the rest of the board stays exactly where it was.
+    func refresh(_ keys: [String], client: JiraClient) async {
+        guard !keys.isEmpty else { return }
+        do {
+            // ponytail: one page of 50; a selection larger than that refreshes its first 50 cards.
+            let fresh = try await client.search(jql: "key in (\(keys.joined(separator: ","))) ").issues
+            for f in fresh { if let i = issues.firstIndex(where: { $0.key == f.key }) { issues[i] = f } }
+            saveSnapshot()
+        } catch { if !error.isOffline, !error.isCancelled { self.error = error.localizedDescription } }
     }
 
     func toggle(_ filter: QuickFilter, client: JiraClient) async {
@@ -253,8 +266,10 @@ struct BoardView: View {
     @State private var store = BoardStore()
     @AppStorage("boardSwimlanes") private var swimlanes = Swimlanes.none
     @Environment(\.openWindow) private var openWindow
-    /// The card a click or the arrows picked; ↩ opens it.
-    @State private var selection: String?
+    /// The cards picked with clicks (⌘ adds one, ⇧ a run down the column) or the arrows; ↩ opens them.
+    @State private var selection: Set<String> = []
+    /// The card the last plain click or arrow landed on: where ⇧ runs from and the arrows move from.
+    @State private var anchor: String?
     @FocusState private var focused: Bool
     private var projectKey: String { target.projectKey }
     private var state: AccountState? { session.state(target.accountID) }
@@ -265,8 +280,8 @@ struct BoardView: View {
                 HStack(alignment: .top, spacing: 12) {
                     ForEach(store.columns) { column in
                         BoardColumn(
-                            column: column, issues: store.issues(in: column, fold: true), selection: $selection,
-                            onDrop: drop(column), write: write)
+                            column: column, issues: store.issues(in: column, fold: true), selection: selection,
+                            selected: selected, select: select, onDrop: drop(column), write: write)
                     }
                 }
                 .padding(16)
@@ -295,14 +310,14 @@ struct BoardView: View {
         .background(Backdrop())
         // The arrows walk the cards as laid out: ↑↓ along a column, ←→ across at the same height; ↩ opens.
         .focusable().focusEffectDisabled().focused($focused)
-        .onChange(of: selection) { if selection != nil { focused = true } }
+        .onChange(of: selection) { if !selection.isEmpty { focused = true } }
         .onKeyPress(.downArrow) { move(rows: 1) }
         .onKeyPress(.upArrow) { move(rows: -1) }
         .onKeyPress(.rightArrow) { move(columns: 1) }
         .onKeyPress(.leftArrow) { move(columns: -1) }
         .onKeyPress(.return) {
-            guard let selection, let state else { return .ignored }
-            openWindow(id: "issue", value: IssueTarget(accountID: state.id, key: selection))
+            guard !selection.isEmpty, let state else { return .ignored }
+            for key in selection { openWindow(id: "issue", value: IssueTarget(accountID: state.id, key: key)) }
             return .handled
         }
         .safeAreaInset(edge: .top, spacing: 0) { quickFilterBar }
@@ -422,7 +437,8 @@ struct BoardView: View {
                             BoardColumn(
                                 column: column,
                                 issues: store.issues(in: column, from: lane.issues, fold: swimlanes != .parent),
-                                showsHeader: false, selection: $selection, onDrop: drop(column), write: write)
+                                showsHeader: false, selection: selection, selected: selected, select: select,
+                                onDrop: drop(column), write: write)
                         }
                     }
                 }
@@ -459,13 +475,39 @@ struct BoardView: View {
         s.state == "active" ? String(localized: "\(s.name) · active") : s.name
     }
 
-    /// Runs a card menu's write, then reloads the board so the cards show the result (or why there is none).
-    private func write(_ key: String, _ op: @escaping @Sendable () async throws -> Void) {
+    /// The selected cards, for a menu opened over one of them.
+    private var selected: [Issue] { store.issues.filter { selection.contains($0.key) } }
+
+    /// A click on a card: ⌘ toggles it, ⇧ selects from the anchor down its column to it, a plain click picks it
+    /// alone; the second click of a double-click opens it. One handler, read from the event: a separate
+    /// double-tap recogniser made every single click wait out the double-click interval.
+    private func select(_ key: String) {
+        let event = NSApp.currentEvent
+        let flags = event?.modifierFlags ?? []
+        if event?.clickCount == 2, let state {
+            openWindow(id: "issue", value: IssueTarget(accountID: state.id, key: key))
+            return
+        }
+        if flags.contains(.command) {
+            selection.formSymmetricDifference([key])
+        } else if flags.contains(.shift), let anchor, let column = grid.first(where: { $0.contains(anchor) }),
+            let a = column.firstIndex(of: anchor), let b = column.firstIndex(of: key)
+        {
+            selection.formUnion(column[min(a, b)...max(a, b)])
+            return  // the anchor stays, so the next ⇧-click runs from the same card
+        } else {
+            selection = [key]
+        }
+        anchor = key
+    }
+
+    /// Runs a card menu's write, then refetches the touched cards so they show the result (or why there is none).
+    private func write(_ keys: [String], _ op: @escaping @Sendable () async throws -> Void) {
         guard let c = state?.client else { return }
         Task {
             do { try await op() } catch { store.error = error.localizedDescription }
-            touched(key)
-            await store.loadIssues(c)
+            keys.forEach(touched)
+            await store.refresh(keys, client: c)
         }
     }
 
@@ -487,11 +529,12 @@ struct BoardView: View {
 
     private func move(rows: Int = 0, columns: Int = 0) -> KeyPress.Result {
         let grid = grid
-        guard let sel = selection, let c = grid.firstIndex(where: { $0.contains(sel) }),
+        guard let sel = anchor, let c = grid.firstIndex(where: { $0.contains(sel) }),
             let r = grid[c].firstIndex(of: sel)
         else {
-            selection = grid.first { !$0.isEmpty }?.first  // nothing picked yet: the first card
-            return selection == nil ? .ignored : .handled
+            anchor = grid.first { !$0.isEmpty }?.first  // nothing picked yet: the first card
+            selection = anchor.map { [$0] } ?? []
+            return anchor == nil ? .ignored : .handled
         }
         var column = max(0, min(grid.count - 1, c + columns))
         // Sideways, skip empty columns rather than stop at them.
@@ -499,7 +542,8 @@ struct BoardView: View {
             column += columns
         }
         guard !grid[column].isEmpty else { return .handled }
-        selection = grid[column][max(0, min(grid[column].count - 1, r + rows))]
+        anchor = grid[column][max(0, min(grid[column].count - 1, r + rows))]
+        selection = anchor.map { [$0] } ?? []
         return .handled
     }
 
@@ -562,13 +606,15 @@ struct BoardColumn: View {
     let issues: [Issue]
     /// Off inside swimlanes, where the board shows headers once and scrolls as a whole.
     var showsHeader = true
-    @Binding var selection: String?
+    let selection: Set<String>
+    /// The selected cards, board-wide: a menu over one of them acts on all.
+    let selected: [Issue]
+    let select: (String) -> Void
     var onDrop: (String) -> Void
-    /// Runs a card menu's write and refreshes the board, as `IssueMenu` expects it.
-    let write: (String, @escaping @Sendable () async throws -> Void) -> Void
+    /// Runs a card menu's write and refreshes the touched cards, as `IssueMenu` expects it.
+    let write: ([String], @escaping @Sendable () async throws -> Void) -> Void
     @Environment(Session.self) private var session
     @Environment(\.jira) private var jira
-    @Environment(\.openWindow) private var openWindow
     @State private var targeted = false
 
     var body: some View {
@@ -601,14 +647,14 @@ struct BoardColumn: View {
         LazyVStack(spacing: 8) {
             ForEach(issues) { issue in
                 if issue.id != issues.first?.id { Divider().padding(.horizontal, 6) }
-                BoardCard(issue: issue, selected: selection == issue.key)
+                BoardCard(issue: issue, selected: selection.contains(issue.key))
                     .draggable(issue.key)
-                    .onTapGesture(count: 2) {
-                        if let jira { openWindow(id: "issue", value: IssueTarget(accountID: jira.id, key: issue.key)) }
-                    }
-                    .onTapGesture { selection = issue.key }
+                    .onTapGesture { select(issue.key) }
                     .contextMenu {
-                        if let jira { IssueMenu(issue: issue, state: jira) { write(issue.key, $0) } }
+                        if let jira {
+                            let issues = selection.contains(issue.key) ? selected : [issue]
+                            IssueMenu(issues: issues, state: jira) { write(issues.map(\.key), $0) }
+                        }
                     }
             }
         }
@@ -620,6 +666,7 @@ struct BoardColumn: View {
 struct BoardCard: View {
     let issue: Issue
     var selected = false
+    @Environment(\.appearsActive) private var active
 
     /// Whole days since the last update, once a card has sat still for a week.
     private var staleDays: Int? {
@@ -629,20 +676,26 @@ struct BoardCard: View {
     }
 
     var body: some View {
+        // Painted like a Finder icon: the accent colour behind white text while the window is active, grey behind
+        // another window; the greys go white and the icons get a light backing, as on a selected list row.
+        let emphasized = selected && active
+        let dim: Color = emphasized ? .white.opacity(0.85) : .secondary
         VStack(alignment: .leading, spacing: 6) {
             Text(issue.fields.summary).font(.callout).lineLimit(3).fixedSize(horizontal: false, vertical: true)
-                .strikethrough(issue.isDone).foregroundStyle(issue.isDone ? .secondary : .primary)
+                .strikethrough(issue.isDone).foregroundStyle(issue.isDone ? dim : emphasized ? .white : .primary)
             HStack(spacing: 6) {
                 RemoteImage(url: issue.fields.issuetype.iconUrl, placeholder: "circle").frame(width: 14, height: 14)
+                    .padding(2).background(emphasized ? .white.opacity(0.9) : .clear, in: .rect(cornerRadius: 4))
+                    .padding(-2)
                     .accessibilityLabel(issue.fields.issuetype.name)
-                Text(issue.key).font(.caption.monospaced()).foregroundStyle(.secondary)
+                Text(issue.key).font(.caption.monospaced()).foregroundStyle(dim)
                 if let p = issue.subtaskProgress {
                     Label("\(p.done)/\(p.total)", systemImage: "checklist").font(.caption2)
-                        .foregroundStyle(p.done == p.total ? .green : .secondary).help(
+                        .foregroundStyle(p.done == p.total && !emphasized ? .green : dim).help(
                             "\(p.done) of \(p.total) subtasks done")
                 }
                 if let d = staleDays {
-                    Label("\(d)d", systemImage: "clock").font(.caption2).foregroundStyle(.orange)
+                    Label("\(d)d", systemImage: "clock").font(.caption2).foregroundStyle(emphasized ? dim : .orange)
                         .help("Not updated for \(d) days")
                 }
                 Spacer()
@@ -652,9 +705,16 @@ struct BoardCard: View {
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.background.opacity(0.7), in: .rect(cornerRadius: 10))
+        .environment(\.backgroundProminence, emphasized ? .increased : .standard)
+        .background(
+            emphasized
+                ? AnyShapeStyle(Color.accentColor)
+                : selected
+                    ? AnyShapeStyle(Color(nsColor: .unemphasizedSelectedContentBackgroundColor))
+                    : AnyShapeStyle(.background.opacity(0.7)),
+            in: .rect(cornerRadius: 10)
+        )
         .background(staleDays == nil ? .clear : .orange.opacity(0.12), in: .rect(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color.accentColor, lineWidth: selected ? 2 : 0))
         .contentShape(.rect)
     }
 }
