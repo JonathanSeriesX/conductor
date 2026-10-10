@@ -25,6 +25,9 @@ final class AccountState: Identifiable {
     /// First pages of lists by cache name ("list-<hash of JQL>"): the recent ones from disk at launch, then every
     /// one fetched, so a list opens with rows in its first frame instead of after a disk read.
     @ObservationIgnored var lists: [String: [Issue]] = [:]
+    /// How many issues each cached list's query matched when it was last counted, by the same cache name, so a
+    /// list opens with its count in its first frame rather than "50+ issues".
+    @ObservationIgnored var listCounts: [String: Int] = [:]
     /// Every issue in memory, for search suggestions: the rows the lists have seen and the cached first pages.
     var knownIssues: [Issue] { Array(peek.values) + lists.values.flatMap { $0 } }
     /// Each board as it was last drawn, by project key, so a board window reopens without a disk read and decode.
@@ -226,6 +229,7 @@ final class AccountState: Identifiable {
         prefetched = c.prefetched
         transitionsByWorkflow = c.transitions
         lists = c.lists
+        listCounts = c.listCounts
         // The rows of the cached lists are what an issue page knows about its subtasks and links before the network.
         for issues in lists.values { for i in issues where peek[i.key] == nil { peek[i.key] = i } }
         starred = Set(projects.filter { $0.favourite == true }.map(\.key))
@@ -743,6 +747,7 @@ struct CachedAccount: Sendable {
     var prefetched: [String: Date]
     var transitions: [String: [Transition]]
     var lists: [String: [Issue]]
+    var listCounts: [String: Int]
 
     init(_ account: Account) {
         me = DiskCache.load(account: account, name: "me")
@@ -755,6 +760,7 @@ struct CachedAccount: Sendable {
         prefetched = DiskCache.load(account: account, name: "prefetched") ?? [:]
         transitions = DiskCache.load(account: account, name: "workflows-transitions") ?? [:]
         lists = DiskCache.recentLists(account: account)
+        listCounts = DiskCache.load(account: account, name: "listCounts") ?? [:]
     }
 }
 
