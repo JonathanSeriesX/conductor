@@ -283,8 +283,8 @@ final class IssueListStore {
 
 struct IssueListView: View {
     @Binding var filters: ListFilters
-    /// The previewed issue; the main window owns it so Escape can clear it from anywhere.
-    @Binding var selection: IssueTarget?
+    /// The selected rows; the main window owns them so Escape can clear them from anywhere. One row is the preview.
+    @Binding var selection: Set<IssueTarget>
     /// The toolbar title item's width, for the main window to size the column by.
     @Binding var titleWidth: CGFloat
     @Environment(Session.self) private var session
@@ -323,12 +323,15 @@ struct IssueListView: View {
     var body: some View {
         let shown = displayRows
         List(selection: $selection) {
-            ForEach(shown) { d in
+            ForEach(Array(shown.enumerated()), id: \.element.id) { i, d in
                 let row = d.row
                 // The open issue stays in the accent colour while the window is active, as in Notes and Mail;
-                // behind another window it goes grey like any selection.
-                let selected = selection == row.target
+                // behind another window it goes grey like any selection. A run of selected rows is one block,
+                // rounded at its ends only, as Mail paints it.
+                let selected = selection.contains(row.target)
                 let emphasized = selected && active
+                let above = i > 0 && selection.contains(shown[i - 1].row.target)
+                let below = i + 1 < shown.count && selection.contains(shown[i + 1].row.target)
                 IssueRow(
                     issue: row.issue,
                     site: isUnified && session.states.count > 1 ? (row.state.title, row.state.color) : nil,
@@ -343,14 +346,20 @@ struct IssueListView: View {
                 .foregroundStyle(emphasized ? AnyShapeStyle(.white) : AnyShapeStyle(.foreground))
                 .environment(\.backgroundProminence, emphasized ? .increased : .standard)
                 .listRowBackground(
-                    RoundedRectangle(cornerRadius: 6)
-                        .fill(
-                            emphasized
-                                ? Color.accentColor
-                                : selected ? Color(nsColor: .unemphasizedSelectedContentBackgroundColor) : .clear
-                        )
-                        .padding(.horizontal, 8)
+                    UnevenRoundedRectangle(
+                        topLeadingRadius: above ? 0 : 6, bottomLeadingRadius: below ? 0 : 6,
+                        bottomTrailingRadius: below ? 0 : 6, topTrailingRadius: above ? 0 : 6
+                    )
+                    .fill(
+                        emphasized
+                            ? Color.accentColor
+                            : selected ? Color(nsColor: .unemphasizedSelectedContentBackgroundColor) : .clear
+                    )
+                    .padding(.horizontal, 8)
+                    // Over the row gap, so two selected rows meet without a seam.
+                    .padding(.top, above ? -3 : 0).padding(.bottom, below ? -3 : 0)
                 )
+                .listRowSeparator(selected && below ? .hidden : .automatic, edges: .bottom)
                 .onAppear { if d.id == shown.last?.id { Task { await store.loadMore() } } }
                 // Drag a row into Slack, a browser or a note as its Jira link.
                 .itemProvider {
@@ -381,7 +390,11 @@ struct IssueListView: View {
         .listStyle(.inset)
         .background(NativeSelectionOff())
         .contextMenu(forSelectionType: IssueTarget.self) { targets in
-            if let t = targets.first, let row = store.rows.first(where: { $0.target == t }) { rowMenu(row) }
+            // Over a selected row the menu acts on the whole selection, else on the row under the pointer.
+            let rows = store.rows.filter { targets.contains($0.target) }
+            if let state = rows.first?.state, rows.allSatisfy({ $0.state === state }) {
+                IssueMenu(issues: rows.map(\.issue), state: state, write: act)
+            }
         } primaryAction: { targets in
             // Double-click (or ↩) opens the issue in its own window; a single click only selects.
             for t in targets { openWindow(id: "issue", value: t) }
@@ -453,7 +466,7 @@ struct IssueListView: View {
             if filters.isKey {
                 let key = filters.text.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
                 if let st = filters.account.flatMap(session.state) ?? session.state(forKey: key) {
-                    selection = IssueTarget(accountID: st.id, key: key)
+                    selection = [IssueTarget(accountID: st.id, key: key)]
                     searchFocused = false
                 }
                 return
@@ -560,7 +573,7 @@ struct IssueListView: View {
         // A click on a row selects it but leaves the keyboard where it was (the search field, or nowhere);
         // as in Mail, the list takes it. A row picked with the arrows already has it.
         .onChange(of: selection) { _, new in
-            guard new != nil else { return }
+            guard !new.isEmpty else { return }
             searchFocused = false  // or SwiftUI hands the keyboard straight back to the search field
             NSApp.keyWindow?.focusList()
         }
@@ -572,7 +585,7 @@ struct IssueListView: View {
                     let tv = e.window?.firstResponder as? NSTextView, tv.isFieldEditor, tv.delegate is NSSearchField,
                     suggestions.isEmpty, !shown.isEmpty
                 else { return e }
-                if selection == nil { selection = shown.first?.row.target }
+                if selection.isEmpty, let first = shown.first?.row.target { selection = [first] }
                 searchFocused = false
                 NSApp.keyWindow?.focusList()
                 return nil
@@ -591,7 +604,8 @@ struct IssueListView: View {
 
     /// → unfolds the selected parent's subtasks, ← folds them, as in an outline (the other way round right to left).
     private func fold(open: Bool) -> KeyPress.Result {
-        guard let sel = selection, let d = displayRows.first(where: { $0.row.target == sel }), !d.children.isEmpty,
+        guard selection.count == 1, let sel = selection.first,
+            let d = displayRows.first(where: { $0.row.target == sel }), !d.children.isEmpty,
             expanded.contains(d.id) != open
         else { return .ignored }
         withAnimation(.snappy(duration: 0.25)) { expanded.formSymmetricDifference([d.id]) }
@@ -621,11 +635,6 @@ struct IssueListView: View {
     }
 
     // MARK: Row actions
-
-    @ViewBuilder
-    private func rowMenu(_ row: ListRow) -> some View {
-        IssueMenu(issue: row.issue, state: row.state, write: act)
-    }
 
     /// Runs a write, then reloads the list and the open issue so both show the result.
     private func act(_ op: @escaping () async throws -> Void) {
@@ -972,9 +981,17 @@ struct IssueRow: View {
     }
 }
 
-/// The right-click menu for an issue anywhere: list rows and board cards share it.
+/// "Copy" for a reader's menu over selectable text: the selection, through the responder chain, as ⌘C does.
+struct CopySelection: View {
+    var body: some View {
+        Button("Copy", systemImage: "doc.on.doc") { NSApp.sendAction(#selector(NSText.copy(_:)), to: nil, from: nil) }
+    }
+}
+
+/// The right-click menu for issues anywhere: list rows and board cards share it. With several issues selected it
+/// acts on all of them; what applies to only some (a status, "Assign to Me") shows for the ones it fits.
 struct IssueMenu: View {
-    let issue: Issue
+    let issues: [Issue]
     let state: AccountState
     /// Runs a write and refreshes whatever the owner shows.
     var write: (@escaping @Sendable () async throws -> Void) -> Void
@@ -982,60 +999,71 @@ struct IssueMenu: View {
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
-        let key = issue.key
-        let target = IssueTarget(accountID: state.id, key: key)
-        let url = state.client.browseURL(key)
-        let watching = issue.fields.watches?.isWatching == true
+        let keys = issues.map(\.key)
+        let targets = keys.map { IssueTarget(accountID: state.id, key: $0) }
+        let urls = keys.map(state.client.browseURL)
+        let watching = issues.allSatisfy { $0.fields.watches?.isWatching == true }
         let me = state.me?.accountId
-        // The Issue menu's order.
-        Button("Open in Browser", systemImage: "safari") { NSWorkspace.shared.open(url) }
-        Button("Open in New Window", systemImage: "macwindow.badge.plus") { openWindow(id: "issue", value: target) }
-        Divider()
-        Button("Copy Link", systemImage: "link") { copyToPasteboard(url.absoluteString) }
-        Button("Copy as Markdown", systemImage: "text.quote") {
-            copyToPasteboard(state.client.markdownLink(key, summary: issue.fields.summary))
-        }
-        Button("Copy Key", systemImage: "number") { copyToPasteboard(key) }
-        ShareLink(item: url)
-        Divider()
-        Button(watching ? "Stop Watching This Issue" : "Watch This Issue", systemImage: watching ? "eye.slash" : "eye")
-        {
-            write { try await state.client.watch(key, !watching, me: me) }
+        let many = issues.count > 1
+        // The Issue menu's order: open, copy, then the writes as one group. Plural when the menu acts on several.
+        Button("Open in Browser", systemImage: "safari") { urls.forEach { NSWorkspace.shared.open($0) } }
+        Button(many ? "Open in New Windows" : "Open in New Window", systemImage: "macwindow.badge.plus") {
+            targets.forEach { openWindow(id: "issue", value: $0) }
         }
         Divider()
-        // From the account's cache: a menu's content is fixed once open, so nothing can load inside it.
-        if let transitions = state.transitionsByWorkflow[AccountState.workflowKey(issue)] {
-            Menu("Change Status") {
+        Button(many ? "Copy Links" : "Copy Link", systemImage: "link") {
+            copyToPasteboard(urls.map(\.absoluteString).joined(separator: "\n"))
+        }
+        Button(many ? "Copy Keys" : "Copy Key", systemImage: "number") {
+            copyToPasteboard(keys.joined(separator: "\n"))
+        }
+        ShareLink(items: urls)
+        Divider()
+        // From the account's cache: a menu's content is fixed once open, so nothing can load inside it. Issues of
+        // different workflows have different transitions, so the submenu needs them all on one.
+        let workflows = Set(issues.map(AccountState.workflowKey))
+        if workflows.count > 1 {
+            Button("Change Status", systemImage: "arrow.right.circle") {}.disabled(true)
+        } else if let transitions = state.transitionsByWorkflow[workflows.first!] {
+            Menu("Change Status", systemImage: "arrow.right.circle") {
                 ForEach(transitions) { t in
                     Toggle(
                         isOn: Binding(
-                            get: { t.to.id == issue.fields.status.id },
+                            get: { t.to.id == issues.first?.fields.status.id },
                             set: { on in
                                 guard on else { return }
-                                let (old, account) = (issue.fields.status, state.id)
+                                let (old, account) = (issues.map(\.fields.status), state.id)
                                 write {
-                                    try await state.client.transition(key, to: t.id)
-                                    await Bin.shared.put(.status(old), account: account, key: key)
+                                    for (key, status) in zip(keys, old) {
+                                        try await state.client.transition(key, to: t.id)
+                                        await Bin.shared.put(.status(status), account: account, key: key)
+                                    }
                                 }
                             })
                     ) { Text(t.name) }
                 }
             }
-        } else {
-            Button("Change Status…") {
+        } else if let target = targets.first {
+            // Not cached yet: the page loads the transitions, and the menu has them the next time.
+            Button("Change Status…", systemImage: "arrow.right.circle") {
                 openWindow(id: "issue", value: target)
-                state.warmTransitions([issue])
+                state.warmTransitions(issues)
             }
         }
-        if let me, issue.fields.assignee?.accountId != me {
-            Button("Assign to Me", systemImage: "person.crop.circle.badge.checkmark") {
-                write { try await state.client.assign(key, to: me) }
-            }
+        // Greyed rather than gone when there is nothing to do, as in the Issue menu.
+        let notMine = issues.filter { $0.fields.assignee?.accountId != me }.map(\.key)
+        Button("Assign to Me", systemImage: "person.crop.circle.badge.checkmark") {
+            guard let me else { return }
+            write { for key in notMine { try await state.client.assign(key, to: me) } }
         }
-        if issue.fields.assignee != nil {
-            Button("Unassign", systemImage: "person.crop.circle.badge.minus") {
-                write { try await state.client.assign(key, to: nil) }
-            }
+        .disabled(me == nil || notMine.isEmpty)
+        let assigned = issues.filter { $0.fields.assignee != nil }.map(\.key)
+        Button("Unassign", systemImage: "person.crop.circle.badge.minus") {
+            write { for key in assigned { try await state.client.assign(key, to: nil) } }
+        }
+        .disabled(assigned.isEmpty)
+        Button(watching ? "Unwatch" : "Watch", systemImage: watching ? "eye.slash" : "eye") {
+            write { for key in keys { try await state.client.watch(key, !watching, me: me) } }
         }
     }
 }
@@ -1199,6 +1227,16 @@ private struct NativeSelectionOff: NSViewRepresentable {
     final class Finder: NSView {
         override func viewDidMoveToWindow() { find(attempt: 0) }
 
+        /// A right-click makes the table ring the clicked rows with a pale outline, its own highlight style or
+        /// not; on rows that paint their selection it reads as a stray border. The ring has no public switch.
+        /// ponytail: a private AppKit method, left alone when a release renames it.
+        private static let silenceContextRing: Void = {
+            let sel = Selector(("_drawContextMenuHighlightForRow:clipRect:"))
+            guard let m = class_getInstanceMethod(NSTableView.self, sel) else { return }
+            let noop: @convention(block) (NSTableView, Int, NSRect) -> Void = { _, _, _ in }
+            method_setImplementation(m, imp_implementationWithBlock(noop))
+        }()
+
         /// The table is a sibling subtree: the nearest ancestor with one below it, short of the split view that
         /// also holds the sidebar's. It can arrive a turn after this view, hence the retries.
         private func find(attempt: Int) {
@@ -1208,6 +1246,7 @@ private struct NativeSelectionOff: NSViewRepresentable {
                 if let table = firstTable(in: s) {
                     table.selectionHighlightStyle = .none
                     table.allowsTypeSelect = false  // letters are shortcuts here, not a jump to a row
+                    Self.silenceContextRing
                     return
                 }
                 v = s.superview

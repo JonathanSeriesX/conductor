@@ -485,3 +485,50 @@ extension Binding where Value: Sendable {
             set: { if source.wrappedValue != nil { source.wrappedValue = $0 } })
     }
 }
+
+/// A context menu of our own on selectable text. SwiftUI's selectable text hands a right-click to the system's
+/// text menu (Cut, Paste, Font, Spelling…, drawn out of process), which an app can neither trim nor replace with
+/// `.contextMenu`. So the click is taken first: this view sits under the text and marks its area, and the monitor
+/// `ReaderMenus.install` shows `content` as the menu for a right-click anywhere on it.
+struct ReaderMenu<Content: View>: NSViewRepresentable {
+    @ViewBuilder let content: () -> Content
+    /// The hosted menu starts outside the window's SwiftUI tree: it gets this environment (the session, the
+    /// account, the window actions) handed over.
+    @Environment(\.self) private var environment
+
+    func makeNSView(context: Context) -> ReaderMenuArea { ReaderMenuArea() }
+    func updateNSView(_ view: ReaderMenuArea, context: Context) {
+        let (content, environment) = (content, environment)
+        view.make = { NSHostingMenu(rootView: content().environment(\.self, environment)) }
+    }
+}
+
+final class ReaderMenuArea: NSView {
+    var make: () -> NSMenu = { NSMenu() }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }  // the text above takes every click
+}
+
+@MainActor enum ReaderMenus {
+    static func install() {
+        NSEvent.addLocalMonitorForEvents(matching: .rightMouseDown) { e in
+            guard let w = e.window, let root = w.contentView else { return e }
+            let at = root.convert(e.locationInWindow, from: nil)
+            // A writing field over the area keeps its own menu.
+            if let tv = root.hitTest(at) as? NSTextView, tv.isEditable { return e }
+            guard let area = areas(in: root).last(where: { $0.convert($0.bounds, to: root).contains(at) }) else {
+                return e
+            }
+            NSMenu.popUpContextMenu(area.make(), with: e, for: area)
+            return nil
+        }
+    }
+
+    /// Every marked area in the window, outermost first, so the innermost one under the pointer wins.
+    private static func areas(in view: NSView) -> [ReaderMenuArea] {
+        guard !view.isHidden else { return [] }
+        var out: [ReaderMenuArea] = []
+        if let a = view as? ReaderMenuArea { out.append(a) }
+        for sub in view.subviews { out += areas(in: sub) }
+        return out
+    }
+}

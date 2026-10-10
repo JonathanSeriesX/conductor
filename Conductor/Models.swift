@@ -2,6 +2,7 @@ import Foundation
 
 struct JiraUser: Codable, Hashable, Sendable, Identifiable {
     var id: String { accountId }
+    /// On Server, the username: it names the user in every query and payload there, as the account id does on Cloud.
     let accountId: String
     let displayName: String
     let emailAddress: String?
@@ -9,6 +10,26 @@ struct JiraUser: Codable, Hashable, Sendable, Identifiable {
     let active: Bool?
 
     var avatar: URL? { avatarUrls?["48x48"] ?? avatarUrls?.values.first }
+
+    private enum CodingKeys: String, CodingKey { case accountId, name, displayName, emailAddress, avatarUrls, active }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        accountId = try c.decodeIfPresent(String.self, forKey: .accountId) ?? c.decode(String.self, forKey: .name)
+        displayName = try c.decode(String.self, forKey: .displayName)
+        emailAddress = try c.decodeIfPresent(String.self, forKey: .emailAddress)
+        avatarUrls = try c.decodeIfPresent([String: URL].self, forKey: .avatarUrls)
+        active = try c.decodeIfPresent(Bool.self, forKey: .active)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(accountId, forKey: .accountId)
+        try c.encode(displayName, forKey: .displayName)
+        try c.encodeIfPresent(emailAddress, forKey: .emailAddress)
+        try c.encodeIfPresent(avatarUrls, forKey: .avatarUrls)
+        try c.encodeIfPresent(active, forKey: .active)
+    }
 }
 
 struct Project: Codable, Hashable, Sendable, Identifiable {
@@ -195,6 +216,8 @@ struct SearchPage: Codable, Sendable {
     let issues: [Issue]
     let nextPageToken: String?
     let isLast: Bool?
+    /// Server only, which counts its results.
+    var total: Int?
 }
 
 struct Transition: Codable, Hashable, Sendable, Identifiable {

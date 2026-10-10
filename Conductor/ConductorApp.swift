@@ -17,6 +17,7 @@ struct ConductorApp: App {
         MenuClickThrough.install()
         PopoverFocusReturn.install()
         Shortcuts.guardTyping()
+        ReaderMenus.install()
     }
 
     var body: some Scene {
@@ -101,6 +102,14 @@ struct ConductorApp: App {
         .windowResizability(.contentSize)
         .defaultPosition(.center)
 
+        // An issue's History tab, read-only, beside its page.
+        WindowGroup("History", id: "history", for: IssueTarget.self) { $target in
+            if let t = target {
+                HistoryView(target: t).environment(session)
+            }
+        }
+        .defaultSize(width: 600, height: 480)
+
         // Deleted comments, attachments, links, work logs, parents, filters and status changes, with a way back.
         Window("Bin", id: "bin") {
             BinView().environment(session)
@@ -136,7 +145,9 @@ struct RootView: View {
     /// The previewed issue, so it comes back with the window after ⌘Q.
     @SceneStorage("selection") private var storedSelection = ""
     @State private var filters = ListFilters()
-    @State private var selection: IssueTarget?
+    /// The list's selected rows. One row is previewed; several leave the preview column empty, as Mail does.
+    @State private var selection: Set<IssueTarget> = []
+    private var previewed: IssueTarget? { selection.count == 1 ? selection.first : nil }
     /// The list toolbar's title item, measured: the list column is never narrower than its toolbar.
     @State private var listTitleWidth: CGFloat = 0
     @FocusedValue(\.issueActions) private var issueActions
@@ -169,16 +180,22 @@ struct RootView: View {
                         // ponytail: 150 stands for the three buttons and the toolbar's insets; remeasure if they change.
                         .navigationSplitViewColumnWidth(min: max(420, listTitleWidth + 150), ideal: 460)
                 } detail: {
-                    if let sel = selection {
+                    if let sel = previewed {
                         // Nil-safe: SwiftUI reads the binding once more after Escape emptied the selection.
-                        IssueWindow(target: Binding($selection, or: sel), embedded: true)
+                        IssueWindow(
+                            target: Binding(
+                                get: { previewed ?? sel }, set: { if previewed != nil { selection = [$0] } }),
+                            embedded: true)
                     } else {
-                        ContentUnavailableView("No Issue Selected", systemImage: "doc.text")
-                            .frame(maxWidth: .infinity, maxHeight: .infinity).background(Backdrop())
-                            // Without items of its own the column has no toolbar section, and the list's
-                            // New Issue and Save Filter drift over here. Not customizable, like the issue page's:
-                            // SwiftUI crashed applying saved customizations while the two swapped in one pass.
-                            .toolbar { ToolbarItem { EmptyView() }.glassTitle() }
+                        ContentUnavailableView(
+                            selection.isEmpty ? "No Issue Selected" : "Issues Selected: \(selection.count)",
+                            systemImage: "doc.text"
+                        )
+                        .frame(maxWidth: .infinity, maxHeight: .infinity).background(Backdrop())
+                        // Without items of its own the column has no toolbar section, and the list's
+                        // New Issue and Save Filter drift over here. Not customizable, like the issue page's:
+                        // SwiftUI crashed applying saved customizations while the two swapped in one pass.
+                        .toolbar { ToolbarItem { EmptyView() }.glassTitle() }
                     }
                 }
                 .background(
@@ -210,13 +227,13 @@ struct RootView: View {
             // is not another list: the open issue stays, so Escape clears the search first and the selection next.
             var sameButText = old
             sameButText.text = new.text
-            if sameButText != new { selection = nil }
+            if sameButText != new { selection = [] }
             storedFilters = (try? JSONEncoder().encode(new)).flatMap { String(data: $0, encoding: .utf8) } ?? ""
             session.lastFilters = new
         }
         // The window's stored list can arrive after its first appearance, behind the launch default; the writes
         // above always match `filters`, so a value that differs is the system's and wins.
-        .onChange(of: selection) { _, new in
+        .onChange(of: previewed) { _, new in
             storedSelection =
                 new.flatMap { try? JSONEncoder().encode($0) }.flatMap { String(data: $0, encoding: .utf8) } ?? ""
         }
@@ -294,7 +311,7 @@ struct RootView: View {
             filters.text = ""
             return nil
         }
-        if let back = issueActions?.back { back() } else { selection = nil }
+        if let back = issueActions?.back { back() } else { selection = [] }
         return nil
     }
 
@@ -309,10 +326,10 @@ struct RootView: View {
     /// the selection (see onChange(of: filters)), and this has to land after that.
     private func restoreSelection() {
         guard let data = storedSelection.data(using: .utf8),
-            let t = try? JSONDecoder().decode(IssueTarget.self, from: data), t != selection,
+            let t = try? JSONDecoder().decode(IssueTarget.self, from: data), t != previewed,
             session.state(t.accountID) != nil
         else { return }
-        DispatchQueue.main.async { selection = t }
+        DispatchQueue.main.async { selection = [t] }
     }
 
     /// Puts the window back on the list it showed, once the accounts are known.

@@ -4,10 +4,10 @@ import SwiftUI
 /// shortcut is discoverable in the menu bar and works from any issue window.
 struct IssueActions {
     enum Action: Hashable {
-        case openInBrowser, openInWindow, copyLink, copyKey, copyMarkdown
+        case openInBrowser, openInWindow, copyLink, copyKey
         case assign, assignToMe, watch, remind
         case transition(String)
-        case editSummary, editDescription, comment, attach, link, logWork, subtask, refresh
+        case editSummary, editDescription, comment, attach, link, logWork, subtask, refresh, history
         case changeStatus, changePriority, editLabels
     }
     let key: String
@@ -124,7 +124,7 @@ struct AppCommands: Commands {
             Button("Recently Viewed") { go(.recent) }.keyboardShortcut("3")
             Button("Watching") { go(.watching) }.keyboardShortcut("4")
             Divider()
-            Button("Reload") { session.reloadTick += 1 }.keyboardShortcut("r")
+            Button("Refresh") { session.reloadTick += 1 }.keyboardShortcut("r")
             Button("Refresh Projects") { Task { await session.refreshAll() } }
         }
         CommandGroup(after: .newItem) {
@@ -155,7 +155,6 @@ struct AppCommands: Commands {
             item("Open in New Window", .openInWindow, "o").disabled(issue?.embedded != true)
             Divider()
             item("Copy Link", .copyLink, "c", [.command, .shift])
-            item("Copy as Markdown", .copyMarkdown, "c", [.command, .option])
             item("Copy Key", .copyKey, "c", [.command, .control])
             Divider()
             // AppKit keeps a submenu item enabled whatever .disabled says; with nothing to offer it is a plain item.
@@ -168,7 +167,7 @@ struct AppCommands: Commands {
             }
             item("Assign…", .assign, "a", [])
             item("Assign to Me", .assignToMe, "i", []).disabled(issue?.assignedToMe == true)
-            item(issue?.watching == true ? "Stop Watching This Issue" : "Watch This Issue", .watch, "w", [])
+            item(issue?.watching == true ? "Unwatch" : "Watch", .watch, "w", [])
             item("Remind Me…", .remind, "r", [.command, .option])
             Divider()
             item("Edit Summary", .editSummary, "e", []).disabled(issue?.canEditSummary != true)
@@ -182,6 +181,7 @@ struct AppCommands: Commands {
             item("Create Subtask…", .subtask, "n", [.command, .shift])
             Divider()
             item("Refresh Issue", .refresh, "r", [.command, .shift])
+            item("Activity History", .history, "h", [.command, .option])
         }
     }
 
