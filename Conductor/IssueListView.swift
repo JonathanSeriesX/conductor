@@ -259,6 +259,8 @@ struct IssueListView: View {
     @Binding var filters: ListFilters
     /// The previewed issue; the main window owns it so Escape can clear it from anywhere.
     @Binding var selection: IssueTarget?
+    /// The toolbar title item's width, for the main window to size the column by.
+    @Binding var titleWidth: CGFloat
     @Environment(Session.self) private var session
     @Environment(\.openWindow) private var openWindow
     @Environment(\.layoutDirection) private var layoutDirection
@@ -398,6 +400,7 @@ struct IssueListView: View {
         )
         .navigationTitle(session.title(for: filters))  // the Window menu; the toolbar draws its own, with the sort
         .toolbar(removing: .title)
+        .background(ToolbarRelayout())
         .searchable(text: $filters.text, placement: .toolbar, prompt: "Search, JQL, or paste a Jira link")
         .searchFocused($searchFocused)
         .searchSuggestions {
@@ -453,6 +456,11 @@ struct IssueListView: View {
                 }
                 .fixedSize(horizontal: true, vertical: false)  // never "47 issue…": the toolbar fits around it
                 .padding(.leading, 14)
+                .onGeometryChange(for: CGFloat.self) {
+                    $0.size.width
+                } action: {
+                    titleWidth = $0
+                }
             }
             .glassTitle()
             ToolbarItem(id: "new") {

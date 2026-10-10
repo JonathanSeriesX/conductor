@@ -460,12 +460,19 @@ struct BoardView: View {
     }
 
     /// Runs a card menu's write, then reloads the board so the cards show the result (or why there is none).
-    private func write(_ op: @escaping @Sendable () async throws -> Void) {
+    private func write(_ key: String, _ op: @escaping @Sendable () async throws -> Void) {
         guard let c = state?.client else { return }
         Task {
             do { try await op() } catch { store.error = error.localizedDescription }
+            touched(key)
             await store.loadIssues(c)
         }
+    }
+
+    /// The pages, windows and list rows showing `key` follow a write made from the board.
+    private func touched(_ key: String) {
+        session.writeTicks[key, default: 0] += 1
+        session.listTick += 1
     }
 
     /// The keys per column, top to bottom as drawn: lanes stack, so with lanes a column runs through all of them.
@@ -497,7 +504,13 @@ struct BoardView: View {
     }
 
     private func drop(_ column: BoardConfiguration.Column) -> (String) -> Void {
-        { key in if let c = state?.client { Task { await store.move(key, to: column, client: c) } } }
+        { key in
+            guard let c = state?.client else { return }
+            Task {
+                await store.move(key, to: column, client: c)
+                touched(key)
+            }
+        }
     }
 
     /// Cards drawn right now: with lanes, subtasks stand on their own; without, they fold into their parent.
@@ -552,7 +565,7 @@ struct BoardColumn: View {
     @Binding var selection: String?
     var onDrop: (String) -> Void
     /// Runs a card menu's write and refreshes the board, as `IssueMenu` expects it.
-    let write: (@escaping @Sendable () async throws -> Void) -> Void
+    let write: (String, @escaping @Sendable () async throws -> Void) -> Void
     @Environment(Session.self) private var session
     @Environment(\.jira) private var jira
     @Environment(\.openWindow) private var openWindow
@@ -587,6 +600,7 @@ struct BoardColumn: View {
     private var cards: some View {
         LazyVStack(spacing: 8) {
             ForEach(issues) { issue in
+                if issue.id != issues.first?.id { Divider().padding(.horizontal, 6) }
                 BoardCard(issue: issue, selected: selection == issue.key)
                     .draggable(issue.key)
                     .onTapGesture(count: 2) {
@@ -594,7 +608,7 @@ struct BoardColumn: View {
                     }
                     .onTapGesture { selection = issue.key }
                     .contextMenu {
-                        if let jira { IssueMenu(issue: issue, state: jira, write: write) }
+                        if let jira { IssueMenu(issue: issue, state: jira) { write(issue.key, $0) } }
                     }
             }
         }
