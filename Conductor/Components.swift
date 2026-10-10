@@ -352,11 +352,15 @@ struct ToolbarRelayout: NSViewRepresentable {
             DispatchQueue.main.async { [weak self] in self?.relayoutToolbar() }
         }
 
-        /// The toolbar view lays its items out on its own layout pass; nothing public asks for one.
+        /// The toolbar view lays its items out on its own layout pass; nothing public asks for one. It sits two
+        /// levels under the titlebar container, so the search walks the whole titlebar tree.
         private func relayoutToolbar() {
-            window?.contentView?.superview?.subviews.first {
-                String(describing: type(of: $0)) == "NSToolbarView"
-            }?.needsLayout = true
+            func toolbarView(_ v: NSView) -> NSView? {
+                if String(describing: type(of: v)) == "NSToolbarView" { return v }
+                for s in v.subviews { if let t = toolbarView(s) { return t } }
+                return nil
+            }
+            window?.contentView?.superview.flatMap(toolbarView)?.needsLayout = true
         }
     }
 }
