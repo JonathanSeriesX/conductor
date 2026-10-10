@@ -62,6 +62,11 @@ struct DisplayRow: Identifiable {
 final class IssueListStore {
     var rows: [ListRow] = []
     var nextToken: String?
+    /// How many issues the query matches on the server, every account summed: the last count from the cache until
+    /// this load's own answers. Nil when no count is known yet.
+    var total: Int?
+    /// The subtitle's number: the rows once the whole list is loaded, else the server's count.
+    var count: Int { single != nil && nextToken == nil && !isLoading ? rows.count : max(total ?? 0, rows.count) }
     /// True from the start: a new list is always about to load, and must not flash "No issues" first.
     var isLoading = true
     var error: String?
@@ -122,6 +127,7 @@ final class IssueListStore {
         queryError = nil
         if unbounded {
             rows = []
+            total = nil
             shownKey = ""
             shown = f
             isLoading = false
@@ -131,6 +137,11 @@ final class IssueListStore {
         let queries: [(AccountState, String)] = states.map { ($0, f.jql) }
         // Typed searches are not cached: they change with every keystroke and would litter the disk.
         let cacheable = f.text.isEmpty
+        total = queries.reduce(0 as Int?) { sum, q in
+            guard let sum, let c = q.0.listCounts["list-" + DiskCache.hash(q.1)] else { return nil }
+            return sum + c
+        }
+        Task { await countIssues(queries, gen: gen, cache: cacheable) }
         let queryKey = queries.map { "\($0.0.id)|\($0.1)" }.joined()
         // Each account's rows stay put (from cache on a new query, else what is shown) until its own fresh
         // page lands, so the list never collapses to the fastest site and then grows back.
@@ -181,6 +192,21 @@ final class IssueListStore {
             single = (st, jql, cacheable)
             await fetchPage(gen: gen, replacing: true)
         }
+    }
+
+    /// One count request per account, in parallel with the page fetch; a failed site leaves the last count standing.
+    private func countIssues(_ queries: [(AccountState, String)], gen: Int, cache: Bool) async {
+        let tasks = queries.map { st, jql in Task { try? await st.client.approximateCount(jql: jql) } }
+        var sum = 0
+        for ((st, jql), t) in zip(queries, tasks) {
+            guard let c = await t.value else { return }
+            if cache {
+                st.listCounts["list-" + DiskCache.hash(jql)] = c
+                DiskCache.saveAsync(st.listCounts, account: st.account, name: "listCounts")
+            }
+            sum += c
+        }
+        if gen == generation { total = sum }
     }
 
     /// Last known first pages: from memory when this session has them (no suspension, so a list opened from the
@@ -587,10 +613,11 @@ struct IssueListView: View {
         return BoardTarget(accountID: id, projectKey: key)
     }
 
-    /// Counts the rows on screen: a subtask folded under its parent is not one of them. Nil while a list loads
-    /// with nothing to show yet.
+    /// The issues the query matches (the server's count, or the rows once all are loaded); "50+" only while no
+    /// count is known. Nil while a list loads with nothing to show yet.
     private var subtitle: String? {
-        store.rows.isEmpty && store.isLoading ? nil : issues(displayRows.count, more: store.nextToken != nil)
+        store.rows.isEmpty && store.total == nil && store.isLoading
+            ? nil : issues(store.count, more: store.total == nil && store.nextToken != nil)
     }
 
     // MARK: Row actions
