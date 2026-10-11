@@ -209,10 +209,14 @@
 				hi,
 				it,
 				ja,
+				ko,
+				pl,
 				"pt-BR",
 				ru,
+				tr,
 				uk,
 				"zh-Hans",
+				"zh-Hant",
 			);
 			mainGroup = 5ECD817E09D3A8CBBF8971EC;
 			minimizedProjectReferenceProxies = 1;

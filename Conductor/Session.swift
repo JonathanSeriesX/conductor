@@ -167,7 +167,8 @@ final class AccountState: Identifiable {
 
     /// Full records of `keys` in one request, each saved as `issue-KEY` for the issue page and kept as a peek;
     /// `prefetched` remembers the revision so the next pass skips it. Empty when the request fails.
-    /// A search carries only an issue's first 20 comments: the rest are fetched too, so a page opens whole.
+    /// A search carries only an issue's first 20 comments and work logs: the rest are fetched too, so a page opens
+    /// whole.
     @discardableResult
     func fetchDetails(_ keys: [String]) async -> [Issue] {
         guard !keys.isEmpty else { return [] }
@@ -175,7 +176,7 @@ final class AccountState: Identifiable {
         guard let page = try? await client.search(jql: jql, fields: client.detailFields) else { return [] }
         let client = client
         let issues = await withTaskGroup(of: Issue.self) { group in
-            for i in page.issues { group.addTask { (try? await client.completingComments(i)) ?? i } }
+            for i in page.issues { group.addTask { (try? await client.completing(i)) ?? i } }
             var done: [String: Issue] = [:]
             for await i in group { done[i.key] = i }
             return page.issues.map { done[$0.key] ?? $0 }
@@ -184,14 +185,14 @@ final class AccountState: Identifiable {
             DiskCache.saveAsync(i, account: account, name: "issue-\(i.key)")
             peek[i.key] = i
             // A thread that could not be completed is fetched again on the next pass.
-            if i.hasAllComments || i.fields.comment == nil { prefetched[i.key] = i.fields.updated }
+            if i.isComplete || i.fields.comment == nil { prefetched[i.key] = i.fields.updated }
         }
         DiskCache.saveAsync(prefetched, account: account, name: Self.prefetchedFile)
         return issues
     }
 
-    /// v2: copies saved before comments were completed carry 20 of a longer thread; a new name fetches them again.
-    nonisolated static let prefetchedFile = "prefetched-v2"
+    /// v3: copies saved before comments and work logs were completed carry 20 of each; a new name fetches them again.
+    nonisolated static let prefetchedFile = "prefetched-v3"
 
     private var customTitle: String
     /// Name of a `Palette` colour; chosen by the user or dealt from the palette by sidebar position.
@@ -416,17 +417,20 @@ final class Session {
     /// counts: a main window previewing it lets it go, as a double-click does.
     private(set) var windowOpened: (target: IssueTarget, count: Int)?
     func announceWindow(_ target: IssueTarget) { windowOpened = (target, (windowOpened?.count ?? 0) + 1) }
-    /// A change to one issue made in this app, for every page and list row showing it to take at once: a new status
-    /// ahead of Jira's answer, then the issue as Jira has it. Without it they waited for their own reload.
+    /// A change to one issue made on a board, for every page and list row showing it to take at once: the board's
+    /// own edit to its card ahead of Jira's answer, then the issue as Jira has it. Without it they waited for their
+    /// own reload.
+    /// Several issues in one announcement: a menu acts on every selected card, and announcements made in one turn
+    /// reach the views as the last one only.
     struct IssueChange {
-        let target: IssueTarget
-        var status: Status?
+        let targets: Set<IssueTarget>
+        var change: ((inout Issue) -> Void)?
         var issue: Issue?
         let count: Int
     }
     private(set) var lastChange: IssueChange?
-    func announce(_ target: IssueTarget, status: Status? = nil, issue: Issue? = nil) {
-        lastChange = IssueChange(target: target, status: status, issue: issue, count: (lastChange?.count ?? 0) + 1)
+    func announce(_ targets: Set<IssueTarget>, change: ((inout Issue) -> Void)? = nil, issue: Issue? = nil) {
+        lastChange = IssueChange(targets: targets, change: change, issue: issue, count: (lastChange?.count ?? 0) + 1)
     }
     var focusSearchRequested = false
     var reloadTick = 0

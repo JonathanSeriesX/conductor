@@ -265,14 +265,36 @@ struct JiraClient: Sendable {
         }
     }
 
-    /// The full record, with every comment.
+    /// The full record, with every comment and every work log.
     func issue(_ key: String) async throws -> Issue {
-        try await completingComments(get("issue/\(key)", query: ["fields": detailFields]))
+        try await completing(get("issue/\(key)", query: ["fields": detailFields]))
+    }
+
+    /// `issue` with all its comments and work logs, each fetched only when the copy lacks some, both at once.
+    func completing(_ issue: Issue) async throws -> Issue {
+        async let comments = completingComments(issue)
+        async let worklogs = allWorklogs(issue)
+        var copy = try await comments
+        if let w = try await worklogs { copy.fields.worklog = w }
+        return copy
+    }
+
+    /// Every work log, in Jira's order. A search result and an issue of its own both carry the oldest 20; the
+    /// work-log endpoint gives up to 5,000 a page. Nil when the copy has them all already.
+    private func allWorklogs(_ issue: Issue) async throws -> WorklogPage? {
+        guard let page = issue.fields.worklog, page.worklogs.count < page.total else { return nil }
+        var all: [Worklog] = []
+        while true {
+            let p: WorklogPage = try await get(
+                "issue/\(issue.key)/worklog", query: ["startAt": "\(all.count)", "maxResults": "5000"])
+            all += p.worklogs
+            if p.worklogs.isEmpty || all.count >= p.total { return WorklogPage(worklogs: all, total: all.count) }
+        }
     }
 
     /// `issue` with all its comments, oldest first. Jira embeds the first 20 in a search result and the newest 100
     /// in an issue; the comment endpoint pages 100 at a time, so every page is asked for at once.
-    func completingComments(_ issue: Issue) async throws -> Issue {
+    private func completingComments(_ issue: Issue) async throws -> Issue {
         guard let page = issue.fields.comment, page.comments.count < page.total else { return issue }
         let key = issue.key
         let all = try await withThrowingTaskGroup(of: [Comment].self) { group in

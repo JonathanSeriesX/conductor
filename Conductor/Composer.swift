@@ -450,48 +450,64 @@ struct PeoplePicker: View {
     @Environment(\.jira) private var jira
     @State private var query = ""
     @State private var users: [JiraUser] = []
+    /// The row ↓ and ↑ walked to, which ↩ picks.
+    @State private var highlighted: Int?
 
     /// "Assign to me" stands in for my own row, so I am not listed twice.
     private var me: JiraUser? { jira?.me.flatMap { $0.accountId == current?.accountId ? nil : $0 } }
     private var others: [JiraUser] { users.filter { $0.accountId != me?.accountId } }
-    /// Rows on offer: me, Unassigned, and the matches. The list's height follows, since a popover sizes itself
-    /// to its content and a scroll view has no height of its own.
-    private var rowCount: Int { others.count + (me != nil ? 1 : 0) + (current != nil ? 1 : 0) }
+    /// Rows on offer, as what each picks: me, nobody (Unassigned), and the matches.
+    private var picks: [JiraUser?] { (me.map { [$0] } ?? []) + (current != nil ? [nil] : []) + others }
 
     var body: some View {
         VStack(spacing: 8) {
             TextField("Search people", text: $query).textFieldStyle(.roundedBorder)
-            ScrollView {
-                VStack(alignment: .leading, spacing: 0) {
-                    if let me {
-                        row {
-                            onPick(me)
-                        } label: {
-                            Label("Assign to me", systemImage: "person.fill.checkmark")
-                        }
+                .onKeyPress(.downArrow) { step(1) }
+                .onKeyPress(.upArrow) { step(-1) }
+                .onSubmit {
+                    if let h = highlighted, picks.indices.contains(h) {
+                        onPick(picks[h])
+                    } else if !query.isEmpty, let u = others.first {
+                        onPick(u)  // the best match, as Spotlight's ↩
                     }
-                    if current != nil {
-                        row {
-                            onPick(nil)
-                        } label: {
-                            Label("Unassigned", systemImage: "person.slash")
+                }
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                        if let me {
+                            row(0) {
+                                onPick(me)
+                            } label: {
+                                Label("Assign to me", systemImage: "person.fill.checkmark")
+                            }
                         }
-                    }
-                    ForEach(others) { u in
-                        row {
-                            onPick(u)
-                        } label: {
-                            Avatar(user: u, size: 20)
-                            Text(u.displayName)
-                            Spacer()
-                            if u.accountId == current?.accountId {
-                                Image(systemName: "checkmark").foregroundStyle(.secondary)
+                        if current != nil {
+                            row(me == nil ? 0 : 1) {
+                                onPick(nil)
+                            } label: {
+                                Label("Unassigned", systemImage: "person.slash")
+                            }
+                        }
+                        let lead = picks.count - others.count
+                        ForEach(Array(others.enumerated()), id: \.element.id) { i, u in
+                            row(lead + i) {
+                                onPick(u)
+                            } label: {
+                                Avatar(user: u, size: 20)
+                                Text(u.displayName)
+                                Spacer()
+                                if u.accountId == current?.accountId {
+                                    Image(systemName: "checkmark").foregroundStyle(.secondary)
+                                }
                             }
                         }
                     }
                 }
+                .onChange(of: highlighted) { if let h = highlighted { proxy.scrollTo(h) } }
             }
-            .frame(height: min(320, CGFloat(max(rowCount, 1)) * 32))
+            // The list's height follows its rows, since a popover sizes itself to its content and a scroll view has
+            // no height of its own.
+            .frame(height: min(320, CGFloat(max(picks.count, 1)) * 32))
         }
         .padding(10)
         .frame(width: 280)
@@ -519,16 +535,27 @@ struct PeoplePicker: View {
             guard !Task.isCancelled else { return }
             users = (try? await fetch()) ?? []
         }
+        .onChange(of: users) { highlighted = nil }  // the rows under it changed
+    }
+
+    private func step(_ by: Int) -> KeyPress.Result {
+        guard !picks.isEmpty else { return .ignored }
+        highlighted = max(0, min(picks.count - 1, (highlighted ?? -1) + by))
+        return .handled
     }
 
     /// One pick, the full width of the popover, with no list box around it.
-    private func row<V: View>(_ action: @escaping () -> Void, @ViewBuilder label: () -> V) -> some View {
+    private func row<V: View>(_ index: Int, _ action: @escaping () -> Void, @ViewBuilder label: () -> V) -> some View {
         Button(action: action) {
             HStack(spacing: 8) { label() }
                 .padding(.horizontal, 8).padding(.vertical, 6)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .background(
+                    index == highlighted ? Color.accentColor.opacity(0.18) : .clear, in: .rect(cornerRadius: 6)
+                )
                 .contentShape(.rect)
         }
         .buttonStyle(.plain)
+        .id(index)
     }
 }
