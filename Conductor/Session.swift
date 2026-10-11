@@ -350,6 +350,12 @@ final class AccountState: Identifiable {
     }
 
     /// Active and future sprints of a project's scrum boards, fetched once per session.
+    /// What this Mac already knows, memory then disk, without asking Jira: for a page that must not wait.
+    func cachedSprints(project: String) async -> [Sprint] {
+        if let cached = sprintsByProject[project] { return cached }
+        return await DiskCache.loadAsync(account: account, name: "sprints-\(project)") ?? []
+    }
+
     func sprints(project: String) async -> [Sprint] {
         if let cached = sprintsByProject[project] { return cached }
         // Last run's list at once; the fresh one lands behind it for the next open.

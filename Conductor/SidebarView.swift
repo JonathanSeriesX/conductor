@@ -74,6 +74,7 @@ struct ListFilters: Hashable, Codable {
             case due = "Due date"
             case priority = "Priority"
             case key = "Key"
+            case status = "Status"
             var title: String {
                 switch self {
                 case .updated: String(localized: "Updated")
@@ -82,6 +83,7 @@ struct ListFilters: Hashable, Codable {
                 case .due: String(localized: "Due date")
                 case .priority: String(localized: "Priority")
                 case .key: String(localized: "Key", comment: "Sort by issue key")
+                case .status: String(localized: "Status")
                 }
             }
             /// "sorted by date updated": the list header names the date each row shows.
@@ -93,6 +95,7 @@ struct ListFilters: Hashable, Codable {
                 case .due: String(localized: "due date", comment: "List header: sorted by …")
                 case .priority: String(localized: "priority", comment: "List header: sorted by …")
                 case .key: String(localized: "key", comment: "List header: sorted by …")
+                case .status: String(localized: "status", comment: "List header: sorted by …")
                 }
             }
             var jql: String {
@@ -103,6 +106,7 @@ struct ListFilters: Hashable, Codable {
                 case .due: "duedate"
                 case .priority: "priority"
                 case .key: "key"
+                case .status: "status"
                 }
             }
         }
@@ -116,7 +120,7 @@ struct ListFilters: Hashable, Codable {
             case .updated: i.fields.updated
             case .viewed: i.fields.lastViewed ?? i.fields.updated
             case .due: i.fields.duedate.flatMap(DueDate.parse)
-            case .created, .priority, .key: i.fields.created
+            case .created, .priority, .key, .status: i.fields.created
             }
         }
 
@@ -142,6 +146,12 @@ struct ListFilters: Hashable, Codable {
                 let (pa, pb) = (Int(a.fields.priority?.id ?? "") ?? .max, Int(b.fields.priority?.id ?? "") ?? .max)
                 r = pa == pb ? .orderedSame : pa < pb ? .orderedDescending : .orderedAscending
             case .key: r = a.key.localizedStandardCompare(b.key)
+            case .status:
+                // To Do, then In Progress, then Done, as a board reads; by name within each.
+                let rank = ["new": 0, "indeterminate": 1, "done": 2]
+                let (sa, sb) = (a.fields.status, b.fields.status)
+                let (ra, rb) = (rank[sa.statusCategory.key] ?? 1, rank[sb.statusCategory.key] ?? 1)
+                r = ra != rb ? (ra < rb ? .orderedAscending : .orderedDescending) : sa.name.localizedStandardCompare(sb.name)
             }
             if r == .orderedSame { return a.key < b.key }
             return descending ? r == .orderedDescending : r == .orderedAscending

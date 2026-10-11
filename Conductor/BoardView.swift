@@ -315,7 +315,7 @@ struct BoardView: View {
         .onKeyPress(.upArrow) { move(rows: -1) }
         .onKeyPress(.rightArrow) { move(columns: 1) }
         .onKeyPress(.leftArrow) { move(columns: -1) }
-        .onKeyPress(.return) {
+        .onKeyPress(keys: [.return, .space]) { _ in
             guard !selection.isEmpty, let state else { return .ignored }
             for key in selection { openWindow(id: "issue", value: IssueTarget(accountID: state.id, key: key)) }
             return .handled
