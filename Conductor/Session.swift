@@ -864,8 +864,12 @@ final class Connectivity {
     private(set) var offlineHosts: Set<String> = []
     var isOffline: Bool { !offlineHosts.isEmpty }
 
-    func report(_ error: any Error, host: String) { if error.isOffline { offlineHosts.insert(host) } }
-    func reportSuccess(host: String) { offlineHosts.remove(host) }
+    // Written only on a real change: every reply reports, and each write, even of the same set, re-rendered the
+    // sidebar, several times per page load.
+    func report(_ error: any Error, host: String) {
+        if error.isOffline, !offlineHosts.contains(host) { offlineHosts.insert(host) }
+    }
+    func reportSuccess(host: String) { if offlineHosts.contains(host) { offlineHosts.remove(host) } }
 }
 
 extension Error {

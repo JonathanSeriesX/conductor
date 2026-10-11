@@ -221,7 +221,6 @@ struct IssueWindow: View {
     @State private var forward = true
     @Environment(Session.self) private var session
     @Environment(\.dismiss) private var dismiss
-    @FocusedValue(\.issueActions) private var issueActions
 
     var body: some View {
         Group {
@@ -242,6 +241,7 @@ struct IssueWindow: View {
                             target = trail.removeLast()
                         }, embedded: embedded, forward: forward
                 )
+                .equatable()
                 .environment(\.jira, st)
             } else if session.isRestoring {
                 ZStack {
@@ -274,7 +274,7 @@ struct IssueWindow: View {
         .background(
             embedded
                 ? nil
-                : WindowEventMonitor(mask: .keyDown) { e in
+                : IssueKeyMonitor { e, issueActions in
                     // Escape in the comment box gives the keyboard up; editors with a Cancel keep theirs.
                     if e.keyCode == 53, e.modifierFlags.intersection(.deviceIndependentFlagsMask).isEmpty,
                         issueActions?.isEditing != true, let tv = e.window?.firstResponder as? NSTextView,
@@ -287,6 +287,15 @@ struct IssueWindow: View {
                 }
         )
     }
+}
+
+/// A window's key monitor that reads the key window's issue actions itself. Held by the window, the focused value
+/// re-rendered all of it (the main window: sidebar and list too) whenever the page it comes from changed.
+struct IssueKeyMonitor: View {
+    let handler: (NSEvent, IssueActions?) -> NSEvent?
+    @FocusedValue(\.issueActions) private var issue
+
+    var body: some View { WindowEventMonitor(mask: .keyDown) { handler($0, issue) } }
 }
 
 func copyToPasteboard(_ string: String) {

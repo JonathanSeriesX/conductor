@@ -331,7 +331,7 @@ struct EditField: Codable, Hashable, Sendable {
     let allowedValues: [JSONValue]?
 }
 
-struct EditMeta: Codable, Sendable { let fields: [String: EditField] }
+struct EditMeta: Codable, Hashable, Sendable { let fields: [String: EditField] }
 
 struct CreatedIssue: Codable, Sendable {
     let id: String
