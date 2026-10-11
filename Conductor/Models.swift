@@ -156,7 +156,7 @@ struct Issue: Codable, Hashable, Sendable, Identifiable {
         var comment: CommentPage?
         let attachment: [Attachment]?
         let issuelinks: [IssueLink]?
-        let worklog: WorklogPage?
+        var worklog: WorklogPage?
         let timetracking: TimeTracking?
         var watches: Watches?
         let duedate: String?  // "2026-10-31", no time or zone
@@ -170,6 +170,10 @@ struct Issue: Codable, Hashable, Sendable, Identifiable {
     let sprints: [Sprint]?
     /// Every comment is here: a search result carries Jira's first 20, an issue of its own the newest 100.
     var hasAllComments: Bool { fields.comment.map { $0.comments.count >= $0.total } ?? false }
+    /// Every work log is here: a search result and an issue of its own both carry only Jira's oldest 20.
+    var hasAllWorklogs: Bool { fields.worklog.map { $0.worklogs.count >= $0.total } ?? true }
+    /// A full record a page can show as it is, with nothing to add afterwards.
+    var isComplete: Bool { hasAllComments && hasAllWorklogs }
     /// Story points from whichever of the site's points fields this issue has.
     let points: Double?
 

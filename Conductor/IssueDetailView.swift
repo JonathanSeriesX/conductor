@@ -76,7 +76,7 @@ final class IssueDetailStore {
             guard self.key == key else { return }
             // Memory's copy when it is full, no less complete than the disk's and at least as new.
             var next = cached
-            if let p = state.peek[key], p.fields.comment != nil, p.hasAllComments || cached?.hasAllComments != true,
+            if let p = state.peek[key], p.fields.comment != nil, p.isComplete || cached?.isComplete != true,
                 (p.fields.updated ?? .distantPast) >= (cached?.fields.updated ?? .distantPast)
             {
                 next = p
@@ -88,10 +88,10 @@ final class IssueDetailStore {
                 pending = fetch
                 next = await Self.first(of: fetch, within: .milliseconds(1500))
                 guard self.key == key else { return }
-            } else if let n = next, !n.hasAllComments {
+            } else if let n = next, !n.isComplete {
                 // A prefetched copy carries Jira's first 20 comments: the rest first, so the thread shows whole
                 // rather than growing under the reader. Offline or slow, the copy as it is after three seconds.
-                let complete = Task { try await client.completingComments(n) }
+                let complete = Task { try await client.completing(n) }
                 next = await Self.first(of: complete, within: .seconds(3)) ?? n
                 guard self.key == key else { return }
             }
@@ -167,12 +167,12 @@ final class IssueDetailStore {
 
     /// Takes a change announced from elsewhere (a card moved on a board) before this page's own reload.
     func apply(_ c: Session.IssueChange) {
-        guard key == c.target.key else { return }
+        guard c.targets.contains(where: { $0.key == key }) else { return }
         if let i = c.issue {
+            if i.key == key { update(\.issue, i) }
+        } else if let change = c.change, var i = issue {
+            change(&i)
             update(\.issue, i)
-        } else if let s = c.status, var i = issue, i.fields.status != s {
-            i.fields.status = s
-            issue = i
         }
     }
 
@@ -320,7 +320,7 @@ struct IssueDetailView: View {
         Binding(
             get: { folded.contains(id) },
             set: { on in
-                withAnimation(.snappy(duration: 0.25)) { if on { folded.insert(id) } else { folded.remove(id) } }
+                withAnimation(.smooth(duration: 0.25)) { if on { folded.insert(id) } else { folded.remove(id) } }
                 Folds.save(folded)
             })
     }
@@ -364,7 +364,7 @@ struct IssueDetailView: View {
             }
         }
         .onChange(of: session.lastChange?.count) {
-            if let c = session.lastChange, c.target == target { store.apply(c) }
+            if let c = session.lastChange, c.targets.contains(target) { store.apply(c) }
         }
         // A write to this issue in another window bumps its tick, so this page follows it.
         .task(id: loadID) {
@@ -525,11 +525,14 @@ struct IssueDetailView: View {
     @ViewBuilder private func cards(_ issue: Issue) -> some View {
         descriptionCard(issue)
         if let atts = issue.fields.attachment, !atts.isEmpty {
-            GlassCard(title: "Attachments") { attachments(atts) }
+            GlassCard(title: "Attachments", hint: hint(.attach) { String(localized: "\($0) to add") }) {
+                attachments(atts)
+            }
         }
         if let subs = issue.fields.subtasks, !subs.isEmpty {
             GlassCard(
                 title: "Subtasks", detail: "• " + String(localized: "\(subs.count) tasks"),
+                hint: hint(.subtask) { String(localized: "\($0) to add") },
                 collapsed: fold("\(shownKey)|subtasks")
             ) { refs(subs) }
         }
@@ -544,17 +547,23 @@ struct IssueDetailView: View {
         if let links = issue.fields.issuelinks, !links.isEmpty {
             GlassCard(
                 title: "Linked Issues", detail: "• " + String(localized: "\(links.count) issues"),
+                hint: hint(.link) { String(localized: "\($0) to add") },
                 collapsed: fold("\(shownKey)|links")
             ) { linksList(links) }
         }
+        // Always there and never folded: who spent how long matters, and it is rarely more than a few lines, as
+        // each person's entries are folded under their total.
         let logs = issue.fields.worklog?.worklogs ?? []
-        if !logs.isEmpty || issue.fields.timetracking?.originalEstimate != nil {
-            GlassCard(
-                title: "Work Log", detail: worklogTotals(issue, logs),
-                hint: hint(.logWork) { String(localized: "\($0) to log") },
-                collapsed: fold("\(shownKey)|worklog")
-            ) {
-                if logs.isEmpty { Text("No work logged").foregroundStyle(.tertiary) } else { worklogs(logs) }
+        GlassCard(
+            title: "Work Log", detail: worklogTotals(issue, logs),
+            hint: hint(.logWork) { String(localized: "\($0) to log") }
+        ) {
+            if store.isPartial {
+                DelayedSpinner()
+            } else if logs.isEmpty {
+                Text("No work logged").foregroundStyle(.tertiary)
+            } else {
+                worklogs(logs)
             }
         }
     }
@@ -669,7 +678,11 @@ struct IssueDetailView: View {
                     showLabels = true
                 } label: {
                     if labels.isEmpty {
-                        Label("Add labels…", systemImage: "tag").foregroundStyle(.tertiary)
+                        Label(
+                            Shortcuts.hint(for: .editLabels).map { String(localized: "\($0) to add labels…") }
+                                ?? String(localized: "Add labels…"), systemImage: "tag"
+                        )
+                        .foregroundStyle(.tertiary)
                     } else {
                         HStack(alignment: .firstTextBaseline, spacing: 6) {
                             Image(systemName: "tag").foregroundStyle(.tertiary)
@@ -687,14 +700,17 @@ struct IssueDetailView: View {
                 }
             }
         }
-        // The History tab, in a window of its own; grey and small, as the bin icons are.
+        // The History tab, in a window of its own; grey and small, as the bin icons are. A window has it in its
+        // toolbar instead.
         .overlay(alignment: .topTrailing) {
-            Button {
-                perform(.history)
-            } label: {
-                Label("Activity History", systemImage: "clock.arrow.circlepath").labelStyle(.iconOnly)
+            if embedded {
+                Button {
+                    perform(.history)
+                } label: {
+                    Label("Activity History", systemImage: "clock.arrow.circlepath").labelStyle(.iconOnly)
+                }
+                .buttonStyle(.plain).foregroundStyle(.tertiary).help("Activity history (⌥⌘H)").padding(18)
             }
-            .buttonStyle(.plain).foregroundStyle(.tertiary).help("Activity history (⌥⌘H)").padding(18)
         }
     }
 
@@ -764,7 +780,17 @@ struct IssueDetailView: View {
     }
 
     @ViewBuilder private func assigneeField(_ issue: Issue) -> some View {
-        field("Assignee", hint: hint(.assign) { String(localized: "\($0) to assign to…") }) {
+        // "I to set myself" only while the issue is someone else's.
+        let mine = issue.fields.assignee != nil && issue.fields.assignee?.accountId == jira?.me?.accountId
+        field(
+            "Assignee",
+            hint: hint(.assign) { a in
+                guard !mine, let i = Shortcuts.hint(for: .assignToMe) else {
+                    return String(localized: "\(a) to assign to…")
+                }
+                return String(localized: "\(i) to set myself, \(a) to…")
+            }
+        ) {
             Button {
                 showAssign = true
             } label: {
@@ -959,7 +985,12 @@ struct IssueDetailView: View {
         multiValue("Components", field: "components", current: issue.fields.components ?? [])
         multiValue("Fix Versions", field: "fixVersions", current: issue.fields.fixVersions ?? [])
         if let w = issue.fields.watches {
-            field("Watchers", hint: hint(.watch) { String(localized: "\($0) to watch") }) {
+            field(
+                "Watchers",
+                hint: hint(.watch) {
+                    w.isWatching ? String(localized: "\($0) to unwatch") : String(localized: "\($0) to watch")
+                }
+            ) {
                 Button {
                     showWatchers = true
                 } label: {
@@ -1161,25 +1192,23 @@ struct IssueDetailView: View {
         return parts.isEmpty ? nil : parts.map { "• " + $0 }.joined(separator: " ")
     }
 
-    /// Grouped by person, each group folding on its own: who logged what, then the entries.
+    /// Grouped by person: who logged how long, each person's entries folded under it until opened.
     private func worklogs(_ logs: [Worklog]) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             ForEach(WorklogGroup.make(logs)) { g in
-                let id = "\(shownKey)|worklog|\(g.id)"
-                let isFolded = folded.contains(id)
-                VStack(alignment: .leading, spacing: 6) {
+                // Remembered as opened, since folded is where a group starts.
+                let open = fold("\(shownKey)|worklog-open|\(g.id)")
+                Foldable(collapsed: Binding(get: { !open.wrappedValue }, set: { open.wrappedValue = !$0 }), gap: 6) {
                     HStack(spacing: 10) {
                         Avatar(user: g.author, size: 26)  // the comments' size
                         Text(g.author?.displayName ?? String(localized: "Unknown")).font(.callout.weight(.semibold))
                         Text(verbatim: LogWorkView.format(g.seconds)).font(.callout).foregroundStyle(.secondary)
                         Spacer()
-                        Disclosure(collapsed: isFolded)
+                        Disclosure(collapsed: !open.wrappedValue)
                     }
-                    .contentShape(.rect)
-                    .onTapGesture { fold(id).wrappedValue.toggle() }
-                    if !isFolded {
-                        ForEach(g.logs) { w in worklogRow(w) }
-                    }
+                } content: {
+                    // Lazy, as the comments: one person can have hundreds of entries.
+                    LazyVStack(alignment: .leading, spacing: 6) { ForEach(g.logs) { w in worklogRow(w) } }
                 }
             }
         }
@@ -1351,8 +1380,8 @@ struct IssueDetailView: View {
                 perform(.refresh)
             } label: {
                 // While a write or a refresh runs, the button is the spinner, then the arrow again. Symbols, not a
-                // ProgressView: a custom view took the button out of its glass group with Attach. Both always laid
-                // out, so the button keeps the wider one's width and Attach never moves.
+                // ProgressView: a custom view took the button out of its glass group. Both always laid out, so the
+                // button keeps the wider one's width and nothing beside it moves.
                 let busy = store.isWorking || refreshing
                 Label {
                     Text("Refresh")
@@ -1366,37 +1395,71 @@ struct IssueDetailView: View {
             }
             .help("Refresh (⇧⌘R)")
         }
+        // A window's history sits with Refresh; the preview keeps it on the Description card.
+        if !embedded {
+            ToolbarItem {
+                Button {
+                    perform(.history)
+                } label: {
+                    Label("Activity History", systemImage: "clock.arrow.circlepath")
+                }
+                .help("Activity history (⌥⌘H)")
+                .disabled(store.issue == nil)
+            }
+        }
+        // The Issue menu's actions, one click each, in one group; Copy Link and Open in Browser stay in the menu
+        // (⇧⌘C, ⇧⌘O). In the preview the group sits centred between Refresh and the search field.
+        if #available(macOS 26, *) {
+            ToolbarSpacer(embedded ? .flexible : .fixed)
+        } else if embedded {
+            ToolbarItem { Spacer() }
+        }
+        actionItems  // the search field after it brings its own flexible space
+    }
+
+    /// Attach and the Issue menu's actions that open a form, one click each.
+    @ToolbarContentBuilder private var actionItems: some ToolbarContent {
         ToolbarItem {
             Button {
                 attachFiles()
             } label: {
                 Label("Attach Files", systemImage: "paperclip")
             }
-            .help("Attach files. You can also drop them anywhere or paste an image.")
+            .help("Attach files (⌥⌘A). You can also drop them anywhere or paste an image.")
             .disabled(store.issue == nil)
         }
         ToolbarItem {
-            Menu {
-                Button("Create Subtask…", systemImage: "plus.square.on.square") { perform(.subtask) }
-                Button("Link Issue…", systemImage: "link") { showLink = true }
-                Button("Log Work…", systemImage: "clock") { showLogWork = true }
-                Button("Remind Me…", systemImage: "bell") { showRemind = true }
+            Button {
+                perform(.subtask)
             } label: {
-                Label("More", systemImage: "ellipsis.circle")
+                Label("Create Subtask…", systemImage: "plus.square.on.square")
             }
-            .help("Subtask, link, log work, reminder")
+            .help("Create subtask (⇧⌘N)")
             .disabled(store.issue == nil)
-            .popover(isPresented: $showRemind, arrowEdge: .bottom) {
-                if let url = jira?.client.browseURL(key) {
-                    ReminderView(url: url, key: key, summary: store.issue?.fields.summary ?? "") { showRemind = false }
-                }
+        }
+        ToolbarItem {
+            Button {
+                showLink = true
+            } label: {
+                Label("Link Issue…", systemImage: "link")
             }
+            .help("Link issue (⇧⌘L)")
+            .disabled(store.issue == nil)
             .popover(isPresented: $showLink, arrowEdge: .bottom) {
                 LinkIssueView(key: key, types: store.linkTypes) { type, outward, inward in
                     showLink = false
                     run { try await $0.link(type: type, from: outward, to: inward) }
                 }
             }
+        }
+        ToolbarItem {
+            Button {
+                showLogWork = true
+            } label: {
+                Label("Log Work…", systemImage: "clock")
+            }
+            .help("Log work (⌥⌘L)")
+            .disabled(store.issue == nil)
             .popover(isPresented: $showLogWork, arrowEdge: .bottom) {
                 LogWorkView { seconds, comment, started in
                     showLogWork = false
@@ -1412,24 +1475,19 @@ struct IssueDetailView: View {
                 }
             }
         }
-        // Shortcuts live on the Issue menu items, so the menu bar lists them.
         ToolbarItem {
             Button {
-                perform(.copyLink)
+                showRemind = true
             } label: {
-                Label("Copy Link", systemImage: "link")
+                Label("Remind Me…", systemImage: "bell")
             }
-            .help("Copy link (⇧⌘C)")
+            .help("Remind me (⌥⌘R)")
             .disabled(store.issue == nil)
-        }
-        ToolbarItem {
-            Button {
-                perform(.openInBrowser)
-            } label: {
-                Label("Open in Browser", systemImage: "safari")
+            .popover(isPresented: $showRemind, arrowEdge: .bottom) {
+                if let url = jira?.client.browseURL(key) {
+                    ReminderView(url: url, key: key, summary: store.issue?.fields.summary ?? "") { showRemind = false }
+                }
             }
-            .help("Open in browser (⇧⌘O)")
-            .disabled(store.issue == nil)
         }
     }
 

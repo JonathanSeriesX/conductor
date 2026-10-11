@@ -212,6 +212,43 @@ final class DecodingTests: XCTestCase {
         XCTAssertFalse(try issue("").hasAllComments)
     }
 
+    func testWorkLogsCountTowardACompleteCopy() throws {
+        let client = JiraClient(account: Account(site: URL(string: "https://x.atlassian.net")!, email: "e", token: "t"))
+        func issue(worklog: String) throws -> Issue {
+            let json =
+                #"{"id":"1","key":"QA-1","fields":{"summary":"s","status":{"id":"1","name":"To Do","statusCategory":{"key":"new","name":"To Do"}},"issuetype":{"id":"1","name":"Task"},"comment":{"comments":[],"total":0}"#
+                + worklog + "}}"
+            return try client.decoder.decode(Issue.self, from: Data(json.utf8))
+        }
+        let w = #"{"id":"7","timeSpent":"1h","timeSpentSeconds":3600,"started":"2026-10-05T09:56:55.551+0300"}"#
+        // Jira embeds a work log's oldest 20 entries in an issue and in a search result alike.
+        XCTAssertFalse(try issue(worklog: #","worklog":{"worklogs":["# + w + #"],"total":30}"#).isComplete)
+        XCTAssertTrue(try issue(worklog: #","worklog":{"worklogs":["# + w + #"],"total":1}"#).isComplete)
+        XCTAssertTrue(try issue(worklog: "").isComplete, "no work log field: nothing to complete")
+    }
+
+    func testHistoryReadsLikeTheIssuePage() {
+        typealias Item = ChangeGroup.Item
+        let spent = Item(field: "timespent", fromString: "3600", toString: "5400", from: "3600", to: "5400")
+        XCTAssertEqual(spent.shownFrom.map { String($0.characters) }, "1h")
+        XCTAssertEqual(spent.shownTo.map { String($0.characters) }, "1h 30m")
+        XCTAssertEqual(spent.label, String(localized: "History.TimeSpent", defaultValue: "Time spent"))
+        XCTAssertTrue(Item(field: "WorklogId", fromString: nil, toString: "10169").isNoise)
+        XCTAssertTrue(Item(field: "timeestimate", fromString: "0", toString: "0", from: "0", to: "0").isNoise)
+        XCTAssertEqual(
+            Item(field: "IssueParentAssociation", fromString: nil, toString: "QA-18").label, String(localized: "Parent")
+        )
+        let due = Item(
+            field: "duedate", fromString: "2026-10-18 00:00:00.0", toString: nil, from: "2026-10-18", to: nil)
+        XCTAssertEqual(
+            due.shownFrom.map { String($0.characters) },
+            DueDate.parse("2026-10-18")!.formatted(date: .abbreviated, time: .omitted))
+        // Jira keeps texts in wiki markup here: the markup goes, the formatting stays.
+        let text = ChangeGroup.Item.fromWiki("*bold* and _it_ and a [link|https://example.com] in QA-18_x")
+        XCTAssertEqual(String(text.characters), "bold and it and a link in QA-18_x")
+        XCTAssertTrue(text.runs.contains { $0.link == URL(string: "https://example.com") })
+    }
+
     func testSiteNormalization() {
         XCTAssertEqual(Account.normalizeSite("team")?.absoluteString, "https://team.atlassian.net")
         XCTAssertEqual(Account.normalizeSite(" team.atlassian.net ")?.absoluteString, "https://team.atlassian.net")
@@ -243,8 +280,25 @@ final class LiveReadTests: XCTestCase {
         let search = try await c.search(jql: "key = \(key)", fields: c.detailFields)
         let found = try XCTUnwrap(search.issues.first)
         XCTAssertFalse(found.hasAllComments)
-        let completed = try await c.completingComments(found)
+        let completed = try await c.completing(found)
         XCTAssertEqual(completed.fields.comment?.comments.map(\.id), page.comments.map(\.id))
+    }
+
+    func testALongWorkLogLoadsWhole() async throws {
+        let env = ProcessInfo.processInfo.environment
+        guard let site = env["CONDUCTOR_SITE"].flatMap(Account.normalizeSite),
+            let email = env["CONDUCTOR_EMAIL"], let token = env["CONDUCTOR_TOKEN"],
+            let key = env["CONDUCTOR_LONG_WORKLOG"]
+        else { throw XCTSkip("No live credentials in the environment") }
+        let c = JiraClient(account: Account(site: site, email: email, token: token))
+        // Jira embeds the oldest 20 only: the rest come from the work-log endpoint.
+        let issue = try await c.issue(key)
+        let page = try XCTUnwrap(issue.fields.worklog)
+        XCTAssertGreaterThan(page.total, 20)
+        XCTAssertEqual(page.worklogs.count, page.total)
+        XCTAssertEqual(Set(page.worklogs.map(\.id)).count, page.total)
+        XCTAssertEqual(
+            page.worklogs.reduce(0) { $0 + $1.timeSpentSeconds }, issue.fields.timetracking?.timeSpentSeconds)
     }
 }
 
@@ -516,7 +570,9 @@ final class BoardTests: XCTestCase {
 }
 
 final class LocalizationTests: XCTestCase {
-    static let languages = ["ar", "de", "es", "fr", "hi", "it", "ja", "pt-BR", "ru", "uk", "zh-Hans"]
+    static let languages = [
+        "ar", "de", "es", "fr", "hi", "it", "ja", "ko", "pl", "pt-BR", "ru", "tr", "uk", "zh-Hans", "zh-Hant",
+    ]
 
     /// Every string in the catalog is translated into every shipped language, keeping the English placeholders.
     func testCatalogIsCompleteInEveryLanguage() throws {

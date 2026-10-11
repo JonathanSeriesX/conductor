@@ -146,9 +146,9 @@ final class IssueListStore {
 
     /// Takes a change announced from elsewhere (a card moved on a board): the row shows it before any reload.
     func apply(_ c: Session.IssueChange) {
-        for i in rows.indices where rows[i].target == c.target {
-            var issue = c.issue ?? rows[i].issue
-            if c.issue == nil, let s = c.status { issue.fields.status = s }
+        for i in rows.indices where c.targets.contains(rows[i].target) {
+            var issue = rows[i].issue
+            if let fresh = c.issue { if fresh.key == issue.key { issue = fresh } } else { c.change?(&issue) }
             if issue != rows[i].issue { rows[i] = ListRow(issue: issue, state: rows[i].state) }
         }
     }

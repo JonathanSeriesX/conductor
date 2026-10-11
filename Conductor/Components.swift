@@ -238,7 +238,7 @@ struct PriorityIcon: View {
 
 struct GlassCard<Content: View>: View {
     var title: LocalizedStringKey?
-    /// "• 1d 7h logged", in the title's weight, after it: a figure that belongs to the title.
+    /// "• 1 task", "• 1d 7h logged", the title's size in a regular weight, after it: a figure that belongs to the title.
     var detail: String?
     /// A control after the detail, in the hint's size: "• newest first ↓".
     var accessory: AnyView?
@@ -247,34 +247,67 @@ struct GlassCard<Content: View>: View {
     /// Set for a card that folds away: a chevron at the title's trailing end, and a click on the title, fold it.
     var collapsed: Binding<Bool>?
     @ViewBuilder var content: Content
-    /// The content's height while it folds or unfolds: from what is on screen to nothing, or back. Nil at rest.
-    @State private var clip: CGFloat?
-    /// Read only when the card folds, so kept where SwiftUI does not watch: as state, the window's edge changed on
-    /// every frame of a scroll and re-rendered every card, a 250-comment thread included, each time.
-    @State private var measured = Measured()
-    private final class Measured {
-        /// The content's own height, the title's, and the window's bottom edge from the card's top.
-        var content: CGFloat = 0
-        var header: CGFloat = 0
-        var visibleBottom: CGFloat = .infinity
-    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        Foldable(collapsed: collapsed, gap: title == nil ? 0 : 12) {
             if let title {
-                // The gap before the bullet equals the space after it.
-                // One line in a narrow column: the title, the figure and the control stay whole, the key hint
-                // gives way first.
                 HStack(spacing: 3) {
-                    Text(title).font(.headline).foregroundStyle(.secondary).fixedSize()
-                    if let detail { Text(verbatim: detail).font(.headline).foregroundStyle(.secondary).fixedSize() }
-                    if let accessory { accessory.fixedSize() }
-                    if let hint { Text(hint).font(.subheadline).foregroundStyle(.secondary).lineLimit(1) }
+                    // The gap before the bullet equals the space after it. On one baseline: centred on the title, the
+                    // smaller hint sat a point high.
+                    // One line in a narrow column: the title, the figure and the control stay whole, the key hint
+                    // gives way first.
+                    HStack(alignment: .firstTextBaseline, spacing: 3) {
+                        Text(title).font(.headline).foregroundStyle(.secondary).fixedSize()
+                        if let detail {
+                            Text(verbatim: detail).font(.headline.weight(.regular)).foregroundStyle(.secondary)
+                                .fixedSize()
+                        }
+                        if let accessory { accessory.fixedSize() }
+                        if let hint { Text(hint).keyHint(.subheadline).lineLimit(1) }
+                    }
                     if let collapsed {
                         Spacer(minLength: 8)
                         Disclosure(collapsed: collapsed.wrappedValue)
                     }
                 }
+            }
+        } content: {
+            // Its own glass container: glass (the composer's Comment button) is drawn by the nearest one, and the
+            // page's ignored the fold's clip and opacity, so the button hung below the card while it folded.
+            // Several views in `content` sit 12 apart, leading.
+            GlassGroup(spacing: 0) { VStack(alignment: .leading, spacing: 12) { content } }
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .frosted(cornerRadius: 20)
+    }
+}
+
+/// A header over content that a click on the header folds away and back: a card, a person's work log.
+struct Foldable<Header: View, Content: View>: View {
+    /// Nil for content that does not fold.
+    var collapsed: Binding<Bool>?
+    /// The gap under the header. It folds with the content, so nothing changes size once the fold is over.
+    var gap: CGFloat
+    @ViewBuilder var header: Header
+    @ViewBuilder var content: Content
+    /// The content's height while it folds or unfolds: from what is on screen to nothing, or back. Nil at rest.
+    @State private var clip: CGFloat?
+    /// Read only when the content folds, so kept where SwiftUI does not watch: as state, the window's edge changed on
+    /// every frame of a scroll and re-rendered every card, a 250-comment thread included, each time.
+    @State private var measured = Measured()
+    private final class Measured {
+        /// The content's own height, the header's, and the window's bottom edge from the header's top.
+        var content: CGFloat = 0
+        var header: CGFloat = 0
+        var visibleBottom: CGFloat = .infinity
+    }
+    /// Without bounce: a spring's overshoot is a share of the distance, and a long fold travels far.
+    private static var curve: Animation { .smooth(duration: 0.25) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            header
                 .contentShape(.rect)
                 .onTapGesture { fold() }
                 .onGeometryChange(for: CGFloat.self) {
@@ -282,14 +315,9 @@ struct GlassCard<Content: View>: View {
                 } action: {
                     measured.header = $0
                 }
-            }
             if collapsed?.wrappedValue != true || clip != nil {
-                // The gap under the title folds with the content, so nothing changes size once the fold is over.
-                // Its own stack, as the card's was: several views in `content` sit 12 apart, leading. Its own glass
-                // container too: glass (the composer's Comment button) is drawn by the nearest one, and the page's
-                // ignored this clip and opacity, so the button hung below the card while it folded.
-                GlassGroup(spacing: 0) { VStack(alignment: .leading, spacing: 12) { content } }
-                    .padding(.top, title == nil ? 0 : 12)
+                content
+                    .padding(.top, gap)
                     .fixedSize(horizontal: false, vertical: true)
                     .onGeometryChange(for: CGFloat.self) {
                         $0.size.height
@@ -303,9 +331,6 @@ struct GlassCard<Content: View>: View {
                     .opacity(collapsed?.wrappedValue == true ? 0 : 1)  // and fades, as it did before
             }
         }
-        .padding(18)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .frosted(cornerRadius: 20)
         .onGeometryChange(for: CGFloat.self) {
             $0.bounds(of: .scrollView)?.maxY ?? .infinity
         } action: {
@@ -319,7 +344,7 @@ struct GlassCard<Content: View>: View {
         guard let collapsed else { return }
         // How much of the content the window shows: the rest changes unseen.
         let m = measured
-        let onScreen = { max(0, min(m.content, m.visibleBottom - 18 - m.header)) }
+        let onScreen = { max(0, min(m.content, m.visibleBottom - m.header)) }
         var still = Transaction()
         still.disablesAnimations = true
         if collapsed.wrappedValue {
@@ -327,7 +352,7 @@ struct GlassCard<Content: View>: View {
             collapsed.wrappedValue = false
             // A turn later the content is laid out, so its height is known.
             Task { @MainActor in
-                withAnimation(.snappy(duration: 0.25)) {
+                withAnimation(Self.curve) {
                     clip = onScreen()
                 } completion: {
                     withTransaction(still) { clip = nil }
@@ -337,7 +362,7 @@ struct GlassCard<Content: View>: View {
             withTransaction(still) { clip = onScreen() }
             Task { @MainActor in
                 collapsed.wrappedValue = true
-                withAnimation(.snappy(duration: 0.25)) {
+                withAnimation(Self.curve) {
                     clip = 0
                 } completion: {
                     withTransaction(still) { clip = nil }
@@ -365,13 +390,29 @@ func issues(_ n: Int, more: Bool = false) -> String {
 @MainActor func field<V: View>(_ name: LocalizedStringKey, hint: String? = nil, @ViewBuilder _ value: () -> V)
     -> some View
 {
-    VStack(alignment: .leading, spacing: 4) {
-        HStack(spacing: 2) {
-            Text(name).textCase(.uppercase).font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
-            if let hint { Text(hint).font(.caption2).foregroundStyle(.secondary) }  // "• A or ⇧⌘A to assign"
+    let caption = Text(name).textCase(.uppercase).font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+    return VStack(alignment: .leading, spacing: 4) {
+        // "ASSIGNEE • A to assign to…" on one line where it fits; in a narrow column the hint takes a line of its own
+        // rather than breaking mid-phrase.
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 2) {
+                caption
+                if let hint { Text(hint).keyHint(.caption2) }
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                caption
+                if let hint {
+                    Text(hint.hasPrefix("• ") ? String(hint.dropFirst(2)) : hint).keyHint(.caption2)
+                }
+            }
         }
         value()
     }
+}
+
+extension Text {
+    /// A key hint ("• M to add"): a shade fainter than the caption it follows.
+    func keyHint(_ font: Font) -> some View { self.font(font).foregroundStyle(.secondary.opacity(0.9)) }
 }
 
 extension View {

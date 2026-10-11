@@ -507,9 +507,12 @@ struct BoardView: View {
         anchor = key
     }
 
-    /// Changes the cards at once, ahead of Jira's answer; the refetch after the write confirms it.
-    private func patch(_ keys: [String], _ change: (inout Issue) -> Void) {
+    /// Changes the cards at once, ahead of Jira's answer, and the pages and list rows showing them in other windows
+    /// with them; the refetch after the write confirms it.
+    private func patch(_ keys: [String], _ change: @escaping (inout Issue) -> Void) {
         for i in store.issues.indices where keys.contains(store.issues[i].key) { change(&store.issues[i]) }
+        guard let st = state else { return }
+        session.announce(Set(keys.map { IssueTarget(accountID: st.id, key: $0) }), change: change)
     }
 
     /// Runs a card menu's write, then refetches the touched cards so they show the result (or why there is none).
@@ -570,11 +573,11 @@ struct BoardView: View {
             })?.to,
                 to != issue.fields.status
             {
-                session.announce(target, status: to)
+                session.announce([target]) { $0.fields.status = to }
             }
             Task {
                 let fresh = await store.move(key, to: column, client: st.client)
-                session.announce(target, issue: fresh ?? issue)
+                session.announce([target], issue: fresh ?? issue)
                 touched(key)
             }
         }
