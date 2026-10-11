@@ -165,6 +165,17 @@ final class IssueDetailStore {
         }
     }
 
+    /// Takes a change announced from elsewhere (a card moved on a board) before this page's own reload.
+    func apply(_ c: Session.IssueChange) {
+        guard key == c.target.key else { return }
+        if let i = c.issue {
+            update(\.issue, i)
+        } else if let s = c.status, var i = issue, i.fields.status != s {
+            i.fields.status = s
+            issue = i
+        }
+    }
+
     /// The task's value if it lands within `limit`, else nil (the task keeps running).
     private static func first<T: Sendable>(of task: Task<T, Error>, within limit: Duration) async -> T? {
         await withTaskGroup(of: T?.self) { group in
@@ -351,6 +362,9 @@ struct IssueDetailView: View {
             if old == .background, new != .background, store.issue != nil, let jira {
                 Task { await store.load(jira, key: key) }
             }
+        }
+        .onChange(of: session.lastChange?.count) {
+            if let c = session.lastChange, c.target == target { store.apply(c) }
         }
         // A write to this issue in another window bumps its tick, so this page follows it.
         .task(id: loadID) {
@@ -614,6 +628,9 @@ struct IssueDetailView: View {
                 }
             } else if let d = issue.fields.description, !(d.content ?? []).isEmpty {
                 ADFView(node: d)
+                    // A new view for new text: the selectable text's accessibility element kept the first text it
+                    // was given, so VoiceOver read the previous issue's description after a switch.
+                    .id(d)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .contentShape(.rect)
                     .background(ReaderMenu())  // a right-click copies a selection and does nothing else
@@ -2358,6 +2375,7 @@ private struct Crumb: View {
                 .accessibilityLabel(Text(verbatim: "\(p.key) \(p.fields.summary)"))
                 .help("\(p.fields.summary)\n\(String(localized: "Open \(p.key); ⌘-click for a new window"))")
                 Image(systemName: "chevron.forward").font(.caption2.weight(.bold)).foregroundStyle(.tertiary)
+                    .accessibilityHidden(true)  // a separator, not "Forward"
             }
             // Decorative: the Type field names the type, and in a toolbar the icon's label became the copy button's.
             RemoteImage(url: issue?.fields.issuetype.iconUrl, placeholder: "circle").frame(width: 14, height: 14)
@@ -2423,6 +2441,10 @@ private struct WindowTitle: View {
         .frame(height: 36)  // Back's height either way, so nothing shifts up or down
         .padding(.trailing, 28)  // room for the "copied" tick, which hangs off the key's end
         .padding(.leading, 4)
+        // One element holding the three: in a toolbar item, every child read out the first one's label, so the
+        // key button was "QA-18 [QA] Parent" too.
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(Text(verbatim: title?.key ?? key))
         .onChange(
             of: [issue?.key, issue?.fields.parent?.key, issue?.fields.issuetype.iconUrl?.absoluteString], initial: true
         ) {

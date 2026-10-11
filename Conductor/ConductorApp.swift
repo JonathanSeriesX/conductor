@@ -115,6 +115,8 @@ struct ConductorApp: App {
             BinView().environment(session)
         }
         .defaultSize(width: 560, height: 420)
+        // The Window menu's "Bin" is the app's own, beside "Issues"; SwiftUI's would be a second.
+        .commandsRemoved()
 
         // Signed out: a card of its own, the size of the form, with the traffic lights and no title bar.
         Window("Conductor", id: "login") {
@@ -124,6 +126,8 @@ struct ConductorApp: App {
         .windowResizability(.contentSize)
         .defaultPosition(.center)
         .defaultLaunchBehavior(session.accounts.isEmpty ? .presented : .suppressed)
+        // Not in the Window menu: SwiftUI listed the sign-in card there as "Conductor", a second main window.
+        .commandsRemoved()
 
         Settings {
             SettingsView().environment(session)
@@ -292,8 +296,8 @@ struct RootView: View {
     private func escape(_ e: NSEvent, issue issueActions: IssueActions?) -> NSEvent? {
         guard e.keyCode == 53, e.modifierFlags.intersection(.deviceIndependentFlagsMask).isEmpty else { return e }
         if issueActions?.isEditing == true { return e }
-        // A popover's Escape arrives tagged with the main window on Tahoe; the popover (a child window) must close, not the preview.
-        if NSApp.keyWindow !== e.window || e.window?.childWindows?.contains(where: \.isVisible) == true { return e }
+        // A popover closes before the preview does.
+        if NSApp.keyWindow !== e.window || e.window?.showsPopover == true { return e }
         if let tv = e.window?.firstResponder as? NSTextView, let window = e.window {
             // A field editor here is the search field's (the summary editor returned above; popover fields come
             // with their window): it no longer clears itself on Tahoe, so clear it. A comment box just gives the

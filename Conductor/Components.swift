@@ -249,10 +249,15 @@ struct GlassCard<Content: View>: View {
     @ViewBuilder var content: Content
     /// The content's height while it folds or unfolds: from what is on screen to nothing, or back. Nil at rest.
     @State private var clip: CGFloat?
-    /// The content's own height, and the window's bottom edge measured from the card's top.
-    @State private var contentHeight: CGFloat = 0
-    @State private var visibleBottom: CGFloat = .infinity
-    @State private var headerHeight: CGFloat = 0
+    /// Read only when the card folds, so kept where SwiftUI does not watch: as state, the window's edge changed on
+    /// every frame of a scroll and re-rendered every card, a 250-comment thread included, each time.
+    @State private var measured = Measured()
+    private final class Measured {
+        /// The content's own height, the title's, and the window's bottom edge from the card's top.
+        var content: CGFloat = 0
+        var header: CGFloat = 0
+        var visibleBottom: CGFloat = .infinity
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -275,7 +280,7 @@ struct GlassCard<Content: View>: View {
                 .onGeometryChange(for: CGFloat.self) {
                     $0.size.height
                 } action: {
-                    headerHeight = $0
+                    measured.header = $0
                 }
             }
             if collapsed?.wrappedValue != true || clip != nil {
@@ -289,7 +294,7 @@ struct GlassCard<Content: View>: View {
                     .onGeometryChange(for: CGFloat.self) {
                         $0.size.height
                     } action: {
-                        contentHeight = $0
+                        measured.content = $0
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .frame(height: clip, alignment: .top)
@@ -304,7 +309,7 @@ struct GlassCard<Content: View>: View {
         .onGeometryChange(for: CGFloat.self) {
             $0.bounds(of: .scrollView)?.maxY ?? .infinity
         } action: {
-            visibleBottom = $0
+            measured.visibleBottom = $0
         }
     }
 
@@ -313,7 +318,8 @@ struct GlassCard<Content: View>: View {
     private func fold() {
         guard let collapsed else { return }
         // How much of the content the window shows: the rest changes unseen.
-        let onScreen = { max(0, min(contentHeight, visibleBottom - 18 - headerHeight)) }
+        let m = measured
+        let onScreen = { max(0, min(m.content, m.visibleBottom - 18 - m.header)) }
         var still = Transaction()
         still.disablesAnimations = true
         if collapsed.wrappedValue {
@@ -507,6 +513,13 @@ struct ToolbarRelayout: NSViewRepresentable {
 extension NSWindow {
     /// Puts the keyboard on the issue list (the window's table), or on nothing when there is none.
     func focusList() { makeFirstResponder(contentView.flatMap(firstTable)) }
+
+    /// A popover hangs from this window. Its Escape arrives tagged with this window on Tahoe and must close it.
+    /// Known by its class: macOS 27 hangs a window-sharing button at the traffic lights as a child window of
+    /// every window, so "any visible child" was always true.
+    var showsPopover: Bool {
+        childWindows?.contains { $0.isVisible && NSStringFromClass(type(of: $0)).contains("Popover") } == true
+    }
 }
 
 /// A closed popover leaves the keyboard on the window's first key view when it had a text field of its own: the

@@ -412,6 +412,22 @@ final class Session {
     var createIssueRequested = false
     var navigationRequest: ListFilters?
     var pendingOpen: IssueTarget?
+    /// The issue a window of its own just opened or came back with, and a count so the same one twice still
+    /// counts: a main window previewing it lets it go, as a double-click does.
+    private(set) var windowOpened: (target: IssueTarget, count: Int)?
+    func announceWindow(_ target: IssueTarget) { windowOpened = (target, (windowOpened?.count ?? 0) + 1) }
+    /// A change to one issue made in this app, for every page and list row showing it to take at once: a new status
+    /// ahead of Jira's answer, then the issue as Jira has it. Without it they waited for their own reload.
+    struct IssueChange {
+        let target: IssueTarget
+        var status: Status?
+        var issue: Issue?
+        let count: Int
+    }
+    private(set) var lastChange: IssueChange?
+    func announce(_ target: IssueTarget, status: Status? = nil, issue: Issue? = nil) {
+        lastChange = IssueChange(target: target, status: status, issue: issue, count: (lastChange?.count ?? 0) + 1)
+    }
     var focusSearchRequested = false
     var reloadTick = 0
     /// Bumped after any write to an issue, so every list redraws with the change; issue pages reload themselves.
