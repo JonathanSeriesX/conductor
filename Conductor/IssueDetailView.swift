@@ -289,6 +289,8 @@ struct IssueDetailView: View {
                 Folds.save(folded)
             })
     }
+    /// Refresh Issue is loading: the Refresh button spins meanwhile.
+    @State private var refreshing = false
     /// The load this page's own write would trigger: `perform` has refreshed the issue already.
     @State private var ownLoad = ""
     @Environment(\.scenePhase) private var scenePhase
@@ -344,12 +346,27 @@ struct IssueDetailView: View {
         // relaunch, they are as they were. Every change goes straight to the store; the switch only reads it.
         .onAppear(perform: unstash)
         .onChange(
-            of: [store.issue?.key, store.issue?.fields.parent?.key, store.issue?.fields.issuetype.iconUrl?.absoluteString],
+            of: [
+                store.issue?.key, store.issue?.fields.parent?.key,
+                store.issue?.fields.issuetype.iconUrl?.absoluteString,
+            ],
             initial: true
         ) {
-            if let i = store.issue {
+            guard let i = store.issue else { return }
+            let hasBack = back != nil
+            // A window's title animates. Started in the update that builds the next page, which blocks the main
+            // thread for a few hundred ms on a long issue, the animation spent its time inside that frame and only
+            // its last few frames showed. One turn later the page is on screen and the title moves in light frames.
+            if !embedded, let shown = crumbIssue, shown.key != i.key {
+                Task {
+                    if let now = store.issue {
+                        crumbIssue = now
+                        crumbHasBack = hasBack
+                    }
+                }
+            } else {
                 crumbIssue = i
-                crumbHasBack = back != nil
+                crumbHasBack = hasBack
             }
         }
         .onChange(of: descriptionDraft) { stash() }
@@ -473,7 +490,9 @@ struct IssueDetailView: View {
             }
             // The toolbar has no background, so blur what scrolls under it instead of letting buttons sit on text.
             .softScrollEdge(band: embedded ? scrolled : nil)
-            .onScrollGeometryChange(for: Bool.self) { $0.contentOffset.y + $0.contentInsets.top > 1 } action: {
+            .onScrollGeometryChange(for: Bool.self) {
+                $0.contentOffset.y + $0.contentInsets.top > 1
+            } action: {
                 scrolled = $1
             }
             .onChange(of: commentRequest) {
@@ -489,7 +508,6 @@ struct IssueDetailView: View {
                 }
             #endif
         }
-        .overlay(alignment: .topTrailing) { working.padding(.trailing, 8) }
         .environment(\.adfAttachments, issue.fields.attachment ?? [])
         .environment(\.previewURL, $store.previewURL)
     }
@@ -515,12 +533,16 @@ struct IssueDetailView: View {
             }
         }
         if let links = issue.fields.issuelinks, !links.isEmpty {
-            GlassCard(title: "Linked Issues") { linksList(links) }
+            GlassCard(
+                title: "Linked Issues", detail: "• " + String(localized: "\(links.count) issues"),
+                collapsed: fold("\(shownKey)|links")
+            ) { linksList(links) }
         }
         let logs = issue.fields.worklog?.worklogs ?? []
         if !logs.isEmpty || issue.fields.timetracking?.originalEstimate != nil {
             GlassCard(
-                title: "Work Log", detail: worklogTotals(issue, logs), hint: hint(.logWork) { String(localized: "\($0) to log") },
+                title: "Work Log", detail: worklogTotals(issue, logs),
+                hint: hint(.logWork) { String(localized: "\($0) to log") },
                 collapsed: fold("\(shownKey)|worklog")
             ) {
                 if logs.isEmpty { Text("No work logged").foregroundStyle(.tertiary) } else { worklogs(logs) }
@@ -716,10 +738,6 @@ struct IssueDetailView: View {
             }
             .buttonStyle(.plain).foregroundStyle(.tertiary).help("Activity history (⌥⌘H)").padding(18)
         }
-    }
-
-    @ViewBuilder private var working: some View {
-        if store.isWorking { ProgressView().controlSize(.small).padding(12) }
     }
 
     /// Two columns whatever the width: one would leave half the card empty, three would squeeze the values.
@@ -1346,7 +1364,13 @@ struct IssueDetailView: View {
             Button {
                 perform(.refresh)
             } label: {
-                Label("Refresh", systemImage: "arrow.clockwise")
+                // While a write or a refresh runs, the button is the spinner, then turns back into the arrow. A symbol,
+                // not a ProgressView: a custom view took the button out of its glass group with Attach.
+                let busy = store.isWorking || refreshing
+                Label("Refresh", systemImage: busy ? "progress.indicator" : "arrow.clockwise")
+                    .symbolEffect(.variableColor.iterative.dimInactiveLayers.nonReversing, isActive: busy)
+                    .contentTransition(.symbolEffect(.replace))
+                    .animation(.snappy(duration: 0.2), value: busy)
             }
             .help("Refresh (⇧⌘R)")
         }
@@ -1470,7 +1494,12 @@ struct IssueDetailView: View {
                 id: "create",
                 value: CreateRequest(
                     accountID: target.accountID, projectKey: store.issue?.fields.project?.key, parentKey: key))
-        case .refresh: Task { await store.load(jira, key: key) }
+        case .refresh:
+            Task {
+                refreshing = true
+                await store.load(jira, key: key)
+                refreshing = false
+            }
         case .history: openWindow(id: "history", value: target)
         }
     }
@@ -2305,7 +2334,9 @@ struct WorklogGroup: Identifiable {
         var groups: [WorklogGroup] = []
         for w in logs {
             let id = w.author?.accountId ?? w.author?.displayName ?? "unknown"
-            if let i = groups.firstIndex(where: { $0.id == id }) { groups[i].logs.append(w) } else {
+            if let i = groups.firstIndex(where: { $0.id == id }) {
+                groups[i].logs.append(w)
+            } else {
                 groups.append(WorklogGroup(id: id, author: w.author, logs: [w]))
             }
         }
