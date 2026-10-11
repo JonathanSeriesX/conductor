@@ -153,7 +153,7 @@ struct Issue: Codable, Hashable, Sendable, Identifiable {
         let project: Project?
         let parent: IssueRef?
         let subtasks: [IssueRef]?
-        let comment: CommentPage?
+        var comment: CommentPage?
         let attachment: [Attachment]?
         let issuelinks: [IssueLink]?
         let worklog: WorklogPage?
@@ -168,6 +168,8 @@ struct Issue: Codable, Hashable, Sendable, Identifiable {
     let key: String
     var fields: Fields
     let sprints: [Sprint]?
+    /// Every comment is here: a search result carries Jira's first 20, an issue of its own the newest 100.
+    var hasAllComments: Bool { fields.comment.map { $0.comments.count >= $0.total } ?? false }
     /// Story points from whichever of the site's points fields this issue has.
     let points: Double?
 

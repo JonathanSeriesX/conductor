@@ -240,33 +240,104 @@ struct GlassCard<Content: View>: View {
     var title: LocalizedStringKey?
     /// "• 1d 7h logged", in the title's weight, after it: a figure that belongs to the title.
     var detail: String?
+    /// A control after the detail, in the hint's size: "• newest first ↓".
+    var accessory: AnyView?
     /// "• M to add", faint, after the title: the key that acts on the card.
     var hint: String?
     /// Set for a card that folds away: a chevron at the title's trailing end, and a click on the title, fold it.
     var collapsed: Binding<Bool>?
     @ViewBuilder var content: Content
+    /// The content's height while it folds or unfolds: from what is on screen to nothing, or back. Nil at rest.
+    @State private var clip: CGFloat?
+    /// The content's own height, and the window's bottom edge measured from the card's top.
+    @State private var contentHeight: CGFloat = 0
+    @State private var visibleBottom: CGFloat = .infinity
+    @State private var headerHeight: CGFloat = 0
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 0) {
             if let title {
                 // The gap before the bullet equals the space after it.
+                // One line in a narrow column: the title, the figure and the control stay whole, the key hint
+                // gives way first.
                 HStack(spacing: 3) {
-                    Text(title).font(.headline).foregroundStyle(.secondary)
-                    if let detail { Text(verbatim: detail).font(.headline).foregroundStyle(.secondary) }
-                    if let hint { Text(hint).font(.subheadline).foregroundStyle(.secondary) }
+                    Text(title).font(.headline).foregroundStyle(.secondary).fixedSize()
+                    if let detail { Text(verbatim: detail).font(.headline).foregroundStyle(.secondary).fixedSize() }
+                    if let accessory { accessory.fixedSize() }
+                    if let hint { Text(hint).font(.subheadline).foregroundStyle(.secondary).lineLimit(1) }
                     if let collapsed {
                         Spacer(minLength: 8)
                         Disclosure(collapsed: collapsed.wrappedValue)
                     }
                 }
                 .contentShape(.rect)
-                .onTapGesture { collapsed?.wrappedValue.toggle() }
+                .onTapGesture { fold() }
+                .onGeometryChange(for: CGFloat.self) {
+                    $0.size.height
+                } action: {
+                    headerHeight = $0
+                }
             }
-            if collapsed?.wrappedValue != true { content }
+            if collapsed?.wrappedValue != true || clip != nil {
+                // The gap under the title folds with the content, so nothing changes size once the fold is over.
+                // Its own stack, as the card's was: several views in `content` sit 12 apart, leading. Its own glass
+                // container too: glass (the composer's Comment button) is drawn by the nearest one, and the page's
+                // ignored this clip and opacity, so the button hung below the card while it folded.
+                GlassGroup(spacing: 0) { VStack(alignment: .leading, spacing: 12) { content } }
+                    .padding(.top, title == nil ? 0 : 12)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .onGeometryChange(for: CGFloat.self) {
+                        $0.size.height
+                    } action: {
+                        contentHeight = $0
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .frame(height: clip, alignment: .top)
+                    // Clipped only while folding: at rest a focus ring may reach past the edge.
+                    .clipShape(.rect.inset(by: clip == nil ? -1000 : 0))
+                    .opacity(collapsed?.wrappedValue == true ? 0 : 1)  // and fades, as it did before
+            }
         }
         .padding(18)
         .frame(maxWidth: .infinity, alignment: .leading)
         .frosted(cornerRadius: 20)
+        .onGeometryChange(for: CGFloat.self) {
+            $0.bounds(of: .scrollView)?.maxY ?? .infinity
+        } action: {
+            visibleBottom = $0
+        }
+    }
+
+    /// Folds or unfolds over what is on screen only. Animated over its whole height, a long thread (thousands of
+    /// points) spent the animation below the window's edge and showed only its last few frames, as a jump.
+    private func fold() {
+        guard let collapsed else { return }
+        // How much of the content the window shows: the rest changes unseen.
+        let onScreen = { max(0, min(contentHeight, visibleBottom - 18 - headerHeight)) }
+        var still = Transaction()
+        still.disablesAnimations = true
+        if collapsed.wrappedValue {
+            withTransaction(still) { clip = 0 }
+            collapsed.wrappedValue = false
+            // A turn later the content is laid out, so its height is known.
+            Task { @MainActor in
+                withAnimation(.snappy(duration: 0.25)) {
+                    clip = onScreen()
+                } completion: {
+                    withTransaction(still) { clip = nil }
+                }
+            }
+        } else {
+            withTransaction(still) { clip = onScreen() }
+            Task { @MainActor in
+                collapsed.wrappedValue = true
+                withAnimation(.snappy(duration: 0.25)) {
+                    clip = 0
+                } completion: {
+                    withTransaction(still) { clip = nil }
+                }
+            }
+        }
     }
 }
 
@@ -547,7 +618,8 @@ final class ReaderMenuArea: NSView {
             // A selection in this text: SwiftUI's text interaction view holds it and has the keyboard, and says
             // whether Copy has anything to copy, as it does for the Edit menu. Anything else: no menu.
             let rect = area.convert(area.bounds, to: root)
-            let copy = NSMenuItem(title: String(localized: "Copy"), action: #selector(NSText.copy(_:)), keyEquivalent: "")
+            let copy = NSMenuItem(
+                title: String(localized: "Copy"), action: #selector(NSText.copy(_:)), keyEquivalent: "")
             if let holder = w.firstResponder as? NSView, holder.convert(holder.bounds, to: root).intersects(rect),
                 holder.responds(to: #selector(NSText.copy(_:))),
                 (holder as? NSMenuItemValidation)?.validateMenuItem(copy)
@@ -597,7 +669,6 @@ struct ToolbarBand: View {
     }
 
 }
-
 
 /// A plain blur of whatever is behind it, without a material's tint: Core Animation's backdrop layer, which is what
 /// the window draws under its own toolbar. Not public API; where the class is missing, the bar material stands in.
@@ -743,14 +814,19 @@ extension NSScrollView {
         let clip = contentView
         let mods = e.modifierFlags.intersection([.command, .option, .shift, .control])
         let page = max(40, clip.bounds.height - contentInsets.top - 48)
-        let top = -contentInsets.top, bottom = doc.frame.height - clip.bounds.height
+        let top = -contentInsets.top
+        let bottom = doc.frame.height - clip.bounds.height
         let y = clip.bounds.origin.y
         let target: CGFloat
         switch (e.keyCode, mods) {
         case (125, []) where arrows: target = y + line  // ↓
         case (126, []) where arrows: target = y - line  // ↑
-        case (125, .option) where arrows, (121, []), (49, []) where arrows: target = y + page  // ⌥↓, page down, space
-        case (126, .option) where arrows, (116, []), (49, .shift) where arrows: target = y - page  // ⌥↑, page up, ⇧space
+        case (125, .option) where arrows, (121, []),
+            (49, []) where arrows:
+            target = y + page  // ⌥↓, page down, space
+        case (126, .option) where arrows, (116, []),
+            (49, .shift) where arrows:
+            target = y - page  // ⌥↑, page up, ⇧space
         case (125, .command) where arrows, (119, []): target = bottom  // ⌘↓, end
         case (126, .command) where arrows, (115, []): target = top  // ⌘↑, home
         default: return false

@@ -167,19 +167,31 @@ final class AccountState: Identifiable {
 
     /// Full records of `keys` in one request, each saved as `issue-KEY` for the issue page and kept as a peek;
     /// `prefetched` remembers the revision so the next pass skips it. Empty when the request fails.
+    /// A search carries only an issue's first 20 comments: the rest are fetched too, so a page opens whole.
     @discardableResult
     func fetchDetails(_ keys: [String]) async -> [Issue] {
         guard !keys.isEmpty else { return [] }
         let jql = "issuekey in (" + keys.map { "\"\($0)\"" }.joined(separator: ",") + ")"
         guard let page = try? await client.search(jql: jql, fields: client.detailFields) else { return [] }
-        for i in page.issues {
+        let client = client
+        let issues = await withTaskGroup(of: Issue.self) { group in
+            for i in page.issues { group.addTask { (try? await client.completingComments(i)) ?? i } }
+            var done: [String: Issue] = [:]
+            for await i in group { done[i.key] = i }
+            return page.issues.map { done[$0.key] ?? $0 }
+        }
+        for i in issues {
             DiskCache.saveAsync(i, account: account, name: "issue-\(i.key)")
             peek[i.key] = i
-            prefetched[i.key] = i.fields.updated
+            // A thread that could not be completed is fetched again on the next pass.
+            if i.hasAllComments || i.fields.comment == nil { prefetched[i.key] = i.fields.updated }
         }
-        DiskCache.saveAsync(prefetched, account: account, name: "prefetched")
-        return page.issues
+        DiskCache.saveAsync(prefetched, account: account, name: Self.prefetchedFile)
+        return issues
     }
+
+    /// v2: copies saved before comments were completed carry 20 of a longer thread; a new name fetches them again.
+    nonisolated static let prefetchedFile = "prefetched-v2"
 
     private var customTitle: String
     /// Name of a `Palette` colour; chosen by the user or dealt from the palette by sidebar position.
@@ -269,7 +281,7 @@ final class AccountState: Identifiable {
         error = nil
         // The account is usable now; the lists, boards and the warm pass fill the cache behind it. Judged before the
         // lists start, since they prefetch details of their own.
-        warmIsFirst = prefetched.isEmpty
+        warmIsFirst = prefetched.isEmpty && lists.isEmpty
         Task { @MainActor in
             await prefetchLists()
             await warm()
@@ -772,7 +784,7 @@ struct CachedAccount: Sendable {
         filters = DiskCache.load(account: account, name: "filters") ?? []
         issueTypeNames = DiskCache.load(account: account, name: "issueTypes") ?? []
         jqlFields = DiskCache.load(account: account, name: "jqlFields") ?? []
-        prefetched = DiskCache.load(account: account, name: "prefetched") ?? [:]
+        prefetched = DiskCache.load(account: account, name: AccountState.prefetchedFile) ?? [:]
         transitions = DiskCache.load(account: account, name: "workflows-transitions") ?? [:]
         lists = DiskCache.recentLists(account: account)
         listCounts = DiskCache.load(account: account, name: "listCounts") ?? [:]
