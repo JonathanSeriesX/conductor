@@ -142,7 +142,7 @@ struct Issue: Codable, Hashable, Sendable, Identifiable {
         var summary: String
         var description: ADFNode?
         var status: Status
-        let assignee: JiraUser?
+        var assignee: JiraUser?
         let reporter: JiraUser?
         let priority: Priority?
         let issuetype: IssueType
@@ -158,7 +158,7 @@ struct Issue: Codable, Hashable, Sendable, Identifiable {
         let issuelinks: [IssueLink]?
         let worklog: WorklogPage?
         let timetracking: TimeTracking?
-        let watches: Watches?
+        var watches: Watches?
         let duedate: String?  // "2026-10-31", no time or zone
         let components: [NamedRef]?
         let fixVersions: [NamedRef]?

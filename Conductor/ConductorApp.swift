@@ -188,7 +188,7 @@ struct RootView: View {
                             embedded: true)
                     } else {
                         ContentUnavailableView(
-                            selection.isEmpty ? "No Issue Selected" : "Issues Selected: \(selection.count)",
+                            selection.isEmpty ? "No Issue Selected" : "\(selection.count) Issues Selected",
                             systemImage: "doc.text"
                         )
                         .frame(maxWidth: .infinity, maxHeight: .infinity).background(Backdrop())
@@ -361,3 +361,4 @@ struct RootView: View {
         if let id = filters.account, session.state(id) == nil, let f = session.filters(for: .assigned) { filters = f }
     }
 }
+

@@ -256,6 +256,10 @@ struct IssueDetailView: View {
     @FocusState private var editCommentFocused: Bool
     @FocusState private var commentFocused: Bool
     @State private var commentRequest = 0
+    /// Content is under the toolbar: the preview column then draws the toolbar's band.
+    @State private var scrolled = false
+    /// The issue the window's title shows: it follows the store only once the next issue is there in full.
+    @State private var crumbIssue: Issue?
     /// The load this page's own write would trigger: `perform` has refreshed the issue already.
     @State private var ownLoad = ""
     @Environment(\.scenePhase) private var scenePhase
@@ -310,6 +314,12 @@ struct IssueDetailView: View {
         // The open editors and their text are the issue's, kept on disk: back from another issue, or after a
         // relaunch, they are as they were. Every change goes straight to the store; the switch only reads it.
         .onAppear(perform: unstash)
+        .onChange(
+            of: [store.issue?.key, store.issue?.fields.parent?.key, store.issue?.fields.issuetype.iconUrl?.absoluteString],
+            initial: true
+        ) {
+            if let i = store.issue { crumbIssue = i }
+        }
         .onChange(of: descriptionDraft) { stash() }
         .onChange(of: editDraft) { stash() }
         .onChange(of: editingCommentID) { stash() }
@@ -424,7 +434,10 @@ struct IssueDetailView: View {
                 .padding(.top, embedded ? 10 : 17)  // the crumb sits on the line of the list's chips
             }
             // The toolbar has no background, so blur what scrolls under it instead of letting buttons sit on text.
-            .softScrollEdge()
+            .softScrollEdge(band: embedded ? scrolled : nil)
+            .onScrollGeometryChange(for: Bool.self) { $0.contentOffset.y + $0.contentInsets.top > 1 } action: {
+                scrolled = $1
+            }
             .onChange(of: commentRequest) {
                 withAnimation { proxy.scrollTo("comments", anchor: .bottom) }
             }
@@ -464,9 +477,13 @@ struct IssueDetailView: View {
 
     /// Parent → key. A click on the parent opens it (⌘-click beside); a click on the key copies it. Not selectable
     /// text: a double-click selected "CON" of "CON-7", and the parent is a link, not a quotation.
+    /// Built from one issue as a whole, `crumbIssue`: the key, its parent and its icon change together. Read off
+    /// the store, the new key showed beside the old issue's parent for as long as the new issue took to load.
     private var crumb: some View {
-        HStack(spacing: 6) {
-            if let p = store.issue?.fields.parent {
+        let issue = crumbIssue?.key == key || !embedded ? crumbIssue : store.issue
+        let key = issue?.key ?? self.key
+        return HStack(spacing: 6) {
+            if let p = issue?.fields.parent {
                 Button {
                     open(p.key)
                 } label: {
@@ -482,7 +499,7 @@ struct IssueDetailView: View {
                 Image(systemName: "chevron.forward").font(.caption2.weight(.bold)).foregroundStyle(.tertiary)
             }
             // Decorative: the Type field names the type, and in a toolbar the icon's label became the copy button's.
-            RemoteImage(url: store.issue?.fields.issuetype.iconUrl, placeholder: "circle").frame(width: 14, height: 14)
+            RemoteImage(url: issue?.fields.issuetype.iconUrl, placeholder: "circle").frame(width: 14, height: 14)
                 .accessibilityHidden(true)
             Button {
                 copyToPasteboard(key)
@@ -581,15 +598,7 @@ struct IssueDetailView: View {
                 ADFView(node: d)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .contentShape(.rect)
-                    // A reader's menu: the selection, then the issue, as on the title.
-                    .background(
-                        ReaderMenu {
-                            CopySelection()
-                            Divider()
-                            if let jira {
-                                IssueMenu(issues: [issue], state: jira) { op in run { _ in try await op() } }
-                            }
-                        })
+                    .background(ReaderMenu())  // a right-click copies a selection and does nothing else
                     // A link click runs through openURL first; the tap that follows must not open the editor.
                     .environment(
                         \.openURL,
@@ -1198,18 +1207,7 @@ struct IssueDetailView: View {
                             )
                             .focusSoon($editCommentFocused)
                         } else {
-                            ADFView(node: c.body)
-                                .background(
-                                    ReaderMenu {
-                                        CopySelection()
-                                        if c.author?.accountId == jira?.me?.accountId {
-                                            Divider()
-                                            Button("Edit Comment", systemImage: "pencil") { beginCommentEdit(c) }
-                                            Button("Delete Comment", systemImage: "trash", role: .destructive) {
-                                                deleteComment(c)
-                                            }
-                                        }
-                                    })
+                            ADFView(node: c.body).background(ReaderMenu())
                         }
                     }
                 }
@@ -1230,29 +1228,35 @@ struct IssueDetailView: View {
         // A split view puts every column's .navigation items at the window's leading edge, over the list; the
         // preview column's belong above the preview.
         ToolbarItem(placement: embedded ? .automatic : .navigation) {
-            if let back {
-                Button(action: back) { Label("Back", systemImage: "chevron.backward") }
-                    .help("Back to the previous issue (⌘[)")
-                    .keyboardShortcut("[", modifiers: .command)
+            // A window keeps its Back button, greyed with nowhere to go, as Finder and Safari do: one that appeared
+            // with the first step pushed the title sideways in a single frame.
+            if back != nil || !embedded {
+                Button {
+                    back?()
+                } label: {
+                    Label("Back", systemImage: "chevron.backward")
+                }
+                .help("Back to the previous issue (⌘[)")
+                .keyboardShortcut("[", modifiers: .command)
+                .disabled(back == nil)
             }
         }
         // The window's title is the crumb; the preview column draws it above the summary and keeps its actions
         // at the leading edge, with no spacer.
         if !embedded {
             ToolbarItem(placement: .navigation) {
-                // A step along the trail pushes the title: the new key comes in from the side it came from and
-                // the old one leaves the other way, as a navigation bar's does.
+                // A step along the trail: the old title blurs out a few points towards where it went, then the new one blurs in from the
+                // side it came from: one at a time, never two titles over each other.
                 ZStack(alignment: .leading) {
-                    crumb.id(key)
+                    crumb.id(crumbIssue?.key ?? key)
                         .transition(
                             .asymmetric(
-                                insertion: .move(edge: forward ? .trailing : .leading).combined(with: .opacity),
-                                removal: .move(edge: forward ? .leading : .trailing).combined(with: .opacity)))
+                                insertion: .crumb(forward ? 10 : -10).animation(.smooth(duration: 0.22).delay(0.09)),
+                                removal: .crumb(forward ? -10 : 10).animation(.easeIn(duration: 0.09))))
                 }
                 .padding(.trailing, 28)  // room for the "copied" tick, which hangs off the key's end
-                .clipped()
                 .padding(.leading, 4)
-                .animation(.easeOut(duration: 0.25), value: key)
+                .animation(.default, value: crumbIssue?.key)
             }
             .glassTitle()
         }
@@ -2127,18 +2131,23 @@ struct LogWorkView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Log Work").font(.headline)
-            TextField("Time spent, e.g. 1h 30m", text: $duration).textFieldStyle(.roundedBorder)
+            TextField("Time spent, e.g. 1h 30m", text: $duration).textFieldStyle(.roundedBorder).onSubmit(log)
             DatePicker("Started", selection: $started)
-            TextField("Comment (optional)", text: $comment).textFieldStyle(.roundedBorder)
+            TextField("Comment (optional)", text: $comment).textFieldStyle(.roundedBorder).onSubmit(log)
             HStack {
                 if !duration.isEmpty, seconds == nil { Text("Use w, d, h, m").font(.caption).foregroundStyle(.red) }
                 Spacer()
-                Button("Log") { if let s = seconds { onSubmit(s, comment, started) } }
+                Button("Log", action: log)
                     .glassButton(prominent: true).keyboardShortcut(.defaultAction).disabled(seconds == nil)
             }
         }
         .padding(12)
         .frame(width: 300)
+    }
+
+    /// Return in either field logs too: a field's own Return never reaches the default button.
+    private func log() {
+        if let s = seconds { onSubmit(s, comment, started) }
     }
 
     /// "1w 2d 3h 30m" → seconds (Jira's 8h day, 5d week). Bare numbers mean minutes.
@@ -2160,5 +2169,20 @@ struct LogWorkView: View {
         }
         let leftovers = t.replacing(/(\d+(?:\.\d+)?)\s*[wdhm]/, with: "").trimmingCharacters(in: .whitespaces)
         return matched && leftovers.isEmpty && total > 0 ? Int(total) : nil
+    }
+}
+
+/// A title leaving or arriving: a few points of travel, a little blur, and a fade.
+private struct CrumbStep: ViewModifier {
+    let dx: CGFloat
+    let away: Bool
+    func body(content: Content) -> some View {
+        content.offset(x: away ? dx : 0).blur(radius: away ? 3 : 0).opacity(away ? 0 : 1)
+    }
+}
+
+extension AnyTransition {
+    fileprivate static func crumb(_ dx: CGFloat) -> AnyTransition {
+        .modifier(active: CrumbStep(dx: dx, away: true), identity: CrumbStep(dx: dx, away: false))
     }
 }

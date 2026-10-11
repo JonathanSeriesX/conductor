@@ -61,6 +61,8 @@ struct DisplayRow: Identifiable {
 @MainActor @Observable
 final class IssueListStore {
     var rows: [ListRow] = []
+    /// Keys with a write on its way to Jira.
+    var pending: Set<String> = []
     var nextToken: String?
     /// How many issues the query matches on the server, every account summed: the last count from the cache until
     /// this load's own answers. Nil when no count is known yet.
@@ -117,6 +119,15 @@ final class IssueListStore {
     }
 
     /// Loads the filters: one account with pagination, or every account merged in the chosen order.
+    /// Changes the rows' copies of `keys` at once, ahead of Jira's answer.
+    func patch(_ keys: [String], _ change: (inout Issue) -> Void) {
+        for i in rows.indices where keys.contains(rows[i].issue.key) {
+            var issue = rows[i].issue
+            change(&issue)
+            rows[i] = ListRow(issue: issue, state: rows[i].state)
+        }
+    }
+
     func load(_ f: ListFilters, session: Session) async {
         generation += 1
         let gen = generation
@@ -338,7 +349,8 @@ struct IssueListView: View {
                     date: filters.sort.date(of: row.issue), dayOnly: filters.sort.field == .due,
                     depth: d.depth, folded: d.children.count, expanded: expanded.contains(d.id),
                     toggle: d.children.isEmpty
-                        ? nil : { withAnimation(.snappy(duration: 0.25)) { expanded.formSymmetricDifference([d.id]) } }
+                        ? nil : { withAnimation(.snappy(duration: 0.25)) { expanded.formSymmetricDifference([d.id]) } },
+                    pending: store.pending.contains(row.issue.key)
                 )
                 .id(row.issue.fields.summary)  // a new view after an edit, so the table measures the row again
                 .tag(row.target)
@@ -393,11 +405,15 @@ struct IssueListView: View {
             // Over a selected row the menu acts on the whole selection, else on the row under the pointer.
             let rows = store.rows.filter { targets.contains($0.target) }
             if let state = rows.first?.state, rows.allSatisfy({ $0.state === state }) {
-                IssueMenu(issues: rows.map(\.issue), state: state, write: act)
+                IssueMenu(
+                    issues: rows.map(\.issue), state: state, write: { act(keys: rows.map(\.issue.key), $0) },
+                    patch: store.patch)
             }
         } primaryAction: { targets in
-            // Double-click (or ↩) opens the issue in its own window; a single click only selects.
+            // Double-click (or ↩) moves the issue to a window of its own, like a message in Mail: the preview
+            // lets it go, so the same page is never open twice.
             for t in targets { openWindow(id: "issue", value: t) }
+            selection = []
         }
         .onKeyPress(.rightArrow) { fold(open: layoutDirection == .leftToRight) }
         .onKeyPress(.leftArrow) { fold(open: layoutDirection == .rightToLeft) }
@@ -636,13 +652,14 @@ struct IssueListView: View {
 
     // MARK: Row actions
 
-    /// Runs a write, then reloads the list and the open issue so both show the result.
-    private func act(_ op: @escaping () async throws -> Void) {
+    /// Runs a write with its rows marked busy, then reloads the list and the open issue so both show the result;
+    /// the rows already show what the menu patched in, so the reload only confirms and re-sorts.
+    private func act(keys: [String], _ op: @escaping () async throws -> Void) {
+        store.pending.formUnion(keys)
         Task {
-            do {
-                try await op()
-                session.reloadTick += 1
-            } catch { store.error = error.localizedDescription }
+            do { try await op() } catch { store.error = error.localizedDescription }
+            store.pending.subtract(keys)
+            session.reloadTick += 1
         }
     }
 
@@ -900,6 +917,8 @@ struct IssueRow: View {
     var folded = 0
     var expanded = false
     var toggle: (() -> Void)?
+    /// A write to this issue is on its way to Jira: a spinner beside the status.
+    var pending = false
     /// `.increased` on the selected row: the accent is the background, so the greys go white and the icons
     /// get a light backing, like the priority icon.
     @Environment(\.backgroundProminence) private var prominence
@@ -941,6 +960,7 @@ struct IssueRow: View {
                     Text(issue.key).font(.caption.monospaced()).foregroundStyle(dim).fixedSize()
                     if let site { SiteBadge(name: site.name, color: site.color) }
                     StatusPill(status: issue.fields.status).fixedSize()
+                    if pending { ProgressView().controlSize(.mini).fixedSize() }
                     if let p = issue.subtaskProgress {
                         ViewThatFits(in: .horizontal) {
                             Label("\(p.done) of \(p.total) done", systemImage: "checklist")
@@ -981,13 +1001,6 @@ struct IssueRow: View {
     }
 }
 
-/// "Copy" for a reader's menu over selectable text: the selection, through the responder chain, as ⌘C does.
-struct CopySelection: View {
-    var body: some View {
-        Button("Copy", systemImage: "doc.on.doc") { NSApp.sendAction(#selector(NSText.copy(_:)), to: nil, from: nil) }
-    }
-}
-
 /// The right-click menu for issues anywhere: list rows and board cards share it. With several issues selected it
 /// acts on all of them; what applies to only some (a status, "Assign to Me") shows for the ones it fits.
 struct IssueMenu: View {
@@ -995,6 +1008,8 @@ struct IssueMenu: View {
     let state: AccountState
     /// Runs a write and refreshes whatever the owner shows.
     var write: (@escaping @Sendable () async throws -> Void) -> Void
+    /// Applies what the write will do to the owner's copies of `keys` at once, before Jira answers.
+    var patch: (_ keys: [String], _ change: @escaping (inout Issue) -> Void) -> Void = { _, _ in }
     @Environment(Session.self) private var session
     @Environment(\.openWindow) private var openWindow
 
@@ -1033,11 +1048,14 @@ struct IssueMenu: View {
                             set: { on in
                                 guard on else { return }
                                 let (old, account) = (issues.map(\.fields.status), state.id)
+                                patch(keys) { $0.fields.status = t.to }
                                 write {
-                                    for (key, status) in zip(keys, old) {
-                                        try await state.client.transition(key, to: t.id)
-                                        await Bin.shared.put(.status(status), account: account, key: key)
-                                    }
+                                    try await parallel(zip(keys, old).map { key, status in
+                                        {
+                                            try await state.client.transition(key, to: t.id)
+                                            await Bin.shared.put(.status(status), account: account, key: key)
+                                        }
+                                    })
                                 }
                             })
                     ) { Text(t.name) }
@@ -1054,16 +1072,22 @@ struct IssueMenu: View {
         let notMine = issues.filter { $0.fields.assignee?.accountId != me }.map(\.key)
         Button("Assign to Me", systemImage: "person.crop.circle.badge.checkmark") {
             guard let me else { return }
-            write { for key in notMine { try await state.client.assign(key, to: me) } }
+            patch(notMine) { $0.fields.assignee = state.me }
+            write { try await parallel(notMine.map { key in { try await state.client.assign(key, to: me) } }) }
         }
         .disabled(me == nil || notMine.isEmpty)
         let assigned = issues.filter { $0.fields.assignee != nil }.map(\.key)
         Button("Unassign", systemImage: "person.crop.circle.badge.minus") {
-            write { for key in assigned { try await state.client.assign(key, to: nil) } }
+            patch(assigned) { $0.fields.assignee = nil }
+            write { try await parallel(assigned.map { key in { try await state.client.assign(key, to: nil) } }) }
         }
         .disabled(assigned.isEmpty)
         Button(watching ? "Unwatch" : "Watch", systemImage: watching ? "eye.slash" : "eye") {
-            write { for key in keys { try await state.client.watch(key, !watching, me: me) } }
+            patch(keys) {
+                let n = $0.fields.watches?.watchCount ?? 0
+                $0.fields.watches = Watches(watchCount: max(0, n + (watching ? -1 : 1)), isWatching: !watching)
+            }
+            write { try await parallel(keys.map { key in { try await state.client.watch(key, !watching, me: me) } }) }
         }
     }
 }
@@ -1227,16 +1251,6 @@ private struct NativeSelectionOff: NSViewRepresentable {
     final class Finder: NSView {
         override func viewDidMoveToWindow() { find(attempt: 0) }
 
-        /// A right-click makes the table ring the clicked rows with a pale outline, its own highlight style or
-        /// not; on rows that paint their selection it reads as a stray border. The ring has no public switch.
-        /// ponytail: a private AppKit method, left alone when a release renames it.
-        private static let silenceContextRing: Void = {
-            let sel = Selector(("_drawContextMenuHighlightForRow:clipRect:"))
-            guard let m = class_getInstanceMethod(NSTableView.self, sel) else { return }
-            let noop: @convention(block) (NSTableView, Int, NSRect) -> Void = { _, _, _ in }
-            method_setImplementation(m, imp_implementationWithBlock(noop))
-        }()
-
         /// The table is a sibling subtree: the nearest ancestor with one below it, short of the split view that
         /// also holds the sidebar's. It can arrive a turn after this view, hence the retries.
         private func find(attempt: Int) {
@@ -1246,7 +1260,6 @@ private struct NativeSelectionOff: NSViewRepresentable {
                 if let table = firstTable(in: s) {
                     table.selectionHighlightStyle = .none
                     table.allowsTypeSelect = false  // letters are shortcuts here, not a jump to a row
-                    Self.silenceContextRing
                     return
                 }
                 v = s.superview
@@ -1263,4 +1276,12 @@ private struct ChipAnchor: NSViewRepresentable {
     let items: [ChipItem]
     func makeNSView(context: Context) -> NSView { NSView() }
     func updateNSView(_ view: NSView, context: Context) { menus.register(id, view: view, items: items) }
+}
+
+/// Runs the writes at once rather than one after the other; the first failure is thrown once all have returned.
+func parallel(_ ops: [@Sendable () async throws -> Void]) async throws {
+    try await withThrowingTaskGroup(of: Void.self) { group in
+        for op in ops { group.addTask { try await op() } }
+        try await group.waitForAll()
+    }
 }

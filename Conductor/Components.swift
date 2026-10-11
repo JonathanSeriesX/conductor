@@ -27,8 +27,19 @@ extension View {
     }
 
     /// Blurs what scrolls under a transparent toolbar. Sequoia's toolbar has an opaque background already.
-    @ViewBuilder func softScrollEdge() -> some View {
-        if #available(macOS 26, *) { scrollEdgeEffectStyle(.soft, for: .top) } else { self }
+    /// `band`: inside a split-view column (the main window's preview) AppKit never activates the scroll view's
+    /// pocket, so nothing blurs under the toolbar; there the column draws the window toolbar's band itself, once
+    /// content has scrolled under it.
+    @ViewBuilder func softScrollEdge(band: Bool? = nil) -> some View {
+        if #available(macOS 26, *) {
+            if let band {
+                scrollEdgeEffectStyle(.soft, for: .top).overlay(alignment: .top) { ToolbarBand(visible: band) }
+            } else {
+                scrollEdgeEffectStyle(.soft, for: .top)
+            }
+        } else {
+            self
+        }
     }
 
     /// A bottom bar that the system blurs on macOS 26; on Sequoia an inset with the `.bar` backing, so rows
@@ -340,6 +351,9 @@ struct ToolbarRelayout: NSViewRepresentable {
     final class Watcher: NSView {
         nonisolated(unsafe) private var observer: CFRunLoopObserver?
         private var widths: [ObjectIdentifier: CGFloat] = [:]
+        /// Found once per window: the search walked the whole window tree on every run-loop pass, which kept a
+        /// core a third busy while any other window turned the loop.
+        private weak var cachedToolbar: NSView?
 
         override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
@@ -347,6 +361,7 @@ struct ToolbarRelayout: NSViewRepresentable {
             super.viewDidMoveToWindow()
             if let observer { CFRunLoopObserverInvalidate(observer) }
             observer = nil
+            cachedToolbar = nil
             guard window != nil else { return }
             // CoreAnimation commits at order 2_000_000; this runs just before, after AppKit's and SwiftUI's passes.
             observer = CFRunLoopObserverCreateWithHandler(
@@ -368,11 +383,17 @@ struct ToolbarRelayout: NSViewRepresentable {
         }
 
         private func relayoutIfChanged() {
-            guard let toolbar = toolbarView, let items = window?.toolbar?.items else { return }
+            guard let window, window.isVisible, window.occlusionState.contains(.visible), let toolbar = toolbarView,
+                let items = window.toolbar?.items
+            else { return }
             var changed = toolbar.needsLayout
             for v in items.compactMap(\.view) where String(describing: type(of: v)).contains("Hosting") {
+                // Measured only once SwiftUI has marked the item dirty, or the first time: a fitting size costs a
+                // constraint pass, and other windows turn the run loop all the time (a board, an animation).
+                let key = ObjectIdentifier(v)
+                guard widths[key] == nil || v.needsLayout || v.needsUpdateConstraints else { continue }
                 let width = v.fittingSize.width  // asking applies a pending SwiftUI change now, before the commit
-                if widths.updateValue(width, forKey: ObjectIdentifier(v)) != width { changed = true }
+                if widths.updateValue(width, forKey: key) != width { changed = true }
             }
             guard changed else { return }
             toolbar.needsLayout = true
@@ -380,14 +401,16 @@ struct ToolbarRelayout: NSViewRepresentable {
         }
 
         /// The toolbar view lays its items out on its own layout pass; nothing public asks for one. It sits two
-        /// levels under the titlebar container, so the search walks the whole titlebar tree.
+        /// levels under the titlebar container, so the search walks the titlebar's siblings of the content view.
         private var toolbarView: NSView? {
+            if let cachedToolbar, cachedToolbar.window === window { return cachedToolbar }
             func find(_ v: NSView) -> NSView? {
                 if String(describing: type(of: v)) == "NSToolbarView" { return v }
-                for s in v.subviews { if let t = find(s) { return t } }
+                for s in v.subviews where s !== window?.contentView { if let t = find(s) { return t } }
                 return nil
             }
-            return window?.contentView?.superview.flatMap(find)
+            cachedToolbar = window?.contentView?.superview.flatMap(find)
+            return cachedToolbar
         }
     }
 }
@@ -486,25 +509,16 @@ extension Binding where Value: Sendable {
     }
 }
 
-/// A context menu of our own on selectable text. SwiftUI's selectable text hands a right-click to the system's
-/// text menu (Cut, Paste, Font, Spelling…, drawn out of process), which an app can neither trim nor replace with
-/// `.contextMenu`. So the click is taken first: this view sits under the text and marks its area, and the monitor
-/// `ReaderMenus.install` shows `content` as the menu for a right-click anywhere on it.
-struct ReaderMenu<Content: View>: NSViewRepresentable {
-    @ViewBuilder let content: () -> Content
-    /// The hosted menu starts outside the window's SwiftUI tree: it gets this environment (the session, the
-    /// account, the window actions) handed over.
-    @Environment(\.self) private var environment
-
+/// A reader's right-click on selectable text: with a selection, a menu with Copy alone; without one, nothing.
+/// SwiftUI's selectable text would otherwise hand the click to the system's text menu (Cut, Paste, Font,
+/// Spelling…, drawn out of process), which an app can neither trim nor replace with `.contextMenu`. So the click
+/// is taken first: this view sits under the text and marks its area for the monitor `ReaderMenus.install`.
+struct ReaderMenu: NSViewRepresentable {
     func makeNSView(context: Context) -> ReaderMenuArea { ReaderMenuArea() }
-    func updateNSView(_ view: ReaderMenuArea, context: Context) {
-        let (content, environment) = (content, environment)
-        view.make = { NSHostingMenu(rootView: content().environment(\.self, environment)) }
-    }
+    func updateNSView(_ view: ReaderMenuArea, context: Context) {}
 }
 
 final class ReaderMenuArea: NSView {
-    var make: () -> NSMenu = { NSMenu() }
     override func hitTest(_ point: NSPoint) -> NSView? { nil }  // the text above takes every click
 }
 
@@ -513,12 +527,27 @@ final class ReaderMenuArea: NSView {
         NSEvent.addLocalMonitorForEvents(matching: .rightMouseDown) { e in
             guard let w = e.window, let root = w.contentView else { return e }
             let at = root.convert(e.locationInWindow, from: nil)
-            // A writing field over the area keeps its own menu.
-            if let tv = root.hitTest(at) as? NSTextView, tv.isEditable { return e }
+            // Only marked text: editors (the composer, a summary or comment being edited) are never marked, so
+            // they keep their own menu. SwiftUI's selectable text is a text view that calls itself editable too,
+            // so that cannot tell them apart.
             guard let area = areas(in: root).last(where: { $0.convert($0.bounds, to: root).contains(at) }) else {
                 return e
             }
-            NSMenu.popUpContextMenu(area.make(), with: e, for: area)
+            // A selection in this text: SwiftUI's text interaction view holds it and has the keyboard, and says
+            // whether Copy has anything to copy, as it does for the Edit menu. Anything else: no menu.
+            let rect = area.convert(area.bounds, to: root)
+            let copy = NSMenuItem(title: String(localized: "Copy"), action: #selector(NSText.copy(_:)), keyEquivalent: "")
+            if let holder = w.firstResponder as? NSView, holder.convert(holder.bounds, to: root).intersects(rect),
+                holder.responds(to: #selector(NSText.copy(_:))),
+                (holder as? NSMenuItemValidation)?.validateMenuItem(copy)
+                    ?? (holder as? NSUserInterfaceValidations)?.validateUserInterfaceItem(copy) ?? true
+            {
+                copy.target = holder
+                let menu = NSMenu()
+                menu.autoenablesItems = false  // validation would look for a target from the area, and grey it
+                menu.addItem(copy)
+                NSMenu.popUpContextMenu(menu, with: e, for: area)
+            }
             return nil
         }
     }
@@ -532,3 +561,24 @@ final class ReaderMenuArea: NSView {
         return out
     }
 }
+
+/// The window toolbar's background, drawn: a blur washed nearly white (black in dark mode) over the toolbar's
+/// height, ending at the system's hairline. Shown only while content is under it, as the window's own is.
+struct ToolbarBand: View {
+    let visible: Bool
+
+    var body: some View {
+        GeometryReader { g in
+            band.frame(height: g.safeAreaInsets.top).offset(y: -g.safeAreaInsets.top)
+        }
+        .opacity(visible ? 1 : 0)
+        .animation(.easeOut(duration: 0.15), value: visible)
+        .allowsHitTesting(false)
+    }
+
+    /// The bar material is the titlebar's; the hairline is the one the window draws under its toolbar.
+    private var band: some View {
+        Rectangle().fill(.bar).overlay(alignment: .bottom) { Divider() }
+    }
+}
+
