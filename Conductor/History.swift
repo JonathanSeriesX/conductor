@@ -23,7 +23,7 @@ struct HistoryView: View {
     let target: IssueTarget
     @Environment(Session.self) private var session
     @State private var groups: [ChangeGroup]?
-    @State private var error: String?
+    @State private var failed = false
 
     var body: some View {
         Group {
@@ -56,17 +56,24 @@ struct HistoryView: View {
                     .padding(.vertical, 4)
                 }
                 .scrollContentBackground(.hidden)
-            } else if error == nil {
+            } else if failed {
+                ContentUnavailableView("Couldn't load \(target.key)", systemImage: "exclamationmark.triangle")
+            } else {
                 ProgressView()
             }
         }
-        .frame(minWidth: 480, minHeight: 320)
+        // Fill the window from the first frame: sized to its minimum, the spinner's backdrop drew as a box
+        // in the middle, and the list's arrival pushed it out to the edges.
+        .frame(minWidth: 480, maxWidth: .infinity, minHeight: 320, maxHeight: .infinity)
         .background(Backdrop())
         .navigationTitle(Text("History of \(target.key)"))
         .task {
-            guard let c = session.state(target.accountID)?.client else { return }
-            do { groups = try await c.changelog(target.key) } catch { self.error = error.localizedDescription }
+            guard let st = session.state(target.accountID) else { return }
+            let (client, key) = (st.client, target.key)
+            // The last copy draws at once; Jira's answer replaces it behind.
+            let (now, fresh) = st.memo("changelog-\(key)") { try await client.changelog(key) }
+            groups = now
+            if let value = await fresh.value { groups = value } else if groups == nil { failed = true }
         }
-        .errorAlert($error)
     }
 }
