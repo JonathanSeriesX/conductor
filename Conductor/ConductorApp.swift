@@ -150,7 +150,6 @@ struct RootView: View {
     private var previewed: IssueTarget? { selection.count == 1 ? selection.first : nil }
     /// The list toolbar's title item, measured: the list column is never narrower than its toolbar.
     @State private var listTitleWidth: CGFloat = 0
-    @FocusedValue(\.issueActions) private var issueActions
     @State private var restored = false
 
     private var currentProject: (Project, AccountState)? {
@@ -199,8 +198,8 @@ struct RootView: View {
                     }
                 }
                 .background(
-                    WindowEventMonitor(mask: .keyDown) { e in
-                        escape(e).flatMap { Shortcuts.handle($0, issue: issueActions, session: session) }
+                    IssueKeyMonitor { e, issue in
+                        escape(e, issue: issue).flatMap { Shortcuts.handle($0, issue: issue, session: session) }
                     }
                 )
                 .onChange(of: session.createIssueRequested) { _, on in
@@ -290,7 +289,7 @@ struct RootView: View {
     /// Escape steps back along the preview's trail, then empties the preview column, wherever the focus is, unless
     /// something nearer has a use for it: a field being edited cancels that edit, a search with text clears it, and
     /// a comment draft stays as it is. With nothing to do it is used up all the same: passed on, the toolbar twitches.
-    private func escape(_ e: NSEvent) -> NSEvent? {
+    private func escape(_ e: NSEvent, issue issueActions: IssueActions?) -> NSEvent? {
         guard e.keyCode == 53, e.modifierFlags.intersection(.deviceIndependentFlagsMask).isEmpty else { return e }
         if issueActions?.isEditing == true { return e }
         // A popover's Escape arrives tagged with the main window on Tahoe; the popover (a child window) must close, not the preview.
@@ -361,4 +360,3 @@ struct RootView: View {
         if let id = filters.account, session.state(id) == nil, let f = session.filters(for: .assigned) { filters = f }
     }
 }
-

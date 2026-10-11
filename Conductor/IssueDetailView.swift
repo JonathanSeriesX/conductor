@@ -99,6 +99,9 @@ final class IssueDetailStore {
                 guard self.key == key else { return }
             }
             let shown = next ?? state.peek[key]
+            // Assignees of subtasks, children and links from memory and disk, before any request.
+            let seeds = await Self.known(Self.relatedKeys(of: shown, children: kids ?? []), state: state)
+            guard self.key == key else { return }
             var list: [Sprint] = []
             if full, let project = shown?.fields.project?.key,
                 meta.map({ m in client.sprintField.map { m.fields[$0] != nil } ?? false }) ?? false
@@ -114,8 +117,7 @@ final class IssueDetailStore {
             error = nil
             gone = false
             allLabels = []
-            related = [:]
-            seedRelated(state)  // assignees of subtasks and links from memory, before any request
+            related = seeds
         }
         do {
             let i = pending ?? Task { try await client.issue(key) }
@@ -125,24 +127,24 @@ final class IssueDetailStore {
             async let types = full ? state.linkTypes() : nil
             let fresh = try await i.value
             guard self.key == key else { return }
-            issue = fresh
+            update(\.issue, fresh)
             DiskCache.saveAsync(fresh, account: state.account, name: "issue-\(key)")
             Spotlight.index([fresh], host: state.host)
             if let fresh = try? await t, self.key == key {
-                transitions = fresh
+                update(\.transitions, fresh)
                 DiskCache.saveAsync(fresh, account: state.account, name: "transitions-\(key)")
                 if let i = issue { state.learnTransitions(fresh, of: i) }
             }
             if let fresh = try? await m, self.key == key {
-                editMeta = fresh
+                update(\.editMeta, fresh)
                 DiskCache.saveAsync(fresh, account: state.account, name: "editmeta-\(key)")
             }
             if full {
                 if let page = try? await kids, self.key == key {
-                    children = page.issues.filter { !$0.fields.issuetype.isSubtask }
+                    update(\.children, page.issues.filter { !$0.fields.issuetype.isSubtask })
                     DiskCache.saveAsync(children, account: state.account, name: "children-\(key)")
                 }
-                if let list = await types { linkTypes = list }
+                if let list = await types { update(\.linkTypes, list) }
                 prefetchRelated(state)
             }
         } catch {
@@ -157,19 +159,25 @@ final class IssueDetailStore {
         }
         if full, canEdit(client.sprintField), let project = issue?.fields.project?.key {
             let list = await state.sprints(project: project)
-            if self.key == key { sprints = list }
+            if self.key == key { update(\.sprints, list) }
         }
         if full, allLabels.isEmpty, canEdit("labels") {
             let (now, fresh) = state.memo("labels") { try await client.labels() }
-            if let now, self.key == key { allLabels = now }
-            if let list = await fresh.value, self.key == key { allLabels = list }
+            if let now, self.key == key { update(\.allLabels, now) }
+            if let list = await fresh.value, self.key == key { update(\.allLabels, list) }
         }
+    }
+
+    /// Assigns only a real change: every write re-renders the page, and Jira's answer is usually what the disk had.
+    private func update<T: Equatable>(_ path: ReferenceWritableKeyPath<IssueDetailStore, T>, _ value: T) {
+        if self[keyPath: path] != value { self[keyPath: path] = value }
     }
 
     /// Full records for everything this page can open with a click: subtasks, children, the parent and linked
     /// issues. One batched request, skipping what is already on disk.
     private func prefetchRelated(_ state: AccountState) {
-        let keys = seedRelated(state)
+        let keys = Self.relatedKeys(of: issue, children: children)
+        for k in keys where related[k] == nil { if let p = state.peek[k] { related[k] = p } }
         let missing = Set(keys).filter { state.prefetched[$0] == nil || state.peek[$0] == nil }
         guard !missing.isEmpty else { return }
         let key = self.key
@@ -178,19 +186,30 @@ final class IssueDetailStore {
         }
     }
 
-    /// The keys this page can open with a click, with what memory already knows about them put in `related`.
-    @discardableResult
-    private func seedRelated(_ state: AccountState) -> [String] {
+    /// The keys this page can open with a click.
+    private static func relatedKeys(of issue: Issue?, children: [Issue]) -> [String] {
         guard let issue else { return [] }
         var keys =
             (issue.fields.subtasks ?? []).map(\.key) + children.map(\.key)
             + (issue.fields.issuelinks ?? []).compactMap { $0.other?.key }
         if let p = issue.fields.parent?.key { keys.append(p) }
-        // Memory first, then the issue's own file (a Done subtask is in no open list but was prefetched once).
-        for k in keys where related[k] == nil {
-            related[k] = state.peek[k] ?? DiskCache.load(Issue.self, account: state.account, name: "issue-\(k)")
-        }
         return keys
+    }
+
+    /// What memory knows about `keys`, then each issue's own file (a Done subtask is in no open list but was
+    /// prefetched once). The files are read and decoded off the main thread: a page with fifteen children held
+    /// the main thread for every one of them on a step.
+    private static func known(_ keys: [String], state: AccountState) async -> [String: Issue] {
+        var found: [String: Issue] = [:]
+        for k in keys { found[k] = state.peek[k] }
+        let missing = keys.filter { found[$0] == nil }
+        guard !missing.isEmpty else { return found }
+        let account = state.account
+        let disk = await Task.detached(priority: .userInitiated) {
+            missing.compactMap { DiskCache.load(Issue.self, account: account, name: "issue-\($0)") }
+        }.value
+        for i in disk { found[i.key] = i }
+        return found
     }
 
     /// Runs a write, then refreshes only what a write can change: the issue, its transitions and editmeta.
@@ -263,8 +282,6 @@ struct IssueDetailView: View {
     @State private var showStatus = false
     @State private var showPriority = false
     @State private var isDropTargeted = false
-    /// The key was just copied; a tick shows beside it for a moment.
-    @State private var copied = false
     @FocusState private var summaryFocused: Bool
     @FocusState private var descriptionFocused: Bool
     @FocusState private var editCommentFocused: Bool
@@ -272,10 +289,6 @@ struct IssueDetailView: View {
     @State private var commentRequest = 0
     /// Content is under the toolbar: the preview column then draws the toolbar's band.
     @State private var scrolled = false
-    /// The issue the window's title shows: it follows the store only once the next issue is there in full.
-    @State private var crumbIssue: Issue?
-    /// Whether that title carries a Back: set with it, so Back comes and goes with the title it belongs to.
-    @State private var crumbHasBack = false
     /// The issue on screen: the previous one stays until the next has loaded, and its folds go with it.
     private var shownKey: String { store.issue?.key ?? key }
     /// Folded cards and work-log groups, per issue, as this Mac remembers them.
@@ -345,30 +358,6 @@ struct IssueDetailView: View {
         // The open editors and their text are the issue's, kept on disk: back from another issue, or after a
         // relaunch, they are as they were. Every change goes straight to the store; the switch only reads it.
         .onAppear(perform: unstash)
-        .onChange(
-            of: [
-                store.issue?.key, store.issue?.fields.parent?.key,
-                store.issue?.fields.issuetype.iconUrl?.absoluteString,
-            ],
-            initial: true
-        ) {
-            guard let i = store.issue else { return }
-            let hasBack = back != nil
-            // A window's title animates. Started in the update that builds the next page, which blocks the main
-            // thread for a few hundred ms on a long issue, the animation spent its time inside that frame and only
-            // its last few frames showed. One turn later the page is on screen and the title moves in light frames.
-            if !embedded, let shown = crumbIssue, shown.key != i.key {
-                Task {
-                    if let now = store.issue {
-                        crumbIssue = now
-                        crumbHasBack = hasBack
-                    }
-                }
-            } else {
-                crumbIssue = i
-                crumbHasBack = hasBack
-            }
-        }
         .onChange(of: descriptionDraft) { stash() }
         .onChange(of: editDraft) { stash() }
         .onChange(of: editingCommentID) { stash() }
@@ -550,63 +539,9 @@ struct IssueDetailView: View {
         }
     }
 
-    /// Parent → key. A click on the parent opens it (⌘-click beside); a click on the key copies it. Not selectable
-    /// text: a double-click selected "CON" of "CON-7", and the parent is a link, not a quotation.
-    /// Built from one issue as a whole, `crumbIssue`: the key, its parent and its icon change together. Read off
-    /// the store, the new key showed beside the old issue's parent for as long as the new issue took to load.
-    private var crumb: some View {
-        // A new window has no issue yet: the list's copy names the parent and type, so the title is whole from
-        // the first frame instead of growing a parent half a second later.
-        let issue = crumbIssue?.key == key || !embedded ? (crumbIssue ?? jira?.peek[key]) : store.issue
-        let key = issue?.key ?? self.key
-        return HStack(spacing: 6) {
-            if let p = issue?.fields.parent {
-                Button {
-                    open(p.key)
-                } label: {
-                    HStack(spacing: 4) {
-                        RemoteImage(url: p.fields.issuetype?.iconUrl).frame(width: 14, height: 14)
-                        Text(p.key).monospaced()  // the key alone: the summary is in the tooltip and on the parent field
-                    }
-                    .contentShape(.rect)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(Text(verbatim: "\(p.key) \(p.fields.summary)"))
-                .help("\(p.fields.summary)\n\(String(localized: "Open \(p.key); ⌘-click for a new window"))")
-                Image(systemName: "chevron.forward").font(.caption2.weight(.bold)).foregroundStyle(.tertiary)
-            }
-            // Decorative: the Type field names the type, and in a toolbar the icon's label became the copy button's.
-            RemoteImage(url: issue?.fields.issuetype.iconUrl, placeholder: "circle").frame(width: 14, height: 14)
-                .accessibilityHidden(true)
-            Button {
-                copyToPasteboard(key)
-                withAnimation(.easeOut(duration: 0.15)) { copied = true }
-                Task {
-                    try? await Task.sleep(for: .seconds(1.2))
-                    withAnimation(.easeOut(duration: 0.3)) { copied = false }
-                }
-            } label: {
-                Text(key).monospaced().contentShape(.rect)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Copy \(key)")
-            .help("Click to copy \(key)")
-            // The tick hangs off the end so the key, and the toolbar around it, never shift.
-            .overlay(alignment: .trailing) {
-                if copied {
-                    Image(systemName: "checkmark").font(.caption.weight(.bold)).foregroundStyle(.green)
-                        .offset(x: 18).transition(.opacity)
-                        .accessibilityLabel("Copied")
-                }
-            }
-        }
-        .font(.callout).foregroundStyle(.secondary)
-        .fixedSize()  // two keys and two icons: never "CON…"
-    }
-
     private func header(_ issue: Issue) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            if embedded { crumb }  // a window carries it in its toolbar
+            if embedded { Crumb(issue: store.issue, key: key, open: open) }  // a window carries it in its toolbar
             if summaryDraft != nil {
                 // The field takes the title's place exactly: the padding inside the background equals the negative
                 // padding outside it, so the text does not move and the page below stays put.
@@ -1263,50 +1198,56 @@ struct IssueDetailView: View {
             } else if list.isEmpty {
                 Text("No comments yet").foregroundStyle(.tertiary)
             }
-            ForEach(list) { c in
-                HStack(alignment: .top, spacing: 10) {
-                    Avatar(user: c.author, size: 26)
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack(spacing: 6) {
-                            Text(c.author?.displayName ?? String(localized: "Unknown")).font(.callout.weight(.semibold))
-                            Text(c.created.formatted(.relative(presentation: .named))).font(.caption).foregroundStyle(
-                                .secondary
-                            ).help(c.created.formatted())
-                            if c.updated.timeIntervalSince(c.created) > 60 {
-                                Text("· edited").font(.caption).foregroundStyle(.tertiary)
-                            }
-                            Spacer()
-                            if c.author?.accountId == jira?.me?.accountId, editingCommentID == nil {
-                                // Plain buttons, not a menu: editing your own comment is a one-click thing.
-                                Button {
-                                    beginCommentEdit(c)
-                                } label: {
-                                    Label("Edit", systemImage: "pencil").labelStyle(.iconOnly)
+            // Lazy: a comment costs a few ms to build, and a long thread on a step along the trail held the page
+            // for 100 ms. Only the ones on screen are built; the rest as they scroll in.
+            LazyVStack(alignment: .leading, spacing: 16) {
+                ForEach(list) { c in
+                    HStack(alignment: .top, spacing: 10) {
+                        Avatar(user: c.author, size: 26)
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack(spacing: 6) {
+                                Text(c.author?.displayName ?? String(localized: "Unknown")).font(
+                                    .callout.weight(.semibold))
+                                Text(c.created.formatted(.relative(presentation: .named))).font(.caption)
+                                    .foregroundStyle(
+                                        .secondary
+                                    ).help(c.created.formatted())
+                                if c.updated.timeIntervalSince(c.created) > 60 {
+                                    Text("· edited").font(.caption).foregroundStyle(.tertiary)
                                 }
-                                .buttonStyle(.plain).foregroundStyle(.tertiary).help("Edit comment")
-                                DeleteButton(help: "Delete comment") { deleteComment(c) }
+                                Spacer()
+                                if c.author?.accountId == jira?.me?.accountId, editingCommentID == nil {
+                                    // Plain buttons, not a menu: editing your own comment is a one-click thing.
+                                    Button {
+                                        beginCommentEdit(c)
+                                    } label: {
+                                        Label("Edit", systemImage: "pencil").labelStyle(.iconOnly)
+                                    }
+                                    .buttonStyle(.plain).foregroundStyle(.tertiary).help("Edit comment")
+                                    DeleteButton(help: "Delete comment") { deleteComment(c) }
+                                }
                             }
-                        }
-                        if editingCommentID == c.id {
-                            Composer(
-                                text: $editDraft, mentions: $editMentions, placeholder: "Edit comment",
-                                uploadImage: uploadPasted, focus: $editCommentFocused,
-                                actions: AnyView(
-                                    HStack(spacing: 10) {
-                                        Button("Cancel") { cancelCommentEdit() }.glassButton()
-                                            .keyboardShortcut(.cancelAction)
-                                        Button("Save") { saveCommentEdit(c) }.glassButton(prominent: true)
-                                            .keyboardShortcut(
-                                                editCommentFocused
-                                                    ? KeyboardShortcut(.return, modifiers: .command) : nil
-                                            )
-                                            .disabled(
-                                                editDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                                    })
-                            )
-                            .focusSoon($editCommentFocused)
-                        } else {
-                            ADFView(node: c.body).background(ReaderMenu())
+                            if editingCommentID == c.id {
+                                Composer(
+                                    text: $editDraft, mentions: $editMentions, placeholder: "Edit comment",
+                                    uploadImage: uploadPasted, focus: $editCommentFocused,
+                                    actions: AnyView(
+                                        HStack(spacing: 10) {
+                                            Button("Cancel") { cancelCommentEdit() }.glassButton()
+                                                .keyboardShortcut(.cancelAction)
+                                            Button("Save") { saveCommentEdit(c) }.glassButton(prominent: true)
+                                                .keyboardShortcut(
+                                                    editCommentFocused
+                                                        ? KeyboardShortcut(.return, modifiers: .command) : nil
+                                                )
+                                                .disabled(
+                                                    editDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                                        })
+                                )
+                                .focusSoon($editCommentFocused)
+                            } else {
+                                ADFView(node: c.body).background(ReaderMenu())
+                            }
                         }
                     }
                 }
@@ -1335,28 +1276,13 @@ struct IssueDetailView: View {
                 }
             }
         }
-        // A window's title is the crumb, with Back before it once there is somewhere to go back to: one item, so
-        // Back can arrive and leave with the title's motion instead of shoving it sideways in a single frame.
+        // A window's title is the crumb, with Back before it (see WindowTitle).
         if !embedded {
             ToolbarItem(placement: .navigation) {
-                // A step along the trail: the old title, with its Back, blurs out a few points towards where it
-                // went, then the new one blurs in from the side it came from. Back belongs to the title it came
-                // with, so it arrives and leaves with it, and nothing ever slides under anything: the toolbar
-                // resizes its item at once, which put a sliding title under a fading Back.
-                ZStack(alignment: .leading) {
-                    HStack(spacing: 10) {
-                        if crumbHasBack { GlassBackButton { back?() } }
-                        crumb
-                    }
-                    .id("\(crumbIssue?.key ?? key)|\(crumbHasBack)")
-                    .transition(
-                        .asymmetric(
-                            insertion: .crumb(forward ? 10 : -10).animation(.smooth(duration: 0.22).delay(0.09)),
-                            removal: .crumb(forward ? -10 : 10).animation(.easeIn(duration: 0.09))))
-                }
-                .frame(height: 36)  // Back's height either way, so nothing shifts up or down
-                .padding(.trailing, 28)  // room for the "copied" tick, which hangs off the key's end
-                .padding(.leading, 4)
+                // A new window has no issue yet: the list's copy names the parent and type, so the title is whole
+                // from the first frame instead of growing a parent half a second later.
+                WindowTitle(
+                    issue: store.issue ?? jira?.peek[key], key: key, back: back, forward: forward, open: open)
             }
             .glassTitle()
         }
@@ -1364,13 +1290,19 @@ struct IssueDetailView: View {
             Button {
                 perform(.refresh)
             } label: {
-                // While a write or a refresh runs, the button is the spinner, then turns back into the arrow. A symbol,
-                // not a ProgressView: a custom view took the button out of its glass group with Attach.
+                // While a write or a refresh runs, the button is the spinner, then the arrow again. Symbols, not a
+                // ProgressView: a custom view took the button out of its glass group with Attach. Both always laid
+                // out, so the button keeps the wider one's width and Attach never moves.
                 let busy = store.isWorking || refreshing
-                Label("Refresh", systemImage: busy ? "progress.indicator" : "arrow.clockwise")
-                    .symbolEffect(.variableColor.iterative.dimInactiveLayers.nonReversing, isActive: busy)
-                    .contentTransition(.symbolEffect(.replace))
-                    .animation(.snappy(duration: 0.2), value: busy)
+                Label {
+                    Text("Refresh")
+                } icon: {
+                    ZStack {
+                        Image(systemName: "progress.indicator").opacity(busy ? 1 : 0)
+                            .symbolEffect(.variableColor.iterative.dimInactiveLayers.nonReversing, isActive: busy)
+                        Image(systemName: "arrow.clockwise").opacity(busy ? 0 : 1)
+                    }
+                }
             }
             .help("Refresh (⇧⌘R)")
         }
@@ -2341,6 +2273,129 @@ struct WorklogGroup: Identifiable {
             }
         }
         return groups
+    }
+}
+
+extension IssueDetailView: @MainActor Equatable {
+    /// By the issue alone. Its closures can't be compared, so without this every render of the window around it
+    /// (three per step along the trail) rebuilt the whole page. The closures reach only `@State` and bindings, which
+    /// an older copy still reads and writes live. `forward` and `back` change only with the target, but a pass
+    /// before it: the window's own state updates first, its scene value a pass later.
+    static func == (a: Self, b: Self) -> Bool { a.target == b.target && a.embedded == b.embedded }
+}
+
+/// Parent → key. A click on the parent opens it (⌘-click beside); a click on the key copies it. Not selectable
+/// text: a double-click selected "CON" of "CON-7", and the parent is a link, not a quotation.
+/// Built from one issue as a whole: the key, its parent and its icon change together. Read off a store that had
+/// moved on, the new key showed beside the old issue's parent for as long as the new issue took to load.
+private struct Crumb: View {
+    let issue: Issue?
+    /// Shown while there is no issue yet.
+    let key: String
+    let open: (String) -> Void
+    /// The key was just copied; a tick shows beside it for a moment.
+    @State private var copied = false
+
+    var body: some View {
+        let key = issue?.key ?? self.key
+        HStack(spacing: 6) {
+            if let p = issue?.fields.parent {
+                Button {
+                    open(p.key)
+                } label: {
+                    HStack(spacing: 4) {
+                        RemoteImage(url: p.fields.issuetype?.iconUrl).frame(width: 14, height: 14)
+                        Text(p.key).monospaced()  // the key alone: the summary is in the tooltip and on the parent field
+                    }
+                    .contentShape(.rect)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(Text(verbatim: "\(p.key) \(p.fields.summary)"))
+                .help("\(p.fields.summary)\n\(String(localized: "Open \(p.key); ⌘-click for a new window"))")
+                Image(systemName: "chevron.forward").font(.caption2.weight(.bold)).foregroundStyle(.tertiary)
+            }
+            // Decorative: the Type field names the type, and in a toolbar the icon's label became the copy button's.
+            RemoteImage(url: issue?.fields.issuetype.iconUrl, placeholder: "circle").frame(width: 14, height: 14)
+                .accessibilityHidden(true)
+            Button {
+                copyToPasteboard(key)
+                withAnimation(.easeOut(duration: 0.15)) { copied = true }
+                Task {
+                    try? await Task.sleep(for: .seconds(1.2))
+                    withAnimation(.easeOut(duration: 0.3)) { copied = false }
+                }
+            } label: {
+                Text(key).monospaced().contentShape(.rect)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Copy \(key)")
+            .help("Click to copy \(key)")
+            // The tick hangs off the end so the key, and the toolbar around it, never shift.
+            .overlay(alignment: .trailing) {
+                if copied {
+                    Image(systemName: "checkmark").font(.caption.weight(.bold)).foregroundStyle(.green)
+                        .offset(x: 18).transition(.opacity)
+                        .accessibilityLabel("Copied")
+                }
+            }
+        }
+        .font(.callout).foregroundStyle(.secondary)
+        .fixedSize()  // two keys and two icons: never "CON…"
+    }
+}
+
+/// A window's title: the crumb, with Back before it once there is somewhere to go back to. One item, so Back can
+/// arrive and leave with the title's motion instead of shoving it sideways in a single frame. A view of its own
+/// with its own state, so a step re-renders the title alone, not the page.
+private struct WindowTitle: View {
+    let issue: Issue?
+    let key: String
+    let back: (() -> Void)?
+    let forward: Bool
+    let open: (String) -> Void
+    /// The issue the title shows: it follows `issue` only once the next issue's page is on screen.
+    @State private var shown: Issue?
+    /// Whether that title carries a Back: set with it, so Back comes and goes with the title it belongs to.
+    @State private var hasBack = false
+
+    var body: some View {
+        // A step along the trail: the old title, with its Back, blurs out a few points towards where it went, then
+        // the new one blurs in from the side it came from. Back belongs to the title it came with, so it arrives and
+        // leaves with it, and nothing ever slides under anything: the toolbar resizes its item at once, which put a
+        // sliding title under a fading Back.
+        let title = shown ?? issue
+        ZStack(alignment: .leading) {
+            HStack(spacing: 10) {
+                if hasBack { GlassBackButton { back?() } }
+                Crumb(issue: title, key: key, open: open)
+            }
+            .id("\(title?.key ?? key)|\(hasBack)")
+            .transition(
+                .asymmetric(
+                    insertion: .crumb(forward ? 10 : -10).animation(.smooth(duration: 0.22).delay(0.09)),
+                    removal: .crumb(forward ? -10 : 10).animation(.easeIn(duration: 0.09))))
+        }
+        .frame(height: 36)  // Back's height either way, so nothing shifts up or down
+        .padding(.trailing, 28)  // room for the "copied" tick, which hangs off the key's end
+        .padding(.leading, 4)
+        .onChange(
+            of: [issue?.key, issue?.fields.parent?.key, issue?.fields.issuetype.iconUrl?.absoluteString], initial: true
+        ) {
+            guard let issue else { return }
+            let b = back != nil
+            // A step to another issue. Started in the update that builds the next page, which blocks the main thread
+            // on a long issue, the animation spent its time inside that frame and only its last few frames showed.
+            // One turn later the page is on screen and the title moves in light frames.
+            if let shown, shown.key != issue.key {
+                Task {
+                    self.shown = issue
+                    hasBack = b
+                }
+            } else {
+                shown = issue
+                hasBack = b
+            }
+        }
     }
 }
 
