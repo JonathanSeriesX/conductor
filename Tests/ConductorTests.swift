@@ -395,6 +395,26 @@ final class FilterAndDurationTests: XCTestCase {
         XCTAssertNil(LogWorkView.parseDuration("1h x"))
     }
 
+    func testDurationFormat() {
+        XCTAssertEqual(LogWorkView.format(15 * 3600), "1d 7h")
+        XCTAssertEqual(LogWorkView.format(5400), "1h 30m")
+        XCTAssertEqual(LogWorkView.format(40 * 3600), "1w")
+        XCTAssertEqual(LogWorkView.format(0), "0m")
+    }
+
+    func testStatusSortReadsLikeABoard() throws {
+        let sort = ListFilters.Sort(field: .status, descending: false)
+        func issue(_ key: String, _ category: String, _ name: String) throws -> Issue {
+            let json = """
+                {"id":"1","key":"\(key)","fields":{"summary":"s","status":{"id":"1","name":"\(name)","statusCategory":{"key":"\(category)","name":"c"}},"issuetype":{"id":"1","name":"Task"}}}
+                """
+            return try JSONDecoder().decode(Issue.self, from: Data(json.utf8))
+        }
+        let done = try issue("A-1", "done", "Done"), todo = try issue("A-2", "new", "To Do"),
+            doing = try issue("A-3", "indeterminate", "In Progress")
+        XCTAssertEqual([done, doing, todo].sorted(by: sort.areInOrder).map(\.key), ["A-2", "A-3", "A-1"])
+    }
+
     @MainActor func testLinkPickerOffersBothDirectionsUnlessIdentical() {
         let blocks = LinkType(id: "1", name: "Blocks", inward: "is blocked by", outward: "blocks")
         let relates = LinkType(id: "2", name: "Relates", inward: "relates to", outward: "relates to")

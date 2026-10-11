@@ -308,6 +308,10 @@ struct IssueListView: View {
     @State private var filterName = ""
     @State private var chipMenus = ChipMenuController()
     @FocusState private var searchFocused: Bool
+    /// The row last moved to a window of its own; the arrows carry on from it while nothing is selected.
+    @State private var opened: IssueTarget?
+    /// The keyboard is in the preview beside the list: the selection goes grey, as Mail's does.
+    @State private var previewFocused = false
     /// Parents whose subtasks are unfolded. Per parent, so opening one never shifts the rows above it.
     @State private var expanded: Set<String> = []
     private var displayRows: [DisplayRow] { DisplayRow.nest(store.rows, expanded: expanded, sort: filters.sort) }
@@ -340,7 +344,7 @@ struct IssueListView: View {
                 // behind another window it goes grey like any selection. A run of selected rows is one block,
                 // rounded at its ends only, as Mail paints it.
                 let selected = selection.contains(row.target)
-                let emphasized = selected && active
+                let emphasized = selected && active && !previewFocused
                 let above = i > 0 && selection.contains(shown[i - 1].row.target)
                 let below = i + 1 < shown.count && selection.contains(shown[i + 1].row.target)
                 IssueRow(
@@ -367,7 +371,9 @@ struct IssueListView: View {
                             ? Color.accentColor
                             : selected ? Color(nsColor: .unemphasizedSelectedContentBackgroundColor) : .clear
                     )
-                    .padding(.horizontal, 8)
+                    // 10, not 8: the ring AppKit draws around right-clicked rows then runs 1 pt inside this block on
+                    // every side, as Mail's does; at 8 it sat 3 pt in at the sides and 1 pt at the top and bottom.
+                    .padding(.horizontal, 10)
                     // Over the row gap, so two selected rows meet without a seam.
                     .padding(.top, above ? -3 : 0).padding(.bottom, below ? -3 : 0)
                 )
@@ -400,7 +406,7 @@ struct IssueListView: View {
             }
         }
         .listStyle(.inset)
-        .background(NativeSelectionOff())
+        .background(NativeSelectionOff(previewFocused: $previewFocused))
         .contextMenu(forSelectionType: IssueTarget.self) { targets in
             // Over a selected row the menu acts on the whole selection, else on the row under the pointer.
             let rows = store.rows.filter { targets.contains($0.target) }
@@ -410,13 +416,26 @@ struct IssueListView: View {
                     patch: store.patch)
             }
         } primaryAction: { targets in
-            // Double-click (or ↩) moves the issue to a window of its own, like a message in Mail: the preview
+            // Double-click, ↩ or Space moves the issue to a window of its own, like a message in Mail: the preview
             // lets it go, so the same page is never open twice.
             for t in targets { openWindow(id: "issue", value: t) }
+            opened = targets.first
             selection = []
         }
-        .onKeyPress(.rightArrow) { fold(open: layoutDirection == .leftToRight) }
-        .onKeyPress(.leftArrow) { fold(open: layoutDirection == .rightToLeft) }
+        // → unfolds a parent's subtasks; with nothing to unfold it moves the keyboard into the preview, whose ←
+        // brings it back (the other way round right to left).
+        .onKeyPress(.rightArrow) { sideways(towardPreview: layoutDirection == .leftToRight) }
+        .onKeyPress(.leftArrow) { sideways(towardPreview: layoutDirection == .rightToLeft) }
+        .onKeyPress(.space) {
+            guard !selection.isEmpty else { return .ignored }
+            for t in selection { openWindow(id: "issue", value: t) }
+            opened = selection.first
+            selection = []
+            return .handled
+        }
+        // Back from an issue opened in its own window, ↓ and ↑ carry on from it, not from the top of the list.
+        .onKeyPress(.downArrow) { step(from: opened, by: 1, in: shown) }
+        .onKeyPress(.upArrow) { step(from: opened, by: -1, in: shown) }
         .safeAreaInset(edge: .top, spacing: 0) { chips }
         .overlay {
             if store.unbounded {
@@ -533,7 +552,7 @@ struct IssueListView: View {
                     } label: {
                         Label("Board", systemImage: "rectangle.split.3x1")
                     }
-                    .help("Open the project board (⌘⇧B)")
+                    .help("Open the project board (⇧⌘B)")
                 }
             }
             ToolbarItem(id: "saveFilter") {
@@ -617,6 +636,23 @@ struct IssueListView: View {
     /// A load already in flight is as fresh as a new one would be; restarting it (the app activating at launch
     /// did) would only throw its answer away.
     private func refresh() { if !store.isLoading { refreshTick += 1 } }
+
+    private func step(from row: IssueTarget?, by delta: Int, in shown: [DisplayRow]) -> KeyPress.Result {
+        guard selection.isEmpty, let row, let i = shown.firstIndex(where: { $0.row.target == row }) else {
+            return .ignored
+        }
+        selection = [shown[max(0, min(shown.count - 1, i + delta))].row.target]
+        opened = nil
+        return .handled
+    }
+
+    private func sideways(towardPreview: Bool) -> KeyPress.Result {
+        let r = fold(open: towardPreview)
+        guard r == .ignored, towardPreview, selection.count == 1, NSApp.keyWindow?.focusPreviewPage() == true else {
+            return r
+        }
+        return .handled
+    }
 
     /// → unfolds the selected parent's subtasks, ← folds them, as in an outline (the other way round right to left).
     private func fold(open: Bool) -> KeyPress.Result {
@@ -1245,11 +1281,20 @@ struct SortMenuItems: View {
 
 /// Turns off the table's own selection drawing; the rows paint theirs. Behind the list rather than inside a
 /// row: a platform view in a row put the first frame back by ~60 ms.
-private struct NativeSelectionOff: NSViewRepresentable {
+struct NativeSelectionOff: NSViewRepresentable {
+    /// Set while the keyboard is in the preview column of this window.
+    var previewFocused: Binding<Bool>?
     func makeNSView(context: Context) -> Finder { Finder() }
-    func updateNSView(_ view: Finder, context: Context) {}
+    func updateNSView(_ view: Finder, context: Context) { view.previewFocused = previewFocused }
     final class Finder: NSView {
+        var previewFocused: Binding<Bool>?
+        nonisolated(unsafe) private var monitor: Any?
+        nonisolated(unsafe) private var observer: Any?
         override func viewDidMoveToWindow() { find(attempt: 0) }
+        deinit {
+            if let monitor { NSEvent.removeMonitor(monitor) }
+            if let observer { NotificationCenter.default.removeObserver(observer) }
+        }
 
         /// The table is a sibling subtree: the nearest ancestor with one below it, short of the split view that
         /// also holds the sidebar's. It can arrive a turn after this view, hence the retries.
@@ -1260,11 +1305,30 @@ private struct NativeSelectionOff: NSViewRepresentable {
                 if let table = firstTable(in: s) {
                     table.selectionHighlightStyle = .none
                     table.allowsTypeSelect = false  // letters are shortcuts here, not a jump to a row
+                    watch(table)
                     return
                 }
                 v = s.superview
             }
             if attempt < 10 { DispatchQueue.main.async { self.find(attempt: attempt + 1) } }
+        }
+
+        private func watch(_ table: NSTableView) {
+            if let monitor { NSEvent.removeMonitor(monitor) }
+            // Page Up and Down, Home and End scroll the list smoothly; the table's own jump lands in one frame.
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak table] e in
+                guard let table, e.window === table.window, table.window?.firstResponder === table,
+                    let sv = table.enclosingScrollView, sv.scrollAnimated(for: e, line: 0, arrows: false)
+                else { return e }
+                return nil
+            }
+            if let observer { NotificationCenter.default.removeObserver(observer) }
+            observer = NotificationCenter.default.addObserver(
+                forName: .previewFocus, object: table.window, queue: .main
+            ) { [weak self] n in
+                let on = n.userInfo?["on"] as? Bool ?? false
+                MainActor.assumeIsolated { self?.previewFocused?.wrappedValue = on }
+            }
         }
     }
 }

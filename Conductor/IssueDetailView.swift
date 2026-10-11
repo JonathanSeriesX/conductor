@@ -59,24 +59,13 @@ final class IssueDetailStore {
 
     func load(_ state: AccountState, key: String, full: Bool = true) async {
         let client = state.client
+        var pending: Task<Issue, Error>?
         if self.key != key {
-            // Another issue: start clean. The previous load is cancelled by the task that owned it, but a reply
-            // already in flight must not land here, hence the key checks after each await below.
+            // Another issue. Everything the page is built from is gathered first and put in place in one step;
+            // until then the previous issue stays on screen. Shown piecemeal (the list row's copy, then the
+            // disk's), each step pushed the cards around. Replies for an issue left meanwhile are dropped by the
+            // key checks after each await.
             self.key = key
-            issue = nil
-            transitions = []
-            editMeta = nil
-            sprints = []
-            children = []
-            error = nil
-            gone = false
-            allLabels = []
-            related = [:]
-        }
-        if issue == nil {
-            // Last opened copy from disk, else what the list row already knows: either way, no blank page.
-            // Everything the right column is built from comes with it, so no row appears or wakes up a second
-            // later. The four files are read at once and land together, after one check that this is still the issue.
             let account = state.account
             async let diskIssue: Issue? = DiskCache.loadAsync(account: account, name: "issue-\(key)")
             async let diskMeta: EditMeta? = DiskCache.loadAsync(account: account, name: "editmeta-\(key)")
@@ -85,31 +74,56 @@ final class IssueDetailStore {
                 full ? DiskCache.loadAsync(account: account, name: "children-\(key)") : nil
             let (cached, meta, trans, kids) = await (diskIssue, diskMeta, diskTransitions, diskChildren)
             guard self.key == key else { return }
-            issue = cached ?? state.peek[key]
+            // Memory's copy when it is full and at least as new as the disk's.
+            var next = cached
+            if let p = state.peek[key], p.fields.comment != nil,
+                (p.fields.updated ?? .distantPast) >= (cached?.fields.updated ?? .distantPast)
+            {
+                next = p
+            }
+            if next == nil {
+                // Never opened on this Mac: Jira usually answers within a few frames. Wait that long for the
+                // whole issue rather than show the row's copy and grow it a moment later.
+                let fetch = Task { try await client.issue(key) }
+                pending = fetch
+                next = await withTaskGroup(of: Issue?.self) { group in
+                    group.addTask { try? await fetch.value }
+                    group.addTask {
+                        try? await Task.sleep(for: .milliseconds(300))
+                        return nil
+                    }
+                    let first = await group.next() ?? nil
+                    group.cancelAll()
+                    return first
+                }
+                guard self.key == key else { return }
+            }
+            let shown = next ?? state.peek[key]
+            var list: [Sprint] = []
+            if full, let project = shown?.fields.project?.key,
+                meta.map({ m in client.sprintField.map { m.fields[$0] != nil } ?? false }) ?? false
+            {
+                list = await state.cachedSprints(project: project)  // never Jira: the fresh list comes after
+                guard self.key == key else { return }
+            }
+            issue = shown
+            editMeta = meta ?? shown.flatMap { state.editMetaByWorkflow[AccountState.workflowKey($0)] }
+            transitions = trans ?? shown.flatMap { state.transitionsByWorkflow[AccountState.workflowKey($0)] } ?? []
+            children = kids ?? []
+            sprints = list
+            error = nil
+            gone = false
+            allLabels = []
+            related = [:]
             seedRelated(state)  // assignees of subtasks and links from memory, before any request
-            if let meta {
-                editMeta = meta
-            } else if let i = issue, let m = state.editMetaByWorkflow[AccountState.workflowKey(i)] {
-                editMeta = m
-            }
-            if let trans {
-                transitions = trans
-            } else if let i = issue, let t = state.transitionsByWorkflow[AccountState.workflowKey(i)] {
-                transitions = t
-            }
-            if let kids { children = kids }
-            if full, canEdit(client.sprintField), let project = issue?.fields.project?.key {
-                let list = await state.sprints(project: project)
-                if self.key == key { sprints = list }
-            }
         }
         do {
-            async let i = client.issue(key)
+            let i = pending ?? Task { try await client.issue(key) }
             async let t = client.transitions(key)
             async let m = client.editMeta(key)
             async let kids = full ? client.search(jql: "parent = \"\(key)\" ORDER BY created ASC") : nil
             async let types = full ? state.linkTypes() : nil
-            let fresh = try await i
+            let fresh = try await i.value
             guard self.key == key else { return }
             issue = fresh
             DiskCache.saveAsync(fresh, account: state.account, name: "issue-\(key)")
@@ -260,6 +274,21 @@ struct IssueDetailView: View {
     @State private var scrolled = false
     /// The issue the window's title shows: it follows the store only once the next issue is there in full.
     @State private var crumbIssue: Issue?
+    /// Whether that title carries a Back: set with it, so Back comes and goes with the title it belongs to.
+    @State private var crumbHasBack = false
+    /// The issue on screen: the previous one stays until the next has loaded, and its folds go with it.
+    private var shownKey: String { store.issue?.key ?? key }
+    /// Folded cards and work-log groups, per issue, as this Mac remembers them.
+    @State private var folded = Folds.load()
+
+    private func fold(_ id: String) -> Binding<Bool> {
+        Binding(
+            get: { folded.contains(id) },
+            set: { on in
+                withAnimation(.snappy(duration: 0.25)) { if on { folded.insert(id) } else { folded.remove(id) } }
+                Folds.save(folded)
+            })
+    }
     /// The load this page's own write would trigger: `perform` has refreshed the issue already.
     @State private var ownLoad = ""
     @Environment(\.scenePhase) private var scenePhase
@@ -274,7 +303,7 @@ struct IssueDetailView: View {
                     "\(key) no longer exists", systemImage: "trash",
                     description: Text("It was deleted or moved in Jira."))
             } else if store.error == nil {
-                ProgressView()
+                DelayedSpinner(size: .regular)
             } else {
                 ContentUnavailableView("Couldn't load \(key)", systemImage: "exclamationmark.triangle")
             }
@@ -318,7 +347,10 @@ struct IssueDetailView: View {
             of: [store.issue?.key, store.issue?.fields.parent?.key, store.issue?.fields.issuetype.iconUrl?.absoluteString],
             initial: true
         ) {
-            if let i = store.issue { crumbIssue = i }
+            if let i = store.issue {
+                crumbIssue = i
+                crumbHasBack = back != nil
+            }
         }
         .onChange(of: descriptionDraft) { stash() }
         .onChange(of: editDraft) { stash() }
@@ -390,7 +422,7 @@ struct IssueDetailView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    header(issue).id("top")
+                    header(issue)
                     GlassGroup(spacing: 16) {
                         if embedded {
                             // The preview column is narrow: the fields go under the body, the first four above the comments.
@@ -401,9 +433,10 @@ struct IssueDetailView: View {
                                 priorityField(issue)
                                 reporterField(issue)
                             }
-                            GlassCard(title: "Comments", hint: hint(.comment) { String(localized: "\($0) to add") }) {
-                                comments(issue)
-                            }
+                            GlassCard(
+                                title: "Comments", hint: hint(.comment) { String(localized: "\($0) to add") },
+                                collapsed: fold("\(shownKey)|comments")
+                            ) { comments(issue) }
                             .id("comments")
                             metadata { fields(issue) }
                         } else {
@@ -411,7 +444,8 @@ struct IssueDetailView: View {
                                 VStack(alignment: .leading, spacing: 16) {
                                     cards(issue)
                                     GlassCard(
-                                        title: "Comments", hint: hint(.comment) { String(localized: "\($0) to add") }
+                                        title: "Comments", hint: hint(.comment) { String(localized: "\($0) to add") },
+                                        collapsed: fold("\(shownKey)|comments")
                                     ) { comments(issue) }
                                     .id("comments")
                                 }
@@ -432,6 +466,10 @@ struct IssueDetailView: View {
                 }
                 .padding(.horizontal, 20).padding(.bottom, 20)
                 .padding(.top, embedded ? 10 : 17)  // the crumb sits on the line of the list's chips
+                .background(PageKeys(standalone: !embedded))
+                // The anchor is the padded page, not the header: scrolled to its top, the header kept none of the
+                // padding above it, and every next issue sat 10 pt higher than the first.
+                .id("top")
             }
             // The toolbar has no background, so blur what scrolls under it instead of letting buttons sit on text.
             .softScrollEdge(band: embedded ? scrolled : nil)
@@ -441,7 +479,8 @@ struct IssueDetailView: View {
             .onChange(of: commentRequest) {
                 withAnimation { proxy.scrollTo("comments", anchor: .bottom) }
             }
-            .onChange(of: target) { proxy.scrollTo("top", anchor: .top) }
+            // When the next issue is on screen, not when it was asked for: the previous one stays until then.
+            .onChange(of: store.issue?.key) { proxy.scrollTo("top", anchor: .top) }
             #if DEBUG
                 .task {
                     guard ProcessInfo.processInfo.environment["CONDUCTOR_SCROLL"] == "comments" else { return }
@@ -462,16 +501,30 @@ struct IssueDetailView: View {
             GlassCard(title: "Attachments") { attachments(atts) }
         }
         if let subs = issue.fields.subtasks, !subs.isEmpty {
-            GlassCard(title: "Subtasks") { refs(subs) }
+            GlassCard(
+                title: "Subtasks", detail: "• " + String(localized: "\(subs.count) tasks"),
+                collapsed: fold("\(shownKey)|subtasks")
+            ) { refs(subs) }
         }
         if !store.children.isEmpty {
-            GlassCard(title: "Child Issues") { children(store.children) }
+            GlassCard(
+                title: "Child Issues", detail: "• " + String(localized: "\(store.children.count) issues"),
+                collapsed: fold("\(shownKey)|children")
+            ) {
+                children(store.children)
+            }
         }
         if let links = issue.fields.issuelinks, !links.isEmpty {
             GlassCard(title: "Linked Issues") { linksList(links) }
         }
-        if let wl = issue.fields.worklog, !wl.worklogs.isEmpty {
-            GlassCard(title: "Work Log") { worklogs(wl.worklogs) }
+        let logs = issue.fields.worklog?.worklogs ?? []
+        if !logs.isEmpty || issue.fields.timetracking?.originalEstimate != nil {
+            GlassCard(
+                title: "Work Log", detail: worklogTotals(issue, logs), hint: hint(.logWork) { String(localized: "\($0) to log") },
+                collapsed: fold("\(shownKey)|worklog")
+            ) {
+                if logs.isEmpty { Text("No work logged").foregroundStyle(.tertiary) } else { worklogs(logs) }
+            }
         }
     }
 
@@ -480,7 +533,9 @@ struct IssueDetailView: View {
     /// Built from one issue as a whole, `crumbIssue`: the key, its parent and its icon change together. Read off
     /// the store, the new key showed beside the old issue's parent for as long as the new issue took to load.
     private var crumb: some View {
-        let issue = crumbIssue?.key == key || !embedded ? crumbIssue : store.issue
+        // A new window has no issue yet: the list's copy names the parent and type, so the title is whole from
+        // the first frame instead of growing a parent half a second later.
+        let issue = crumbIssue?.key == key || !embedded ? (crumbIssue ?? jira?.peek[key]) : store.issue
         let key = issue?.key ?? self.key
         return HStack(spacing: 6) {
             if let p = issue?.fields.parent {
@@ -619,7 +674,7 @@ struct IssueDetailView: View {
                             }
                         })
             } else if store.isPartial {
-                ProgressView().controlSize(.small)
+                DelayedSpinner()
             } else if store.canEdit("description") {
                 Text("Add a description…").foregroundStyle(.tertiary)
                     .frame(maxWidth: .infinity, alignment: .leading).contentShape(.rect)
@@ -659,7 +714,7 @@ struct IssueDetailView: View {
             } label: {
                 Label("Activity History", systemImage: "clock.arrow.circlepath").labelStyle(.iconOnly)
             }
-            .buttonStyle(.plain).foregroundStyle(.tertiary).help("Activity history (⌘⌥H)").padding(18)
+            .buttonStyle(.plain).foregroundStyle(.tertiary).help("Activity history (⌥⌘H)").padding(18)
         }
     }
 
@@ -927,18 +982,6 @@ struct IssueDetailView: View {
         }
         multiValue("Components", field: "components", current: issue.fields.components ?? [])
         multiValue("Fix Versions", field: "fixVersions", current: issue.fields.fixVersions ?? [])
-        if let tt = issue.fields.timetracking, tt.timeSpent != nil || tt.originalEstimate != nil {
-            field("Time") {
-                VStack(alignment: .leading, spacing: 2) {
-                    if let s = tt.timeSpent { Text("\(s) logged") }
-                    if let r = tt.remainingEstimate {
-                        Text("\(r) remaining").foregroundStyle(.secondary)
-                    } else if let o = tt.originalEstimate {
-                        Text("\(o) estimated").foregroundStyle(.secondary)
-                    }
-                }
-            }
-        }
         if let w = issue.fields.watches {
             field("Watchers", hint: hint(.watch) { String(localized: "\($0) to watch") }) {
                 Button {
@@ -1123,44 +1166,82 @@ struct IssueDetailView: View {
         }
     }
 
+    /// "• 1d 7h logged • 3h remaining", in the title's weight: the time sits with the work log, not among the
+    /// fields. The total only when two or more people logged time; with one, their group shows the same sum.
+    private func worklogTotals(_ issue: Issue, _ logs: [Worklog]) -> String? {
+        let tt = issue.fields.timetracking
+        var parts: [String] = []
+        if WorklogGroup.make(logs).count > 1 {
+            parts.append(String(localized: "\(LogWorkView.format(logs.reduce(0) { $0 + $1.timeSpentSeconds })) logged"))
+        }
+        // Remaining means something only against an estimate; without one Jira reports "0m remaining".
+        if let o = tt?.originalEstimate {
+            if logs.isEmpty {
+                parts.append(String(localized: "\(o) estimated"))
+            } else if let r = tt?.remainingEstimate {
+                parts.append(String(localized: "\(r) remaining"))
+            }
+        }
+        return parts.isEmpty ? nil : parts.map { "• " + $0 }.joined(separator: " ")
+    }
+
+    /// Grouped by person, each group folding on its own: who logged what, then the entries.
     private func worklogs(_ logs: [Worklog]) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            ForEach(logs) { w in
-                HStack(alignment: .top, spacing: 10) {
-                    Avatar(user: w.author, size: 26)  // the comments' size
-                    VStack(alignment: .leading, spacing: 2) {
-                        HStack(spacing: 6) {
-                            Text(w.author?.displayName ?? String(localized: "Unknown")).font(.callout.weight(.semibold))
-                            Text("logged \(w.timeSpent)").font(.callout)
-                            Text(w.started.formatted(date: .abbreviated, time: .omitted)).font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        if let c = w.comment, !c.plainText.isEmpty {
-                            Text(c.plainText).font(.callout).foregroundStyle(.secondary)
-                        }
+        VStack(alignment: .leading, spacing: 12) {
+            ForEach(WorklogGroup.make(logs)) { g in
+                let id = "\(shownKey)|worklog|\(g.id)"
+                let isFolded = folded.contains(id)
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 10) {
+                        Avatar(user: g.author, size: 26)  // the comments' size
+                        Text(g.author?.displayName ?? String(localized: "Unknown")).font(.callout.weight(.semibold))
+                        Text(verbatim: LogWorkView.format(g.seconds)).font(.callout).foregroundStyle(.secondary)
+                        Spacer()
+                        Disclosure(collapsed: isFolded)
                     }
-                    Spacer()
-                    if w.author?.accountId == jira?.me?.accountId {
-                        DeleteButton(help: "Delete work log") {
-                            let account = target.accountID
-                            run {
-                                try await $0.deleteWorklog(key, id: w.id)
-                                await Bin.shared.put(
-                                    .worklog(seconds: w.timeSpentSeconds, comment: w.comment, started: w.started),
-                                    account: account, key: key)
-                            }
-                        }
+                    .contentShape(.rect)
+                    .onTapGesture { fold(id).wrappedValue.toggle() }
+                    if !isFolded {
+                        ForEach(g.logs) { w in worklogRow(w) }
                     }
                 }
             }
         }
     }
 
+    private func worklogRow(_ w: Worklog) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text("logged \(w.timeSpent)").font(.callout)
+                    Text(w.started.formatted(date: .abbreviated, time: .omitted)).font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                if let c = w.comment, !c.plainText.isEmpty {
+                    Text(c.plainText).font(.callout).foregroundStyle(.secondary)
+                }
+            }
+            Spacer()
+            if w.author?.accountId == jira?.me?.accountId {
+                DeleteButton(help: "Delete work log") {
+                    let account = target.accountID
+                    run {
+                        try await $0.deleteWorklog(key, id: w.id)
+                        await Bin.shared.put(
+                            .worklog(seconds: w.timeSpentSeconds, comment: w.comment, started: w.started),
+                            account: account, key: key)
+                    }
+                }
+            }
+        }
+        .padding(.leading, 36)  // under the name, past the avatar
+    }
+
     private func comments(_ issue: Issue) -> some View {
         VStack(alignment: .leading, spacing: 16) {
             let list = issue.fields.comment?.comments ?? []
             if store.isPartial {
-                ProgressView().controlSize(.small)
+                DelayedSpinner()
             } else if list.isEmpty {
                 Text("No comments yet").foregroundStyle(.tertiary)
             }
@@ -1225,38 +1306,39 @@ struct IssueDetailView: View {
     // MARK: Toolbar
 
     @ToolbarContentBuilder private var toolbar: some ToolbarContent {
-        // A split view puts every column's .navigation items at the window's leading edge, over the list; the
-        // preview column's belong above the preview.
-        ToolbarItem(placement: embedded ? .automatic : .navigation) {
-            // A window keeps its Back button, greyed with nowhere to go, as Finder and Safari do: one that appeared
-            // with the first step pushed the title sideways in a single frame.
-            if back != nil || !embedded {
-                Button {
-                    back?()
-                } label: {
-                    Label("Back", systemImage: "chevron.backward")
+        // The preview column's Back sits with its actions; a split view would put a .navigation item at the
+        // window's leading edge, over the list.
+        if embedded {
+            ToolbarItem {
+                if let back {
+                    Button(action: back) { Label("Back", systemImage: "chevron.backward") }
+                        .help("Back to the previous issue (⌘[)")
+                        .keyboardShortcut("[", modifiers: .command)
                 }
-                .help("Back to the previous issue (⌘[)")
-                .keyboardShortcut("[", modifiers: .command)
-                .disabled(back == nil)
             }
         }
-        // The window's title is the crumb; the preview column draws it above the summary and keeps its actions
-        // at the leading edge, with no spacer.
+        // A window's title is the crumb, with Back before it once there is somewhere to go back to: one item, so
+        // Back can arrive and leave with the title's motion instead of shoving it sideways in a single frame.
         if !embedded {
             ToolbarItem(placement: .navigation) {
-                // A step along the trail: the old title blurs out a few points towards where it went, then the new one blurs in from the
-                // side it came from: one at a time, never two titles over each other.
+                // A step along the trail: the old title, with its Back, blurs out a few points towards where it
+                // went, then the new one blurs in from the side it came from. Back belongs to the title it came
+                // with, so it arrives and leaves with it, and nothing ever slides under anything: the toolbar
+                // resizes its item at once, which put a sliding title under a fading Back.
                 ZStack(alignment: .leading) {
-                    crumb.id(crumbIssue?.key ?? key)
-                        .transition(
-                            .asymmetric(
-                                insertion: .crumb(forward ? 10 : -10).animation(.smooth(duration: 0.22).delay(0.09)),
-                                removal: .crumb(forward ? -10 : 10).animation(.easeIn(duration: 0.09))))
+                    HStack(spacing: 10) {
+                        if crumbHasBack { GlassBackButton { back?() } }
+                        crumb
+                    }
+                    .id("\(crumbIssue?.key ?? key)|\(crumbHasBack)")
+                    .transition(
+                        .asymmetric(
+                            insertion: .crumb(forward ? 10 : -10).animation(.smooth(duration: 0.22).delay(0.09)),
+                            removal: .crumb(forward ? -10 : 10).animation(.easeIn(duration: 0.09))))
                 }
+                .frame(height: 36)  // Back's height either way, so nothing shifts up or down
                 .padding(.trailing, 28)  // room for the "copied" tick, which hangs off the key's end
                 .padding(.leading, 4)
-                .animation(.default, value: crumbIssue?.key)
             }
             .glassTitle()
         }
@@ -1266,7 +1348,7 @@ struct IssueDetailView: View {
             } label: {
                 Label("Refresh", systemImage: "arrow.clockwise")
             }
-            .help("Refresh (⌘⇧R)")
+            .help("Refresh (⇧⌘R)")
         }
         ToolbarItem {
             Button {
@@ -1321,7 +1403,7 @@ struct IssueDetailView: View {
             } label: {
                 Label("Copy Link", systemImage: "link")
             }
-            .help("Copy link (⌘⇧C)")
+            .help("Copy link (⇧⌘C)")
             .disabled(store.issue == nil)
         }
         ToolbarItem {
@@ -1330,7 +1412,7 @@ struct IssueDetailView: View {
             } label: {
                 Label("Open in Browser", systemImage: "safari")
             }
-            .help("Open in browser (⌘⇧O)")
+            .help("Open in browser (⇧⌘O)")
             .disabled(store.issue == nil)
         }
     }
@@ -1471,6 +1553,7 @@ struct IssueDetailView: View {
             return
         }
         summaryDraft = nil
+        returnKeyboard()
         guard draft != store.issue?.fields.summary else { return }
         let key = key
         Task {
@@ -1514,12 +1597,20 @@ struct IssueDetailView: View {
     private func cancelDescriptionEdit() {
         descriptionDraft = nil
         descriptionCaret = nil
+        returnKeyboard()
+    }
+
+    /// A closed editor hands the keyboard back to where the arrows work: the list beside the preview, or the page
+    /// in a window of its own. Left on the editor that just went away, it went nowhere and the arrows did nothing.
+    private func returnKeyboard() {
+        DispatchQueue.main.async { NSApp.keyWindow?.focusList() }
     }
 
     private func saveDescription() {
         guard let draft = descriptionDraft else { return }
         descriptionDraft = nil
         descriptionCaret = nil
+        returnKeyboard()
         guard draft != descriptionOriginal else { return }
         let doc = ADFNode.document(markdown: draft, mentions: descriptionMentions)
         guard let value = try? JSONValue(doc) else { return }
@@ -1546,7 +1637,10 @@ struct IssueDetailView: View {
         editingCommentID = c.id
     }
 
-    private func cancelCommentEdit() { editingCommentID = nil }
+    private func cancelCommentEdit() {
+        editingCommentID = nil
+        returnKeyboard()
+    }
 
     /// Deletes at once; the comment lands in the Bin.
     private func deleteComment(_ c: Comment) {
@@ -1559,6 +1653,7 @@ struct IssueDetailView: View {
 
     private func saveCommentEdit(_ c: Comment) {
         editingCommentID = nil
+        returnKeyboard()
         guard editDraft != editOriginal else { return }
         let doc = ADFNode.document(markdown: editDraft, mentions: editMentions)
         Task {
@@ -2151,6 +2246,17 @@ struct LogWorkView: View {
     }
 
     /// "1w 2d 3h 30m" → seconds (Jira's 8h day, 5d week). Bare numbers mean minutes.
+    /// Seconds → "1d 7h", as Jira writes time: 8-hour days, 5-day weeks.
+    nonisolated static func format(_ seconds: Int) -> String {
+        var m = seconds / 60
+        var parts: [String] = []
+        for (unit, size) in [("w", 5 * 8 * 60), ("d", 8 * 60), ("h", 60), ("m", 1)] where m >= size {
+            parts.append("\(m / size)\(unit)")
+            m %= size
+        }
+        return parts.isEmpty ? "0m" : parts.joined(separator: " ")
+    }
+
     nonisolated static func parseDuration(_ text: String) -> Int? {
         let t = text.trimmingCharacters(in: .whitespaces).lowercased()
         guard !t.isEmpty else { return nil }
@@ -2184,5 +2290,65 @@ private struct CrumbStep: ViewModifier {
 extension AnyTransition {
     fileprivate static func crumb(_ dx: CGFloat) -> AnyTransition {
         .modifier(active: CrumbStep(dx: dx, away: true), identity: CrumbStep(dx: dx, away: false))
+    }
+}
+
+/// One person's work on an issue: their entries in the order Jira lists them, and the time they add up to.
+struct WorklogGroup: Identifiable {
+    let id: String
+    let author: JiraUser?
+    var logs: [Worklog]
+    var seconds: Int { logs.reduce(0) { $0 + $1.timeSpentSeconds } }
+
+    /// By author, in the order each first appears.
+    static func make(_ logs: [Worklog]) -> [WorklogGroup] {
+        var groups: [WorklogGroup] = []
+        for w in logs {
+            let id = w.author?.accountId ?? w.author?.displayName ?? "unknown"
+            if let i = groups.firstIndex(where: { $0.id == id }) { groups[i].logs.append(w) } else {
+                groups.append(WorklogGroup(id: id, author: w.author, logs: [w]))
+            }
+        }
+        return groups
+    }
+}
+
+/// The window toolbar's Back, drawn inside the title item so it can move with the title: a glass circle.
+private struct GlassBackButton: View {
+    let action: () -> Void
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "chevron.backward").font(.system(size: 14, weight: .semibold))
+                .frame(width: 36, height: 36).contentShape(.circle)
+        }
+        .buttonStyle(.plain)
+        .modifier(GlassCircle())
+        .help("Back to the previous issue (⌘[)")
+        .keyboardShortcut("[", modifiers: .command)
+        .accessibilityLabel("Back")
+    }
+}
+
+private struct GlassCircle: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(macOS 26, *) {
+            content.glassEffect(.regular.interactive(), in: .circle)
+        } else {
+            content.background(.regularMaterial, in: .circle)
+        }
+    }
+}
+
+/// A small spinner that shows only once a wait has lasted: the full record of an issue usually lands within a
+/// few frames, and a spinner that flashes for 40 ms reads as a glitch. Its space is kept, so nothing moves.
+private struct DelayedSpinner: View {
+    var size: ControlSize = .small
+    @State private var shown = false
+    var body: some View {
+        ProgressView().controlSize(size).opacity(shown ? 1 : 0)
+            .task {
+                try? await Task.sleep(for: .milliseconds(300))
+                withAnimation(.easeOut(duration: 0.15)) { shown = true }
+            }
     }
 }

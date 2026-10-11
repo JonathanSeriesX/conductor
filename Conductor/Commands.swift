@@ -70,10 +70,10 @@ enum Shortcuts {
 
     /// The Issue menu's ⌘ shortcuts (mirrors AppCommands) for the actions Jira gives no single key.
     private static let menuKeys: [IssueActions.Action: String] = [
-        .editDescription: "⌘⌥E", .attach: "⌘⌥A", .link: "⌘⇧L", .logWork: "⌘⌥L", .subtask: "⌘⇧N", .remind: "⌘⌥R",
+        .editDescription: "⌥⌘E", .attach: "⌥⌘A", .link: "⇧⌘L", .logWork: "⌥⌘L", .subtask: "⇧⌘N", .remind: "⌥⌘R",
     ]
 
-    /// "M", "W", "⌘⌥E": what a caption tells the user to press for `action`; nil when nothing is bound.
+    /// "M", "W", "⌥⌘E": what a caption tells the user to press for `action`; nil when nothing is bound.
     static func hint(for action: IssueActions.Action) -> String? {
         keys.first { $0.1 == .issue(action) }.map { String($0.0).uppercased() } ?? menuKeys[action]
     }

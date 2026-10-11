@@ -238,8 +238,12 @@ struct PriorityIcon: View {
 
 struct GlassCard<Content: View>: View {
     var title: LocalizedStringKey?
+    /// "• 1d 7h logged", in the title's weight, after it: a figure that belongs to the title.
+    var detail: String?
     /// "• M to add", faint, after the title: the key that acts on the card.
     var hint: String?
+    /// Set for a card that folds away: a chevron at the title's trailing end, and a click on the title, fold it.
+    var collapsed: Binding<Bool>?
     @ViewBuilder var content: Content
 
     var body: some View {
@@ -248,10 +252,17 @@ struct GlassCard<Content: View>: View {
                 // The gap before the bullet equals the space after it.
                 HStack(spacing: 3) {
                     Text(title).font(.headline).foregroundStyle(.secondary)
+                    if let detail { Text(verbatim: detail).font(.headline).foregroundStyle(.secondary) }
                     if let hint { Text(hint).font(.subheadline).foregroundStyle(.secondary) }
+                    if let collapsed {
+                        Spacer(minLength: 8)
+                        Disclosure(collapsed: collapsed.wrappedValue)
+                    }
                 }
+                .contentShape(.rect)
+                .onTapGesture { collapsed?.wrappedValue.toggle() }
             }
-            content
+            if collapsed?.wrappedValue != true { content }
         }
         .padding(18)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -280,7 +291,7 @@ func issues(_ n: Int, more: Bool = false) -> String {
     VStack(alignment: .leading, spacing: 4) {
         HStack(spacing: 2) {
             Text(name).textCase(.uppercase).font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
-            if let hint { Text(hint).font(.caption2).foregroundStyle(.secondary) }  // "• A or ⌘⇧A to assign"
+            if let hint { Text(hint).font(.caption2).foregroundStyle(.secondary) }  // "• A or ⇧⌘A to assign"
         }
         value()
     }
@@ -577,8 +588,195 @@ struct ToolbarBand: View {
     }
 
     /// The bar material is the titlebar's; the hairline is the one the window draws under its toolbar.
+    /// A light blur, dimmed by half, ending at the hairline: what the window draws under its own toolbar, where
+    /// the content stays visible through it.
     private var band: some View {
-        Rectangle().fill(.bar).overlay(alignment: .bottom) { Divider() }
+        BackdropBlur(radius: 5)
+            .overlay(Color(nsColor: .windowBackgroundColor).opacity(0.5))
+            .overlay(alignment: .bottom) { Divider() }
+    }
+
+}
+
+
+/// A plain blur of whatever is behind it, without a material's tint: Core Animation's backdrop layer, which is what
+/// the window draws under its own toolbar. Not public API; where the class is missing, the bar material stands in.
+struct BackdropBlur: NSViewRepresentable {
+    var radius: CGFloat
+
+    func makeNSView(context: Context) -> NSView {
+        let v = NSView()
+        guard let backdrop = NSClassFromString("CABackdropLayer") as? CALayer.Type,
+            let filterClass = NSClassFromString("CAFilter") as? NSObject.Type,
+            let filter = filterClass.perform(NSSelectorFromString("filterWithType:"), with: "gaussianBlur")?
+                .takeUnretainedValue() as? NSObject
+        else {
+            let e = NSVisualEffectView()
+            e.material = .titlebar
+            e.blendingMode = .withinWindow
+            return e
+        }
+        filter.setValue(radius, forKey: "inputRadius")
+        filter.setValue(true, forKey: "inputNormalizeEdges")
+        let layer = backdrop.init()
+        layer.filters = [filter]
+        layer.setValue(0.5, forKey: "scale")  // blurred anyway: half resolution is half the work
+        v.layer = layer
+        v.wantsLayer = true
+        return v
+    }
+
+    func updateNSView(_ v: NSView, context: Context) {}
+}
+
+/// The fold chevron at the end of a card's title or a group's row: down while open, sideways while folded.
+struct Disclosure: View {
+    let collapsed: Bool
+    var body: some View {
+        Image(systemName: "chevron.down")
+            .font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
+            .rotationEffect(.degrees(collapsed ? -90 : 0))
+            .frame(width: 18, height: 18)
+            .accessibilityLabel(collapsed ? Text("Expand") : Text("Collapse"))
     }
 }
 
+/// Which cards and groups are folded, per issue ("CON-12|comments"), kept on this Mac across launches.
+enum Folds {
+    private static let key = "foldedSections"
+    static func load() -> Set<String> { Set(UserDefaults.standard.stringArray(forKey: key) ?? []) }
+    static func save(_ folded: Set<String>) {
+        // ponytail: an unbounded list in defaults; 1000 folded sections is a few tens of kilobytes.
+        UserDefaults.standard.set(Array(folded.prefix(1000)), forKey: key)
+    }
+}
+
+/// Arrow keys, Page Up and Down (fn-↑↓), Home and End (fn-←→), ⌥/⌘ with the arrows and Space scroll an issue page as
+/// they scroll a web page, once the page has the keyboard: in the preview column after a click on the page or → from
+/// the list (← goes back to the list), in an issue window whenever no editor has it. Sits behind the page's content.
+struct PageKeys: NSViewRepresentable {
+    let standalone: Bool
+    func makeNSView(context: Context) -> PageKeyView { PageKeyView() }
+    func updateNSView(_ v: PageKeyView, context: Context) { v.standalone = standalone }
+}
+
+extension Notification.Name {
+    /// Posted by the preview column's page when the keyboard enters or leaves it; `object` is the window.
+    static let previewFocus = Notification.Name("previewFocus")
+}
+
+final class PageKeyView: NSView {
+    var standalone = false
+    nonisolated(unsafe) private var monitors: [Any] = []
+    private var responderWatch: NSKeyValueObservation?
+    private var hadFocus = false
+
+    override var acceptsFirstResponder: Bool { true }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        monitors.forEach(NSEvent.removeMonitor)
+        monitors = []
+        responderWatch = nil
+        guard let window else { return }
+        // A click on the page's background or its text takes the keyboard from the list, as a click into a web page
+        // does; a click on a control or into an editor keeps what that gives it.
+        monitors.append(
+            NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] e in
+                guard let self, let w = self.window, e.window === w, let sv = self.enclosingScrollView,
+                    sv.bounds.contains(sv.convert(e.locationInWindow, from: nil))
+                else { return e }
+                DispatchQueue.main.async {
+                    if w.firstResponder is NSTableView || w.firstResponder === w { w.makeFirstResponder(self) }
+                }
+                return e
+            } as Any)
+        monitors.append(
+            NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] e in
+                guard let self, e.window === self.window, self.hasKeyboard, self.handle(e) else { return e }
+                return nil
+            } as Any)
+        // The list greys its selection while the keyboard is in the preview, as Mail's does.
+        responderWatch = window.observe(\.firstResponder, options: [.new]) { [weak self] w, _ in
+            MainActor.assumeIsolated {
+                guard let self, !self.standalone, let sv = self.enclosingScrollView else { return }
+                let on = (w.firstResponder as? NSView).map { $0 === self || $0.isDescendant(of: sv) } ?? false
+                guard on != self.hadFocus else { return }
+                self.hadFocus = on
+                NotificationCenter.default.post(name: .previewFocus, object: w, userInfo: ["on": on])
+            }
+        }
+    }
+
+    deinit { monitors.forEach(NSEvent.removeMonitor) }
+
+    /// The page has the keyboard: this view or the page's selectable text has it, or, in a window of its own,
+    /// anything but an editor. An editor, the list and the search field keep their arrows.
+    private var hasKeyboard: Bool {
+        guard let w = window, w.isKeyWindow, let sv = enclosingScrollView else { return false }
+        let fr = w.firstResponder
+        if fr === self { return true }
+        if fr is NSTextView || fr is NSTableView { return false }
+        if let v = fr as? NSView, v.isDescendant(of: sv) { return true }
+        return standalone
+    }
+
+    private func handle(_ e: NSEvent) -> Bool {
+        let mods = e.modifierFlags.intersection([.command, .option, .shift, .control])
+        // ← in the preview (→ right to left) hands the keyboard back to the list beside it.
+        let towardList: UInt16 = NSApp.userInterfaceLayoutDirection == .rightToLeft ? 124 : 123
+        if !standalone, mods.isEmpty, e.keyCode == towardList, let w = window {
+            w.focusList()
+            return true
+        }
+        guard let sv = enclosingScrollView else { return false }
+        return sv.scrollAnimated(for: e, line: 96, arrows: true)
+    }
+}
+
+extension NSScrollView {
+    /// Scrolls for a key as a web page does, animated: ↑↓ by `line` (when `arrows`), ⌥↑↓, Page Up/Down and Space by a
+    /// screen, ⌘↑↓, Home and End to the ends. False for any other key.
+    func scrollAnimated(for e: NSEvent, line: CGFloat, arrows: Bool) -> Bool {
+        guard let doc = documentView else { return false }
+        let clip = contentView
+        let mods = e.modifierFlags.intersection([.command, .option, .shift, .control])
+        let page = max(40, clip.bounds.height - contentInsets.top - 48)
+        let top = -contentInsets.top, bottom = doc.frame.height - clip.bounds.height
+        let y = clip.bounds.origin.y
+        let target: CGFloat
+        switch (e.keyCode, mods) {
+        case (125, []) where arrows: target = y + line  // ↓
+        case (126, []) where arrows: target = y - line  // ↑
+        case (125, .option) where arrows, (121, []), (49, []) where arrows: target = y + page  // ⌥↓, page down, space
+        case (126, .option) where arrows, (116, []), (49, .shift) where arrows: target = y - page  // ⌥↑, page up, ⇧space
+        case (125, .command) where arrows, (119, []): target = bottom  // ⌘↓, end
+        case (126, .command) where arrows, (115, []): target = top  // ⌘↑, home
+        default: return false
+        }
+        // SwiftUI's scroll views and tables are flipped: y grows downwards.
+        let to = NSPoint(x: clip.bounds.origin.x, y: min(max(target, top), max(top, bottom)))
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.2
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            ctx.allowsImplicitAnimation = true
+            clip.animator().setBoundsOrigin(to)
+        }
+        reflectScrolledClipView(clip)
+        return true
+    }
+}
+
+extension NSWindow {
+    /// Puts the keyboard on the preview column's page, as → from the list does.
+    func focusPreviewPage() -> Bool {
+        func find(_ v: NSView) -> PageKeyView? {
+            if let p = v as? PageKeyView, !p.standalone { return p }
+            for s in v.subviews { if let p = find(s) { return p } }
+            return nil
+        }
+        guard let page = contentView.flatMap(find) else { return false }
+        return makeFirstResponder(page)
+    }
+}
