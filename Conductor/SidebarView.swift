@@ -134,12 +134,14 @@ struct ListFilters: Hashable, Codable {
                     b.fields.lastViewed ?? b.fields.updated ?? .distantPast)
             case .created: r = (a.fields.created ?? .distantPast).compare(b.fields.created ?? .distantPast)
             case .due:
-                // "2026-10-31" sorts as text; an undated issue goes last whichever way the dates run.
+                // "2026-10-31" sorts as text; an undated issue goes last whichever way the dates run. Ties go by
+                // key, the same way, as `jqlParts` asks Jira to.
                 switch (a.fields.duedate, b.fields.duedate) {
-                case (nil, nil): r = .orderedSame
+                case (nil, nil): r = a.key.localizedStandardCompare(b.key)
                 case (nil, _): return false
                 case (_, nil): return true
-                case (let da?, let db?): r = da.compare(db)
+                case (let da?, let db?):
+                    r = da == db ? a.key.localizedStandardCompare(b.key) : da.compare(db)
                 }
             case .priority:
                 // Jira's priority ids count up from the highest, so "priority DESC" is the lowest id first.
@@ -151,7 +153,9 @@ struct ListFilters: Hashable, Codable {
                 let rank = ["new": 0, "indeterminate": 1, "done": 2]
                 let (sa, sb) = (a.fields.status, b.fields.status)
                 let (ra, rb) = (rank[sa.statusCategory.key] ?? 1, rank[sb.statusCategory.key] ?? 1)
-                r = ra != rb ? (ra < rb ? .orderedAscending : .orderedDescending) : sa.name.localizedStandardCompare(sb.name)
+                r =
+                    ra != rb
+                    ? (ra < rb ? .orderedAscending : .orderedDescending) : sa.name.localizedStandardCompare(sb.name)
             }
             if r == .orderedSame { return a.key < b.key }
             return descending ? r == .orderedDescending : r == .orderedAscending
@@ -187,7 +191,22 @@ struct ListFilters: Hashable, Codable {
     /// Jira refuses a search with no restriction at all ("unbounded"), so the list says so instead of asking.
     var isBounded: Bool { isRawJQL || isKey || !restrictions.isEmpty }
 
-    /// JQL for one account.
+    /// The queries a list loads, one after the other. Sorted by due date, two: the dated issues, then the undated.
+    /// Jira puts undated issues first under "duedate DESC", in no fixed order, so on a long list the dated ones
+    /// were pages away and the rows reshuffled on every load.
+    var jqlParts: [String] {
+        guard !isRawJQL, !isKey, sort.field == .due else { return [jql] }
+        let order = sort.descending ? "DESC" : "ASC"
+        func part(_ c: String, by: String) -> String {
+            (restrictions + [c]).joined(separator: " AND ") + " ORDER BY " + by
+        }
+        return [
+            part("duedate IS NOT EMPTY", by: "duedate \(order), key \(order)"),
+            part("duedate IS EMPTY", by: "key \(order)"),
+        ]
+    }
+
+    /// JQL for one account: the whole list, for its count and its cache.
     var jql: String {
         if isRawJQL { return query }
         if isKey { return "key = \"\(query.uppercased())\"" }

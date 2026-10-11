@@ -44,10 +44,6 @@ struct DisplayRow: Identifiable {
                 return la != lb ? (sort.descending ? la > lb : la < lb) : a.id < b.id
             }
         }
-        // Jira lists undated issues first under "duedate DESC"; here the dated ones come first either way.
-        if sort.field == .due {
-            top = top.filter { $0.issue.fields.duedate != nil } + top.filter { $0.issue.fields.duedate == nil }
-        }
         var out: [DisplayRow] = []
         for r in top {
             let kids = children[r.id] ?? []
@@ -64,11 +60,15 @@ final class IssueListStore {
     /// Keys with a write on its way to Jira.
     var pending: Set<String> = []
     var nextToken: String?
+    /// The part of the list (see `ListFilters.jqlParts`) the next page comes from.
+    private var part = 0
+    /// More rows to load: a next page, or a part not started.
+    var hasMore: Bool { nextToken != nil || single.map { part + 1 < $0.parts.count } == true }
     /// How many issues the query matches on the server, every account summed: the last count from the cache until
     /// this load's own answers. Nil when no count is known yet.
     var total: Int?
     /// The subtitle's number: the rows once the whole list is loaded, else the server's count.
-    var count: Int { single != nil && nextToken == nil && !isLoading ? rows.count : max(total ?? 0, rows.count) }
+    var count: Int { single != nil && !hasMore && !isLoading ? rows.count : max(total ?? 0, rows.count) }
     /// True from the start: a new list is always about to load, and must not flash "No issues" first.
     var isLoading = true
     var error: String?
@@ -77,7 +77,7 @@ final class IssueListStore {
     /// Jira rejected a typed query (half-written JQL, usually). Shown in the list, never as an alert.
     var queryError: String?
     private var generation = 0
-    private var single: (AccountState, String, Bool)?
+    private var single: (state: AccountState, jql: String, parts: [String], cache: Bool)?
     /// The query whose rows (cached or fresh) are on screen.
     private var shownKey = ""
     private var shown = ListFilters()
@@ -98,14 +98,40 @@ final class IssueListStore {
         }
         state.warmTransitions(page.issues)
         if cache {
-            if nextPageToken == nil {
-                let name = "list-" + DiskCache.hash(jql)
-                state.lists[name] = page.issues
-                DiskCache.saveAsync(page.issues, account: state.account, name: name)
-            }
+            if nextPageToken == nil { remember(page.issues, jql: jql, state: state) }
             Spotlight.index(page.issues, host: state.host)
         }
         return page
+    }
+
+    /// A list's first page, kept in memory and on disk under its query for the next time it opens.
+    static func remember(_ issues: [Issue], jql: String, state: AccountState) {
+        let name = "list-" + DiskCache.hash(jql)
+        state.lists[name] = issues
+        DiskCache.saveAsync(issues, account: state.account, name: name)
+    }
+
+    /// One page's worth of a list made of parts: a part used up is followed at once by the next while the page is
+    /// short, so the rows arrive together and nothing is added under them a moment later. The first page of a
+    /// list of parts is cached whole, under the list's own query.
+    static func pageWorth(
+        _ parts: [String], whole jql: String, part: Int, token: String?, state: AccountState, cache: Bool
+    ) async throws -> (issues: [Issue], part: Int, token: String?) {
+        let first = part == 0 && token == nil
+        var (issues, part, token) = ([Issue](), part, token)
+        while true {
+            // A part's own first page is not a list anyone opens: only the whole is cached, below.
+            let page = try await fetch(
+                jql: parts[part], state: state, nextPageToken: token, cache: cache && parts.count == 1)
+            if cache, parts.count > 1 { Spotlight.index(page.issues, host: state.host) }
+            issues += page.issues
+            token = page.isLast == true ? nil : page.nextPageToken
+            guard token == nil, part + 1 < parts.count else { break }
+            part += 1
+            if issues.count >= 50 { break }
+        }
+        if cache, parts.count > 1, first { remember(issues, jql: jql, state: state) }
+        return (issues, part, token)
     }
 
     /// Fetches full details for the top rows in one request per account and saves each as `issue-KEY`,
@@ -115,6 +141,15 @@ final class IssueListStore {
         for group in Dictionary(grouping: stale, by: \.state.id).values {
             guard let st = group.first?.state else { continue }
             Task { @MainActor in await st.fetchDetails(group.map(\.issue.key)) }
+        }
+    }
+
+    /// Takes a change announced from elsewhere (a card moved on a board): the row shows it before any reload.
+    func apply(_ c: Session.IssueChange) {
+        for i in rows.indices where rows[i].target == c.target {
+            var issue = c.issue ?? rows[i].issue
+            if c.issue == nil, let s = c.status { issue.fields.status = s }
+            if issue != rows[i].issue { rows[i] = ListRow(issue: issue, state: rows[i].state) }
         }
     }
 
@@ -131,7 +166,10 @@ final class IssueListStore {
     func load(_ f: ListFilters, session: Session) async {
         generation += 1
         let gen = generation
+        // Every row of the list is here: the last page is in, or the rows reach the count.
+        let complete = single != nil ? !hasMore && !rows.isEmpty : (total ?? .max) <= rows.count
         nextToken = nil
+        part = 0
         single = nil
         sort = f.sort
         unbounded = !f.isBounded
@@ -161,9 +199,17 @@ final class IssueListStore {
             var resorted = shown
             resorted.sort = f.sort
             if resorted == f, !rows.isEmpty {
-                // Only the order changed: the same rows change places at once, nothing is fetched to draw them.
-                // The server's page lands behind (on a list longer than a page its first page can differ).
-                byAccount = byAccount.mapValues { $0.sorted { f.sort.areInOrder($0.issue, $1.issue) } }
+                // Only the order changed. A list that is all here changes places at once, exactly, and the server's
+                // page confirms it. A longer one would sort only the rows it has, and the server's first page would
+                // swap them for others a moment later: it shows the new order's cached page if there is one, else
+                // keeps the old order until the server answers, so the rows reorder once.
+                if complete {
+                    byAccount = byAccount.mapValues { $0.sorted { f.sort.areInOrder($0.issue, $1.issue) } }
+                } else if cacheable {
+                    let cached = await Self.cachedRows(queries)
+                    guard gen == generation else { return }
+                    if !cached.isEmpty { byAccount = cached }
+                }
             } else {
                 byAccount = cacheable ? await Self.cachedRows(queries) : [:]
                 guard gen == generation else { return }
@@ -179,9 +225,10 @@ final class IssueListStore {
                 (
                     st.id,
                     Task<[ListRow]?, Never> { @MainActor in
-                        guard let page = try? await Self.fetch(jql: jql, state: st, cache: cacheable) else {
-                            return nil
-                        }
+                        guard
+                            let page = try? await Self.pageWorth(
+                                f.jqlParts, whole: jql, part: 0, token: nil, state: st, cache: cacheable)
+                        else { return nil }
                         return page.issues.map { ListRow(issue: $0, state: st) }
                     }
                 )
@@ -200,7 +247,7 @@ final class IssueListStore {
                 isLoading = false
                 return
             }
-            single = (st, jql, cacheable)
+            single = (st, jql, f.jqlParts, cacheable)
             await fetchPage(gen: gen, replacing: true)
         }
     }
@@ -263,21 +310,22 @@ final class IssueListStore {
     }
 
     func loadMore() async {
-        guard nextToken != nil, !isLoading, single != nil else { return }
+        guard hasMore, !isLoading, single != nil else { return }
         await fetchPage(gen: generation, replacing: false)
     }
 
     private func fetchPage(gen: Int, replacing: Bool) async {
-        guard let (st, jql, cacheable) = single else { return }
+        guard let (st, jql, parts, cacheable) = single else { return }
         isLoading = true
         // Not for a superseded page: the load that replaced it is still running under the same flag.
         defer { if gen == generation { isLoading = false } }
         do {
-            let page = try await Self.fetch(jql: jql, state: st, nextPageToken: nextToken, cache: cacheable)
+            let page = try await Self.pageWorth(
+                parts, whole: jql, part: part, token: nextToken, state: st, cache: cacheable)
             guard gen == generation else { return }
             let fresh = page.issues.map { ListRow(issue: $0, state: st) }
             if replacing { show(fresh) } else { rows += fresh }
-            nextToken = page.isLast == true ? nil : page.nextPageToken
+            (part, nextToken) = (page.part, page.token)
             if replacing, cacheable { Self.prefetchDetails(rows) }
         } catch {
             guard gen == generation, !error.isOffline, !error.isCancelled else { return }
@@ -390,7 +438,7 @@ struct IssueListView: View {
             }
             // Only while there is nothing to show or the next page is coming: a refresh behind rows that are
             // already on screen must not add and remove a row at the end of the list.
-            if store.isLoading, store.rows.isEmpty || store.nextToken != nil {
+            if store.isLoading, store.rows.isEmpty || store.hasMore {
                 HStack {
                     Spacer()
                     ProgressView().controlSize(.small)
@@ -435,6 +483,7 @@ struct IssueListView: View {
             selection = []
             return .handled
         }
+        .modifier(FollowsOtherWindows(store: store, selection: $selection, opened: $opened))
         // Back from an issue opened in its own window, ↓ and ↑ carry on from it, not from the top of the list.
         .onKeyPress(.downArrow) { step(from: opened, by: 1, in: shown) }
         .onKeyPress(.upArrow) { step(from: opened, by: -1, in: shown) }
@@ -598,8 +647,12 @@ struct IssueListView: View {
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             refresh()
         }
+        // Another list (a sidebar click, a chip): the search field lets the keyboard go, whatever it held. Text
+        // typed or cleared in it is the same list, and keeps it there.
         .onChange(of: filters) { old, new in
-            if new.text.isEmpty, old.text.isEmpty, old != new { searchFocused = false }
+            var sameButText = old
+            sameButText.text = new.text
+            if sameButText != new { searchFocused = false }
         }
         .onChange(of: session.focusSearchRequested) { _, on in
             if on {
@@ -685,7 +738,7 @@ struct IssueListView: View {
     /// count is known. Nil while a list loads with nothing to show yet.
     private var subtitle: String? {
         store.rows.isEmpty && store.total == nil && store.isLoading
-            ? nil : issues(store.count, more: store.total == nil && store.nextToken != nil)
+            ? nil : issues(store.count, more: store.total == nil && store.hasMore)
     }
 
     // MARK: Row actions
@@ -928,6 +981,27 @@ struct IssueListView: View {
 
 /// The account tag on a row in a unified list: square, as opposed to the status capsule. Reads the
 /// prominence itself, like StatusPill: the row's own read did not flip to white on a focused selection.
+/// What the list takes from other windows, as they happen.
+private struct FollowsOtherWindows: ViewModifier {
+    let store: IssueListStore
+    @Binding var selection: Set<IssueTarget>
+    @Binding var opened: IssueTarget?
+    @Environment(Session.self) private var session
+
+    func body(content: Content) -> some View {
+        content
+            // The previewed issue opened in a window some other way (a link, Spotlight, Open in New Window): the
+            // preview lets it go as for a double-click, and the arrows carry on from it.
+            .onChange(of: session.windowOpened?.count) {
+                guard let t = session.windowOpened?.target, selection == [t] else { return }
+                opened = t
+                selection = []
+            }
+            // A change made elsewhere (a card moved on a board) shows in its row at once.
+            .onChange(of: session.lastChange?.count) { if let c = session.lastChange { store.apply(c) } }
+    }
+}
+
 struct SiteBadge: View {
     let name: String
     let color: Color

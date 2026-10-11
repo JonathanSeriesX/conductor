@@ -177,11 +177,13 @@ final class BoardStore {
         await loadIssues(client)
     }
 
-    /// Moves a card by firing the first transition that lands in the column.
-    func move(_ key: String, to column: BoardConfiguration.Column, client: JiraClient) async {
+    /// Moves a card by firing the first transition that lands in the column. The issue as Jira has it afterwards,
+    /// or nil when it did not move.
+    @discardableResult
+    func move(_ key: String, to column: BoardConfiguration.Column, client: JiraClient) async -> Issue? {
         let targets = Set(column.statuses.map(\.id))
         guard let issue = issues.first(where: { $0.key == key }), !targets.contains(issue.fields.status.id) else {
-            return
+            return nil
         }
         // The card sits in its new column from the drop on, while Jira works; a failure puts it back. Only it is
         // fetched afterwards, so the rest of the board stays exactly where it was instead of reloading page by page.
@@ -193,7 +195,7 @@ final class BoardStore {
                 error = String(
                     localized: "No transition from \(issue.fields.status.name) to \(column.name) is allowed for \(key)."
                 )
-                return
+                return nil
             }
             moving[key] = t.to.id
             try await client.transition(key, to: t.id)
@@ -201,7 +203,11 @@ final class BoardStore {
             let fresh = try await client.issue(key)
             if let i = issues.firstIndex(where: { $0.key == key }) { issues[i] = fresh }
             saveSnapshot()
-        } catch { self.error = error.localizedDescription }
+            return fresh
+        } catch {
+            self.error = error.localizedDescription
+            return nil
+        }
     }
 }
 
@@ -554,9 +560,21 @@ struct BoardView: View {
 
     private func drop(_ column: BoardConfiguration.Column) -> (String) -> Void {
         { key in
-            guard let c = state?.client else { return }
+            guard let st = state, let issue = store.issues.first(where: { $0.key == key }) else { return }
+            let target = IssueTarget(accountID: st.id, key: key)
+            // Pages and list rows showing the card take its new status at the drop, from the workflow's known
+            // transitions; the issue as Jira has it follows, or the old one back if the move failed.
+            let statuses = Set(column.statuses.map(\.id))
+            if let to = st.transitionsByWorkflow[AccountState.workflowKey(issue)]?.first(where: {
+                statuses.contains($0.to.id)
+            })?.to,
+                to != issue.fields.status
+            {
+                session.announce(target, status: to)
+            }
             Task {
-                await store.move(key, to: column, client: c)
+                let fresh = await store.move(key, to: column, client: st.client)
+                session.announce(target, issue: fresh ?? issue)
                 touched(key)
             }
         }

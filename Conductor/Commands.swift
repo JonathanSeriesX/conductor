@@ -221,6 +221,7 @@ struct IssueWindow: View {
     @State private var forward = true
     @Environment(Session.self) private var session
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         Group {
@@ -270,18 +271,32 @@ struct IssueWindow: View {
             navigating = false
         }
         .background(WindowCascader())
+        // Opened (a link, Spotlight, Open in New Window) or shown again after a close: the main window's preview
+        // lets the same issue go. Steps along this window's trail are not openings and leave the preview alone.
+        .onAppear { if !embedded { session.announceWindow(target) } }
+        .onChange(of: scenePhase) { old, new in
+            if !embedded, old == .background, new != .background { session.announceWindow(target) }
+        }
         // The main window's monitor covers the preview column; a window of its own needs one.
         .background(
             embedded
                 ? nil
                 : IssueKeyMonitor { e, issueActions in
-                    // Escape in the comment box gives the keyboard up; editors with a Cancel keep theirs.
                     if e.keyCode == 53, e.modifierFlags.intersection(.deviceIndependentFlagsMask).isEmpty,
-                        issueActions?.isEditing != true, let tv = e.window?.firstResponder as? NSTextView,
-                        !tv.isFieldEditor
+                        issueActions?.isEditing != true, NSApp.keyWindow === e.window, e.window?.showsPopover != true
                     {
-                        e.window?.focusList()
-                        return nil
+                        // Escape in the comment box gives the keyboard up; editors with a Cancel keep theirs.
+                        if let tv = e.window?.firstResponder as? NSTextView {
+                            guard !tv.isFieldEditor else { return e }
+                            e.window?.focusList()
+                            return nil
+                        }
+                        // Otherwise it steps back along the trail, as in the preview. At its start it does nothing:
+                        // a window is closed with ⌘W.
+                        if let back = issueActions?.back {
+                            back()
+                            return nil
+                        }
                     }
                     return Shortcuts.handle(e, issue: issueActions, session: session)
                 }

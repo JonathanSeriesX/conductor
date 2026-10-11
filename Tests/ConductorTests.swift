@@ -92,13 +92,25 @@ final class JQLTests: XCTestCase {
         let asc = ListFilters.Sort(field: .due, descending: false)
         XCTAssertEqual([none, early, late].sorted(by: desc.areInOrder).map(\.key), ["A-2", "A-1", "A-3"])
         XCTAssertEqual([none, late, early].sorted(by: asc.areInOrder).map(\.key), ["A-1", "A-2", "A-3"])
-        // The rows as drawn, from a page the server ordered with the undated first.
-        let st = AccountState(account: Account(site: URL(string: "https://x.atlassian.net")!, email: "e", token: "t"))
-        let rows = [none, late, early].map { ListRow(issue: $0, state: st) }
-        XCTAssertEqual(DisplayRow.nest(rows, expanded: [], sort: desc).map(\.row.issue.key), ["A-2", "A-1", "A-3"])
+        // Ties go by key the same way, as the queries ask Jira to, so a merge and a page agree.
+        let alsoLate = try issue("A-10", due: "2026-10-20")
+        let alsoNone = try issue("A-11", due: nil)
         XCTAssertEqual(
-            DisplayRow.nest(rows, expanded: [], sort: asc).map(\.row.issue.key), ["A-2", "A-1", "A-3"],
-            "the server's order among the dated rows stands")
+            [none, alsoNone, late, alsoLate].sorted(by: desc.areInOrder).map(\.key), ["A-10", "A-2", "A-11", "A-3"])
+        XCTAssertEqual(
+            [alsoNone, none, alsoLate, late].sorted(by: asc.areInOrder).map(\.key), ["A-2", "A-10", "A-3", "A-11"])
+        // Jira itself is asked twice: the dated issues, then the undated, each part in a fixed order.
+        var f = ListFilters()
+        f.project = "QA"
+        f.sort = desc
+        XCTAssertEqual(
+            f.jqlParts,
+            [
+                "project = \"QA\" AND statusCategory != Done AND duedate IS NOT EMPTY ORDER BY duedate DESC, key DESC",
+                "project = \"QA\" AND statusCategory != Done AND duedate IS EMPTY ORDER BY key DESC",
+            ].map { f.status == .open ? $0 : $0.replacingOccurrences(of: " AND statusCategory != Done", with: "") })
+        f.sort.field = .updated
+        XCTAssertEqual(f.jqlParts, [f.jql], "any other order is one query")
     }
 }
 
