@@ -182,6 +182,24 @@ final class DecodingTests: XCTestCase {
         XCTAssertEqual(issue.fields.duedate.flatMap(DueDate.parse).map(DueDate.string), "2026-10-31")
     }
 
+    func testACopyWithFewerCommentsThanTheTotalIsIncomplete() throws {
+        let client = JiraClient(account: Account(site: URL(string: "https://x.atlassian.net")!, email: "e", token: "t"))
+        func issue(_ comment: String) throws -> Issue {
+            let json =
+                #"{"id":"1","key":"QA-1","fields":{"summary":"s","status":{"id":"1","name":"To Do","statusCategory":{"key":"new","name":"To Do"}},"issuetype":{"id":"1","name":"Task"}"#
+                + comment + "}}"
+            return try client.decoder.decode(Issue.self, from: Data(json.utf8))
+        }
+        let c =
+            #"{"id":"10","body":"hi","created":"2026-10-05T09:56:55.551+0300","updated":"2026-10-05T09:56:55.551+0300"}"#
+        // A search result carries the first 20 of a longer thread; an issue of its own the newest 100.
+        XCTAssertFalse(try issue(#","comment":{"comments":["# + c + #"],"total":3}"#).hasAllComments)
+        XCTAssertTrue(try issue(#","comment":{"comments":["# + c + #"],"total":1}"#).hasAllComments)
+        XCTAssertTrue(try issue(#","comment":{"comments":[],"total":0}"#).hasAllComments)
+        // A list row has no comments at all: not a full record.
+        XCTAssertFalse(try issue("").hasAllComments)
+    }
+
     func testSiteNormalization() {
         XCTAssertEqual(Account.normalizeSite("team")?.absoluteString, "https://team.atlassian.net")
         XCTAssertEqual(Account.normalizeSite(" team.atlassian.net ")?.absoluteString, "https://team.atlassian.net")
@@ -189,6 +207,32 @@ final class DecodingTests: XCTestCase {
             Account.normalizeSite("https://jira.corp.example/browse/X?y=1")?.absoluteString, "https://jira.corp.example"
         )
         XCTAssertNil(Account.normalizeSite(""))
+    }
+}
+
+/// Reads a real issue with more than 100 comments. Skipped unless the environment names one:
+/// TEST_RUNNER_CONDUCTOR_SITE / _EMAIL / _TOKEN / _LONG_THREAD (xcodebuild strips the prefix).
+final class LiveReadTests: XCTestCase {
+    func testALongThreadLoadsWholeAndInOrder() async throws {
+        let env = ProcessInfo.processInfo.environment
+        guard let site = env["CONDUCTOR_SITE"].flatMap(Account.normalizeSite),
+            let email = env["CONDUCTOR_EMAIL"], let token = env["CONDUCTOR_TOKEN"],
+            let key = env["CONDUCTOR_LONG_THREAD"]
+        else { throw XCTSkip("No live credentials in the environment") }
+        let c = JiraClient(account: Account(site: site, email: email, token: token))
+        // Jira embeds only the newest 100 in an issue: the rest must have come from the comment endpoint.
+        let issue = try await c.issue(key)
+        let page = try XCTUnwrap(issue.fields.comment)
+        XCTAssertGreaterThan(page.total, 100)
+        XCTAssertEqual(page.comments.count, page.total)
+        XCTAssertEqual(Set(page.comments.map(\.id)).count, page.total)
+        XCTAssertEqual(page.comments.map(\.created), page.comments.map(\.created).sorted())
+        // A search result carries the first 20: completing it gives the same thread.
+        let search = try await c.search(jql: "key = \(key)", fields: c.detailFields)
+        let found = try XCTUnwrap(search.issues.first)
+        XCTAssertFalse(found.hasAllComments)
+        let completed = try await c.completingComments(found)
+        XCTAssertEqual(completed.fields.comment?.comments.map(\.id), page.comments.map(\.id))
     }
 }
 
@@ -410,8 +454,9 @@ final class FilterAndDurationTests: XCTestCase {
                 """
             return try JSONDecoder().decode(Issue.self, from: Data(json.utf8))
         }
-        let done = try issue("A-1", "done", "Done"), todo = try issue("A-2", "new", "To Do"),
-            doing = try issue("A-3", "indeterminate", "In Progress")
+        let done = try issue("A-1", "done", "Done")
+        let todo = try issue("A-2", "new", "To Do")
+        let doing = try issue("A-3", "indeterminate", "In Progress")
         XCTAssertEqual([done, doing, todo].sorted(by: sort.areInOrder).map(\.key), ["A-2", "A-3", "A-1"])
     }
 

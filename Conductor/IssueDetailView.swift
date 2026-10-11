@@ -74,28 +74,25 @@ final class IssueDetailStore {
                 full ? DiskCache.loadAsync(account: account, name: "children-\(key)") : nil
             let (cached, meta, trans, kids) = await (diskIssue, diskMeta, diskTransitions, diskChildren)
             guard self.key == key else { return }
-            // Memory's copy when it is full and at least as new as the disk's.
+            // Memory's copy when it is full, no less complete than the disk's and at least as new.
             var next = cached
-            if let p = state.peek[key], p.fields.comment != nil,
+            if let p = state.peek[key], p.fields.comment != nil, p.hasAllComments || cached?.hasAllComments != true,
                 (p.fields.updated ?? .distantPast) >= (cached?.fields.updated ?? .distantPast)
             {
                 next = p
             }
             if next == nil {
-                // Never opened on this Mac: Jira usually answers within a few frames. Wait that long for the
-                // whole issue rather than show the row's copy and grow it a moment later.
+                // Never opened on this Mac: wait for the whole issue rather than show the row's copy and grow it
+                // a moment later. Right once beats fast and shifting; past a second and a half, the row's copy.
                 let fetch = Task { try await client.issue(key) }
                 pending = fetch
-                next = await withTaskGroup(of: Issue?.self) { group in
-                    group.addTask { try? await fetch.value }
-                    group.addTask {
-                        try? await Task.sleep(for: .milliseconds(300))
-                        return nil
-                    }
-                    let first = await group.next() ?? nil
-                    group.cancelAll()
-                    return first
-                }
+                next = await Self.first(of: fetch, within: .milliseconds(1500))
+                guard self.key == key else { return }
+            } else if let n = next, !n.hasAllComments {
+                // A prefetched copy carries Jira's first 20 comments: the rest first, so the thread shows whole
+                // rather than growing under the reader. Offline or slow, the copy as it is after three seconds.
+                let complete = Task { try await client.completingComments(n) }
+                next = await Self.first(of: complete, within: .seconds(3)) ?? n
                 guard self.key == key else { return }
             }
             let shown = next ?? state.peek[key]
@@ -165,6 +162,20 @@ final class IssueDetailStore {
             let (now, fresh) = state.memo("labels") { try await client.labels() }
             if let now, self.key == key { update(\.allLabels, now) }
             if let list = await fresh.value, self.key == key { update(\.allLabels, list) }
+        }
+    }
+
+    /// The task's value if it lands within `limit`, else nil (the task keeps running).
+    private static func first<T: Sendable>(of task: Task<T, Error>, within limit: Duration) async -> T? {
+        await withTaskGroup(of: T?.self) { group in
+            group.addTask { try? await task.value }
+            group.addTask {
+                try? await Task.sleep(for: limit)
+                return nil
+            }
+            let first = await group.next() ?? nil
+            group.cancelAll()
+            return first
         }
     }
 
@@ -302,6 +313,8 @@ struct IssueDetailView: View {
                 Folds.save(folded)
             })
     }
+    /// The thread's order, the same on every issue.
+    @AppStorage("commentsNewestFirst") private var newestFirst = true
     /// Refresh Issue is loading: the Refresh button spins meanwhile.
     @State private var refreshing = false
     /// The load this page's own write would trigger: `perform` has refreshed the issue already.
@@ -439,21 +452,13 @@ struct IssueDetailView: View {
                                 priorityField(issue)
                                 reporterField(issue)
                             }
-                            GlassCard(
-                                title: "Comments", hint: hint(.comment) { String(localized: "\($0) to add") },
-                                collapsed: fold("\(shownKey)|comments")
-                            ) { comments(issue) }
-                            .id("comments")
+                            commentsCard(issue)
                             metadata { fields(issue) }
                         } else {
                             HStack(alignment: .top, spacing: 16) {
                                 VStack(alignment: .leading, spacing: 16) {
                                     cards(issue)
-                                    GlassCard(
-                                        title: "Comments", hint: hint(.comment) { String(localized: "\($0) to add") },
-                                        collapsed: fold("\(shownKey)|comments")
-                                    ) { comments(issue) }
-                                    .id("comments")
+                                    commentsCard(issue)
                                 }
                                 GlassCard {
                                     VStack(alignment: .leading, spacing: 14) {
@@ -485,7 +490,8 @@ struct IssueDetailView: View {
                 scrolled = $1
             }
             .onChange(of: commentRequest) {
-                withAnimation { proxy.scrollTo("comments", anchor: .bottom) }
+                // The composer sits at the newest end of the thread.
+                withAnimation { proxy.scrollTo("comments", anchor: newestFirst ? .top : .bottom) }
             }
             // When the next issue is on screen, not when it was asked for: the previous one stays until then.
             .onChange(of: store.issue?.key) { proxy.scrollTo("top", anchor: .top) }
@@ -1190,9 +1196,40 @@ struct IssueDetailView: View {
         .padding(.leading, 36)  // under the name, past the avatar
     }
 
+    /// "Comments • 250 comments • newest first ↓ • M to add". The order is a click on it, as the list's "sorted by".
+    private func commentsCard(_ issue: Issue) -> some View {
+        let count = issue.fields.comment?.total ?? 0
+        return GlassCard(
+            title: "Comments", detail: count > 0 ? "• " + String(localized: "\(count) comments") : nil,
+            accessory: count > 1
+                ? AnyView(
+                    Button {
+                        newestFirst.toggle()
+                    } label: {
+                        HStack(spacing: 2) {
+                            Text(
+                                verbatim: "• "
+                                    + (newestFirst
+                                        ? String(localized: "newest first") : String(localized: "oldest first")))
+                            Image(systemName: newestFirst ? "arrow.down" : "arrow.up").font(.caption2.weight(.bold))
+                        }
+                        .font(.subheadline).foregroundStyle(.secondary).contentShape(.rect)
+                    }
+                    .buttonStyle(.plain).help("Sort order")) : nil,
+            hint: hint(.comment) { String(localized: "\($0) to add") },
+            collapsed: fold("\(shownKey)|comments")
+        ) { comments(issue) }
+        .id("comments")
+    }
+
     private func comments(_ issue: Issue) -> some View {
         VStack(alignment: .leading, spacing: 16) {
             let list = issue.fields.comment?.comments ?? []
+            // The composer sits at the newest end: above the thread newest first, below it oldest first.
+            if newestFirst {
+                commentComposer()
+                Divider()
+            }
             if store.isPartial {
                 DelayedSpinner()
             } else if list.isEmpty {
@@ -1201,7 +1238,7 @@ struct IssueDetailView: View {
             // Lazy: a comment costs a few ms to build, and a long thread on a step along the trail held the page
             // for 100 ms. Only the ones on screen are built; the rest as they scroll in.
             LazyVStack(alignment: .leading, spacing: 16) {
-                ForEach(list) { c in
+                ForEach(newestFirst ? list.reversed() : list) { c in
                     HStack(alignment: .top, spacing: 10) {
                         Avatar(user: c.author, size: 26)
                         VStack(alignment: .leading, spacing: 6) {
@@ -1252,13 +1289,19 @@ struct IssueDetailView: View {
                     }
                 }
             }
-            Divider()
-            CommentComposer(
-                target: target, disabled: store.isWorking || editingCommentID != nil, focusRequest: commentRequest,
-                uploadImage: uploadPasted, focus: $commentFocused
-            ) { doc in
-                await run { try await $0.addComment(key, body: doc) }.value
+            if !newestFirst {
+                Divider()
+                commentComposer()
             }
+        }
+    }
+
+    private func commentComposer() -> some View {
+        CommentComposer(
+            target: target, disabled: store.isWorking || editingCommentID != nil, focusRequest: commentRequest,
+            uploadImage: uploadPasted, focus: $commentFocused
+        ) { doc in
+            await run { try await $0.addComment(key, body: doc) }.value
         }
     }
 
@@ -2303,7 +2346,9 @@ private struct Crumb: View {
                 Button {
                     open(p.key)
                 } label: {
-                    HStack(spacing: 4) {
+                    // The same gap as between the issue's own icon and key: a parent keeps its look when it becomes
+                    // the title one step back.
+                    HStack(spacing: 6) {
                         RemoteImage(url: p.fields.issuetype?.iconUrl).frame(width: 14, height: 14)
                         Text(p.key).monospaced()  // the key alone: the summary is in the tooltip and on the parent field
                     }

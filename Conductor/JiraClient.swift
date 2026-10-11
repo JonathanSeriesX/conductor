@@ -239,7 +239,8 @@ struct JiraClient: Sendable {
             let page: SearchPage = try await get("search", query: q)
             let end = start + page.issues.count
             let more = end < (page.total ?? 0) && !page.issues.isEmpty
-            return SearchPage(issues: page.issues, nextPageToken: more ? "\(end)" : nil, isLast: !more, total: page.total)
+            return SearchPage(
+                issues: page.issues, nextPageToken: more ? "\(end)" : nil, isLast: !more, total: page.total)
         }
         if let nextPageToken { q["nextPageToken"] = nextPageToken }
         return try await get("search/jql", query: q)
@@ -264,8 +265,31 @@ struct JiraClient: Sendable {
         }
     }
 
+    /// The full record, with every comment.
     func issue(_ key: String) async throws -> Issue {
-        try await get("issue/\(key)", query: ["fields": detailFields])
+        try await completingComments(get("issue/\(key)", query: ["fields": detailFields]))
+    }
+
+    /// `issue` with all its comments, oldest first. Jira embeds the first 20 in a search result and the newest 100
+    /// in an issue; the comment endpoint pages 100 at a time, so every page is asked for at once.
+    func completingComments(_ issue: Issue) async throws -> Issue {
+        guard let page = issue.fields.comment, page.comments.count < page.total else { return issue }
+        let key = issue.key
+        let all = try await withThrowingTaskGroup(of: [Comment].self) { group in
+            for start in stride(from: 0, to: page.total, by: 100) {
+                group.addTask {
+                    let p: CommentPage = try await get(
+                        "issue/\(key)/comment", query: ["startAt": "\(start)", "maxResults": "100"])
+                    return p.comments
+                }
+            }
+            var out: [String: Comment] = [:]  // by id: a comment added meanwhile shifts the pages by one
+            for try await p in group { for c in p { out[c.id] = c } }
+            return out.values.sorted { ($0.created, Int($0.id) ?? 0) < ($1.created, Int($1.id) ?? 0) }
+        }
+        var copy = issue
+        copy.fields.comment = CommentPage(comments: all, total: all.count)
+        return copy
     }
 
     func transitions(_ key: String) async throws -> [Transition] {
@@ -283,7 +307,8 @@ struct JiraClient: Sendable {
 
     func assignableUsers(_ key: String, query: String) async throws -> [JiraUser] {
         try await get(
-            "user/assignable/search", query: ["issueKey": key, server ? "username" : "query": query, "maxResults": "20"])
+            "user/assignable/search",
+            query: ["issueKey": key, server ? "username" : "query": query, "maxResults": "20"])
     }
 
     func assign(_ key: String, to accountId: String?) async throws {
@@ -296,7 +321,8 @@ struct JiraClient: Sendable {
             }
         }
         _ = try await request(
-            "issue/\(key)/assignee", method: "PUT", body: Body(accountId: accountId, key: server ? "name" : "accountId"))
+            "issue/\(key)/assignee", method: "PUT", body: Body(accountId: accountId, key: server ? "name" : "accountId")
+        )
     }
 
     func addComment(_ key: String, body: ADFNode) async throws {
@@ -320,7 +346,8 @@ struct JiraClient: Sendable {
 
     func assignableUsers(project: String, query: String) async throws -> [JiraUser] {
         try await get(
-            "user/assignable/search", query: ["project": project, server ? "username" : "query": query, "maxResults": "20"]
+            "user/assignable/search",
+            query: ["project": project, server ? "username" : "query": query, "maxResults": "20"]
         )
     }
 

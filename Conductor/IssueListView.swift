@@ -356,7 +356,9 @@ struct IssueListView: View {
                         ? nil : { withAnimation(.snappy(duration: 0.25)) { expanded.formSymmetricDifference([d.id]) } },
                     pending: store.pending.contains(row.issue.key)
                 )
-                .id(row.issue.fields.summary)  // a new view after an edit, so the table measures the row again
+                // A new view after an edit, so the table measures the row again. The row's own id in it too: this id
+                // is the table row's identity, and two issues with the same summary became one row, drawn twice.
+                .id("\(d.id)|\(row.issue.fields.summary)")
                 .tag(row.target)
                 // The table's own highlight, grey without focus, is off: the rows paint theirs.
                 .foregroundStyle(emphasized ? AnyShapeStyle(.white) : AnyShapeStyle(.foreground))
@@ -1086,12 +1088,13 @@ struct IssueMenu: View {
                                 let (old, account) = (issues.map(\.fields.status), state.id)
                                 patch(keys) { $0.fields.status = t.to }
                                 write {
-                                    try await parallel(zip(keys, old).map { key, status in
-                                        {
-                                            try await state.client.transition(key, to: t.id)
-                                            await Bin.shared.put(.status(status), account: account, key: key)
-                                        }
-                                    })
+                                    try await parallel(
+                                        zip(keys, old).map { key, status in
+                                            {
+                                                try await state.client.transition(key, to: t.id)
+                                                await Bin.shared.put(.status(status), account: account, key: key)
+                                            }
+                                        })
                                 }
                             })
                     ) { Text(t.name) }
