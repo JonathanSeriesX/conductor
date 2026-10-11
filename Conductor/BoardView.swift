@@ -281,7 +281,7 @@ struct BoardView: View {
                     ForEach(store.columns) { column in
                         BoardColumn(
                             column: column, issues: store.issues(in: column, fold: true), selection: selection,
-                            selected: selected, select: select, onDrop: drop(column), write: write)
+                            selected: selected, select: select, onDrop: drop(column), write: write, patch: patch)
                     }
                 }
                 .padding(16)
@@ -438,7 +438,7 @@ struct BoardView: View {
                                 column: column,
                                 issues: store.issues(in: column, from: lane.issues, fold: swimlanes != .parent),
                                 showsHeader: false, selection: selection, selected: selected, select: select,
-                                onDrop: drop(column), write: write)
+                                onDrop: drop(column), write: write, patch: patch)
                         }
                     }
                 }
@@ -499,6 +499,11 @@ struct BoardView: View {
             selection = [key]
         }
         anchor = key
+    }
+
+    /// Changes the cards at once, ahead of Jira's answer; the refetch after the write confirms it.
+    private func patch(_ keys: [String], _ change: (inout Issue) -> Void) {
+        for i in store.issues.indices where keys.contains(store.issues[i].key) { change(&store.issues[i]) }
     }
 
     /// Runs a card menu's write, then refetches the touched cards so they show the result (or why there is none).
@@ -613,6 +618,8 @@ struct BoardColumn: View {
     var onDrop: (String) -> Void
     /// Runs a card menu's write and refreshes the touched cards, as `IssueMenu` expects it.
     let write: ([String], @escaping @Sendable () async throws -> Void) -> Void
+    /// Changes the cards at once, ahead of Jira's answer.
+    let patch: ([String], @escaping (inout Issue) -> Void) -> Void
     @Environment(Session.self) private var session
     @Environment(\.jira) private var jira
     @State private var targeted = false
@@ -653,7 +660,8 @@ struct BoardColumn: View {
                     .contextMenu {
                         if let jira {
                             let issues = selection.contains(issue.key) ? selected : [issue]
-                            IssueMenu(issues: issues, state: jira) { write(issues.map(\.key), $0) }
+                            IssueMenu(
+                                issues: issues, state: jira, write: { write(issues.map(\.key), $0) }, patch: patch)
                         }
                     }
             }
