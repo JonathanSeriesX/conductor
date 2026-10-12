@@ -363,7 +363,7 @@ struct Foldable<Header: View, Content: View>: View {
 }
 
 /// What a fold needs to know about its header: its height, its content's, and where the window's bottom edge is.
-private final class FoldMeasure {
+@MainActor private final class FoldMeasure {
     var content: CGFloat = 0
     var header: CGFloat = 0
     /// The header's AppKit view, placed under it by `ScrollProbe`.

@@ -63,6 +63,46 @@ struct BinError: LocalizedError {
     var errorDescription: String? { message }
 }
 
+/// ⌘Z outside a text view opens the Bin, this app's undo: the Edit menu's Undo reads "Undo…" and is enabled while
+/// the Bin holds something. A text view being edited keeps its own undo, title and all. SwiftUI builds the Edit
+/// menu and rebuilds it as focus moves, so the item is retargeted whenever one is added.
+@MainActor final class BinUndo: NSObject, NSMenuItemValidation {
+    static let shared = BinUndo()
+    static var openBin: () -> Void = {}
+    private static let undo = Selector(("undo:"))
+
+    static func install() {
+        NotificationCenter.default.addObserver(forName: NSMenu.didAddItemNotification, object: nil, queue: .main) {
+            note in
+            nonisolated(unsafe) let menu = note.object as? NSMenu  // read on the main queue, where it was posted
+            let i = note.userInfo?["NSMenuItemIndex"] as? Int
+            MainActor.assumeIsolated {
+                guard let menu, let i, i < menu.items.count, menu.items[i].action == undo else { return }
+                menu.items[i].target = shared
+                menu.items[i].action = #selector(undoOrBin(_:))
+            }
+        }
+    }
+
+    private var editingText: Bool { NSApp.keyWindow?.firstResponder is NSTextView }
+
+    @objc func undoOrBin(_ sender: Any?) {
+        if editingText { NSApp.sendAction(Self.undo, to: nil, from: sender) } else { Self.openBin() }
+    }
+
+    func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        // The text's own answer, asked of whoever would get undo: (the window, from its undo manager).
+        if editingText, let t = NSApp.target(forAction: Self.undo) as? NSMenuItemValidation {
+            let probe = NSMenuItem(title: item.title, action: Self.undo, keyEquivalent: "")
+            let can = t.validateMenuItem(probe)
+            item.title = probe.title
+            return can
+        }
+        item.title = String(localized: "Undo…")
+        return !Bin.shared.items.isEmpty
+    }
+}
+
 /// Deleted things, newest first, on disk. Replaces confirmation dialogs: deleting is one click, and so is undoing it.
 @MainActor @Observable
 final class Bin {
@@ -161,7 +201,7 @@ struct BinView: View {
             if bin.items.isEmpty {
                 ContentUnavailableView(
                     "The Bin is empty", systemImage: "trash",
-                    description: Text("What you delete, and status changes, land here and can be put back."))
+                    description: Text("Reversible changes you made are kept here."))
             } else {
                 List(bin.items) { item in
                     HStack(spacing: 10) {

@@ -18,6 +18,7 @@ struct ConductorApp: App {
         PopoverFocusReturn.install()
         Shortcuts.guardTyping()
         ReaderMenus.install()
+        BinUndo.install()
         _ = Self.probe
     }
 
@@ -239,7 +240,10 @@ struct RootView: View {
         .writingToolsBehavior(.disabled)
         // Every URL lands in this window rather than opening another main window per link.
         .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
-        .onAppear { restoreOnce() }
+        .onAppear {
+            BinUndo.openBin = { openWindow(id: "bin") }
+            restoreOnce()
+        }
         .onChange(of: session.states.count) { restoreOnce() }
         .onChange(of: session.isRestoring) { restoreOnce() }
         .onChange(of: filters) { old, new in
