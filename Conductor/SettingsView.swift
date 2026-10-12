@@ -146,12 +146,16 @@ private struct AdvancedSettings: View {
     var body: some View {
         Form {
             Section("Updates") {
-                Toggle("Check for updates daily", isOn: $checkForUpdates)
+                #if GITHUB_BUILD
+                    Toggle("Check for updates daily", isOn: $checkForUpdates)
+                #endif
                 HStack {
                     Text("Version \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?")")
                         .foregroundStyle(.secondary)
                     Spacer()
-                    Button("Check Now") { UpdateChecker.shared.check(interactive: true) }
+                    #if GITHUB_BUILD
+                        Button("Check Now") { UpdateChecker.shared.check(interactive: true) }
+                    #endif
                 }
             }
             Section("Search") {

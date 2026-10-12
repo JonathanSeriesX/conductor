@@ -12,7 +12,9 @@ struct LoginView: View {
     @State private var error: String?
 
     @State private var busy = false
-    private var server: Bool { Account.normalizeSite(site).map { Account(site: $0, email: "", token: "").isServer } ?? false }
+    private var server: Bool {
+        Account.normalizeSite(site).map { Account(site: $0, email: "", token: "").isServer } ?? false
+    }
     private var canSubmit: Bool {
         Account.normalizeSite(site) != nil && (server || email.contains("@")) && !token.isEmpty && !busy
     }
@@ -88,6 +90,21 @@ struct LoginView: View {
                 )
                 .font(.footnote)
             }
+
+            // Only the free GitHub build says so; the App Store build is the commercial license itself.
+            #if GITHUB_BUILD
+                if !isSheet {
+                    HStack(spacing: 4) {
+                        Text("Free for non-commercial use").foregroundStyle(.secondary)
+                        Text(verbatim: "·").foregroundStyle(.secondary)
+                        // ponytail: the README's License section until the App Store record exists; then apps.apple.com/app/id….
+                        Link(
+                            "Buy on the App Store",
+                            destination: URL(string: "https://github.com/JonathanSeriesX/conductor#license")!)
+                    }
+                    .font(.footnote)
+                }
+            #endif
         }
         .padding(32)
         .frame(width: 400)

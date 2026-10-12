@@ -10,3 +10,9 @@ Jira's own Mac app was discontinued. Conductor is what it should have become: ev
 - A Jira Cloud account and an API token from <https://id.atlassian.com/manage-profile/security/api-tokens>
 
 Jira Server and Data Center are not supported (yet!).
+
+## License
+
+Free for personal and other non-commercial use under the [PolyForm Noncommercial License 1.0.0](LICENSE.md).
+
+Using Conductor at work? Buy it on the Mac App Store: the purchase is your commercial license. Companies can buy copies in bulk, with an invoice, through Apple Business Manager.
