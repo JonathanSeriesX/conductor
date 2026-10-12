@@ -684,7 +684,7 @@ struct IssueDetailView: View {
                             Wrap {
                                 ForEach(labels, id: \.self) { Chip(text: $0) }
                                 if let h = hint(.editLabels, { String(localized: "\($0) to edit labels") }) {
-                                    Text(h).keyHint(.caption)
+                                    Text(h).keyHint(.caption).padding(.vertical, 3)  // the chip's, so the lines of text meet
                                 }
                             }
                         }
