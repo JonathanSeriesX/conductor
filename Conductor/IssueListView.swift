@@ -1177,6 +1177,14 @@ struct IssueMenu: View {
         Button(many ? "Open in New Windows" : "Open in New Window", systemImage: "macwindow.badge.plus") {
             targets.forEach { openWindow(id: "issue", value: $0) }
         }
+        if !many, let issue = issues.first {
+            Button("Clone…", systemImage: "doc.on.doc") {
+                openWindow(
+                    id: "create",
+                    value: CreateRequest(
+                        accountID: state.id, projectKey: issue.fields.project?.key, cloneKey: issue.key))
+            }
+        }
         Divider()
         Button(many ? "Copy Links" : "Copy Link", systemImage: "link") {
             copyToPasteboard(urls.map(\.absoluteString).joined(separator: "\n"))

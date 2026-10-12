@@ -7,7 +7,7 @@ struct IssueActions {
         case openInBrowser, openInWindow, copyLink, copyKey
         case assign, assignToMe, watch, remind
         case transition(String)
-        case editSummary, editDescription, comment, attach, link, logWork, subtask, refresh, history
+        case editSummary, editDescription, comment, attach, link, logWork, subtask, clone, refresh, history
         case changeStatus, changePriority, editLabels
     }
     let key: String
@@ -179,6 +179,7 @@ struct AppCommands: Commands {
             item("Link Issue…", .link, "l", [.command, .shift])
             item("Log Work…", .logWork, "l", [.command, .option])
             item("Create Subtask…", .subtask, "n", [.command, .shift])
+            item("Clone…", .clone)
             Divider()
             item("Refresh Issue", .refresh, "r", [.command, .shift])
             item("Activity History", .history, "h", [.command, .option])

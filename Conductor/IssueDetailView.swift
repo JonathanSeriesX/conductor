@@ -1544,6 +1544,11 @@ struct IssueDetailView: View {
                 id: "create",
                 value: CreateRequest(
                     accountID: target.accountID, projectKey: store.issue?.fields.project?.key, parentKey: key))
+        case .clone:
+            openWindow(
+                id: "create",
+                value: CreateRequest(
+                    accountID: target.accountID, projectKey: store.issue?.fields.project?.key, cloneKey: key))
         case .refresh:
             Task {
                 refreshing = true

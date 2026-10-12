@@ -5,13 +5,14 @@ struct ProjectChoice: Hashable {
     let accountID: UUID
 }
 
-/// What a New Issue window opens with: the list's project, or an issue's project and key for a subtask.
+/// What a New Issue window opens with: the list's project, or an issue's project and key for a subtask or a clone.
 struct CreateRequest: Hashable, Codable {
     /// Every New Issue is a window of its own; File > Drafts brings a closed one back under the same id.
     var id = UUID()
     var accountID: UUID?
     var projectKey: String?
     var parentKey: String?
+    var cloneKey: String?
 }
 
 @MainActor @Observable
@@ -423,6 +424,8 @@ struct CreateIssueView: View {
             }
             syncState()
             if let st = m.state { await m.loadTypes(st) }
+            // After the types, which the clone picks from; a draft already holds the clone, maybe edited since.
+            if saved == nil, let key = request.cloneKey { clone(key) }
         }
         .onChange(of: m.choice) {
             syncState()

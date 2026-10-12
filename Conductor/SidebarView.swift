@@ -73,6 +73,7 @@ struct ListFilters: Hashable, Codable {
             case viewed = "Last viewed"
             case due = "Due date"
             case priority = "Priority"
+            case type = "Type"
             case key = "Key"
             case status = "Status"
             var title: String {
@@ -82,6 +83,7 @@ struct ListFilters: Hashable, Codable {
                 case .viewed: String(localized: "Last viewed")
                 case .due: String(localized: "Due date")
                 case .priority: String(localized: "Priority")
+                case .type: String(localized: "Type")
                 case .key: String(localized: "Key", comment: "Sort by issue key")
                 case .status: String(localized: "Status")
                 }
@@ -94,6 +96,7 @@ struct ListFilters: Hashable, Codable {
                 case .viewed: String(localized: "date viewed", comment: "List header: sorted by …")
                 case .due: String(localized: "due date", comment: "List header: sorted by …")
                 case .priority: String(localized: "priority", comment: "List header: sorted by …")
+                case .type: String(localized: "type", comment: "List header: sorted by …")
                 case .key: String(localized: "key", comment: "List header: sorted by …")
                 case .status: String(localized: "status", comment: "List header: sorted by …")
                 }
@@ -105,6 +108,7 @@ struct ListFilters: Hashable, Codable {
                 case .viewed: "lastViewed"
                 case .due: "duedate"
                 case .priority: "priority"
+                case .type: "issuetype"
                 case .key: "key"
                 case .status: "status"
                 }
@@ -120,7 +124,7 @@ struct ListFilters: Hashable, Codable {
             case .updated: i.fields.updated
             case .viewed: i.fields.lastViewed ?? i.fields.updated
             case .due: i.fields.duedate.flatMap(DueDate.parse)
-            case .created, .priority, .key, .status: i.fields.created
+            case .created, .priority, .type, .key, .status: i.fields.created
             }
         }
 
@@ -155,6 +159,15 @@ struct ListFilters: Hashable, Codable {
                 // Jira's priority ids count up from the highest, so "priority DESC" is the lowest id first.
                 let (pa, pb) = (Int(a.fields.priority?.id ?? "") ?? .max, Int(b.fields.priority?.id ?? "") ?? .max)
                 r = pa == pb ? .orderedSame : pa < pb ? .orderedDescending : .orderedAscending
+            case .type:
+                // Epic, then standard, then subtask under DESC; by name within a level.
+                // ponytail: Jira's "ORDER BY issuetype" follows the site's issue-type sequence, which a one-account
+                // list shows as Jira sent it; only a merge of several accounts uses these levels.
+                let (ta, tb) = (a.fields.issuetype, b.fields.issuetype)
+                let (la, lb) = (ta.hierarchyLevel ?? 0, tb.hierarchyLevel ?? 0)
+                r =
+                    la != lb
+                    ? (la < lb ? .orderedAscending : .orderedDescending) : ta.name.localizedStandardCompare(tb.name)
             case .key: r = a.key.localizedStandardCompare(b.key)
             case .status:
                 // To Do, then In Progress, then Done, as a board reads; by name within each.
@@ -342,6 +355,11 @@ struct SidebarView: View {
                                 "Showing cached data. \(e)")
                         }
                     }
+                    // Every click on the header toggles: the system's own header click skips the second click of a
+                    // double-click, so clicking quickly lost every other one. The chevron handles its own clicks.
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(.rect)
+                    .onTapGesture { withAnimation { expandedBinding(st).wrappedValue.toggle() } }
                     .contextMenu {
                         Button("Rename…", systemImage: "pencil") {
                             newTitle = st.title

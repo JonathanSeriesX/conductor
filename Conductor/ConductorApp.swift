@@ -203,7 +203,18 @@ struct RootView: View {
                         // Without items of its own the column has no toolbar section, and the list's
                         // New Issue and Save Filter drift over here. Not customizable, like the issue page's:
                         // SwiftUI crashed applying saved customizations while the two swapped in one pass.
-                        .toolbar { ToolbarItem { EmptyView() }.glassTitle() }
+                        .toolbar {
+                            // Where the issue page's Refresh sits, so it stays put as an issue is picked or let go.
+                            ToolbarItem {
+                                Button {
+                                    session.listTick += 1
+                                } label: {
+                                    Label("Refresh", systemImage: "arrow.clockwise")
+                                }
+                                .help("Refresh (⌘R)")
+                            }
+                            ToolbarItem { EmptyView() }.glassTitle()
+                        }
                     }
                 }
                 .background(

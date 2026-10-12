@@ -58,11 +58,13 @@ final class JQLTests: XCTestCase {
         let decoder = JiraClient(
             account: Account(site: URL(string: "https://x.atlassian.net")!, email: "e", token: "t")
         ).decoder
-        func issue(_ key: String, priority: String, updated: String) throws -> Issue {
+        func issue(_ key: String, priority: String, updated: String, type: String = "Task", level: Int = 0) throws
+            -> Issue
+        {
             try decoder.decode(
                 Issue.self,
                 from: Data(
-                    #"{"id":"1","key":"\#(key)","fields":{"summary":"s","updated":"\#(updated)","priority":{"id":"\#(priority)","name":"p"},"status":{"id":"1","name":"To Do","statusCategory":{"key":"new","name":"To Do"}},"issuetype":{"id":"1","name":"Task"}}}"#
+                    #"{"id":"1","key":"\#(key)","fields":{"summary":"s","updated":"\#(updated)","priority":{"id":"\#(priority)","name":"p"},"status":{"id":"1","name":"To Do","statusCategory":{"key":"new","name":"To Do"}},"issuetype":{"id":"1","name":"\#(type)","hierarchyLevel":\#(level)}}}"#
                         .utf8))
         }
         let a = try issue("ES-9", priority: "3", updated: "2026-10-05T09:00:00.000Z")
@@ -77,6 +79,19 @@ final class JQLTests: XCTestCase {
             ListFilters.Sort(field: .priority, descending: true).areInOrder(b, a),
             "DESC is the highest priority (lowest id) first, as in JQL")
         XCTAssertTrue(ListFilters.Sort(field: .key, descending: false).areInOrder(a, b), "keys compare numerically")
+        let t = "2026-10-05T09:00:00.000Z"
+        let types = [
+            try issue("ES-1", priority: "3", updated: t, type: "Sub-task", level: -1),
+            try issue("ES-2", priority: "3", updated: t, type: "Bug"),
+            try issue("ES-3", priority: "3", updated: t, type: "Epic", level: 1),
+            try issue("ES-4", priority: "3", updated: t),
+        ]
+        XCTAssertEqual(
+            types.sorted(by: ListFilters.Sort(field: .type, descending: true).areInOrder).map(\.key),
+            ["ES-3", "ES-4", "ES-2", "ES-1"], "DESC is epic, then standard (by name), then subtask")
+        XCTAssertEqual(
+            types.sorted(by: ListFilters.Sort(field: .type, descending: false).areInOrder).map(\.key),
+            ["ES-1", "ES-2", "ES-4", "ES-3"])
     }
 
     /// Jira puts undated issues first under "duedate DESC"; the list puts them last whichever way it sorts.
