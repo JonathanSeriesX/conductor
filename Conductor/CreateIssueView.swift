@@ -176,6 +176,8 @@ struct CreateIssueView: View {
                 Text(parentKey == nil ? "New Issue" : "New Subtask of \(parentKey!)").font(.title2.weight(.semibold))
                 Spacer()
                 Picker("Project", selection: $m.choice) {
+                    // A tag for the nil the window opens with, until onAppear picks a project.
+                    if m.choice == nil { Text("Project").tag(ProjectChoice?.none) }
                     ForEach(session.states) { st in
                         Section(session.states.count > 1 ? st.title : "") {
                             ForEach(st.projects) { p in
@@ -191,6 +193,7 @@ struct CreateIssueView: View {
 
             HStack(spacing: 10) {
                 Picker("Type", selection: $m.type) {
+                    if m.type == nil { Text("Type").tag(IssueType?.none) }
                     ForEach(m.types) { t in
                         Label {
                             Text(t.name)
