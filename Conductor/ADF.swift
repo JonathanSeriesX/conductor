@@ -69,11 +69,10 @@ struct ADFNode: Codable, Hashable, Sendable {
 
     func attr(_ k: String) -> String? { attrs?[k]?.string }
 
-    /// Jira Server sends a description or comment as wiki-markup text, not a document; it reads as plain lines.
-    /// ponytail: the markup ({code}, *bold*, h2.) shows as typed; a wiki-markup parser would render it.
+    /// Jira Server sends a description or comment as wiki-markup text, not a document.
     init(from decoder: Decoder) throws {
         if let s = try? decoder.singleValueContainer().decode(String.self) {
-            self = .document(text: s)
+            self = .document(wiki: s)
             return
         }
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -85,7 +84,10 @@ struct ADFNode: Codable, Hashable, Sendable {
         content = try c.decodeIfPresent([ADFNode].self, forKey: .content)
     }
 
-    init(type: String, version: Int? = nil, text: String? = nil, attrs: [String: JSONValue]? = nil, marks: [ADFMark]? = nil, content: [ADFNode]? = nil) {
+    init(
+        type: String, version: Int? = nil, text: String? = nil, attrs: [String: JSONValue]? = nil,
+        marks: [ADFMark]? = nil, content: [ADFNode]? = nil
+    ) {
         self.type = type
         self.version = version
         self.text = text

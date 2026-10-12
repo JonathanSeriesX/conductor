@@ -122,7 +122,8 @@ final class Bin {
             try await c.addWorklog(
                 item.key, seconds: seconds, comment: comment, started: started, adjustsEstimate: false)
         case .parent(let p):
-            try await c.editIssue(item.key, fields: ["parent": p.map { .object(["key": .string($0)]) } ?? .null])
+            // Only a standard issue's parent ever lands here: Server never lets a subtask change its own.
+            try await c.editIssue(item.key, fields: c.parentFields(p, subtask: false))
         case .status(let old):
             guard let t = try await c.transitions(item.key).first(where: { $0.to.id == old.id }) else {
                 throw BinError(

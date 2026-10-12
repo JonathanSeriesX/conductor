@@ -40,10 +40,13 @@ struct LoginView: View {
 
             VStack(spacing: 10) {
                 TextField("Site", text: $site, prompt: Text("yourteam.atlassian.net"))
-                // A personal access token names its user itself; the username only labels the account here.
+                // A personal access token names its user itself, so the username comes from Jira. The field stays,
+                // greyed, so the card keeps its height while a typed site turns from Cloud to Server.
                 TextField(
-                    server ? "Username" : "Email", text: $email,
-                    prompt: Text(verbatim: server ? "jsmith" : "you@company.com"))
+                    server ? "Username" : "Email", text: server ? .constant("") : $email,
+                    prompt: server ? Text("Taken from the token") : Text(verbatim: "you@company.com")
+                )
+                .disabled(server)
                 SecureField(
                     server ? "Personal access token" : "API token", text: $token,
                     prompt: Text(server ? "Personal access token" : "API token"))
@@ -117,10 +120,13 @@ struct LoginView: View {
         Task {
             defer { busy = false }
             do {
-                try await session.add(
-                    Account(
-                        site: url, email: email.trimmingCharacters(in: .whitespaces),
-                        token: token.trimmingCharacters(in: .whitespaces)))
+                let token = token.trimmingCharacters(in: .whitespaces)
+                var account = Account(site: url, email: email.trimmingCharacters(in: .whitespaces), token: token)
+                if account.isServer {
+                    let me = try await JiraClient(account: account).myself()
+                    account = Account(site: url, email: me.accountId, token: token)
+                }
+                try await session.add(account)
                 if isSheet {
                     dismiss()
                 } else {
