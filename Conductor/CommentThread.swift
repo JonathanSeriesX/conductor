@@ -476,6 +476,10 @@ private struct HostedEditor: View {
         deleteButton = SymbolButton(
             "trash", label: String(localized: "Delete"), help: String(localized: "Delete comment"))
         super.init(frame: .zero)
+        // Its own layer: drawn once when set up and moved while scrolling. Without one the row drew into an
+        // ancestor's layer in strips as it scrolled in, each a partial draw of its text (see `CommentTextView`).
+        wantsLayer = true
+        layerContentsRedrawPolicy = .onSetNeedsDisplay
         avatar.imageScaling = .scaleProportionallyUpOrDown
         avatar.wantsLayer = true
         avatar.layer?.cornerRadius = 13
@@ -518,6 +522,7 @@ private struct HostedEditor: View {
             body.textStorage?.setAttributedString(text ?? NSAttributedString())
         }
         needsLayout = true
+        needsDisplay = true
     }
 
     override func prepareForReuse() {
@@ -694,6 +699,11 @@ final class CommentTextView: NSTextView {
     }
 
     required init?(coder: NSCoder) { fatalError() }
+
+    /// The whole text on every draw: a block's background (the quote bar, a code box, a table cell) is drawn from
+    /// the frame AppKit hands the block, and for a partial redraw that frame is the part alone. Rows have their own
+    /// layers, so a draw happens once per row and then only for a hover.
+    override func draw(_ dirtyRect: NSRect) { super.draw(bounds) }
 
     override func menu(for event: NSEvent) -> NSMenu? {
         guard selectedRange().length > 0 else { return nil }
@@ -898,17 +908,14 @@ final class CommentTextView: NSTextView {
         guard cols > 0 else { return }
         let table = NSTextTable()
         table.numberOfColumns = cols
-        table.collapsesBorders = true
         table.setWidth(before, type: .absoluteValueType, for: .margin, edge: .minY)
         for (r, row) in rows.enumerated() {
             for (ci, cell) in (row.content ?? []).enumerated() {
-                let b = NSTextTableBlock(table: table, startingRow: r, rowSpan: 1, startingColumn: ci, columnSpan: 1)
-                b.setWidth(8, type: .absoluteValueType, for: .padding)
-                b.setWidth(0.5, type: .absoluteValueType, for: .border)
-                b.setBorderColor(NSColor.labelColor.withAlphaComponent(0.12))
-                b.setValue(100 / CGFloat(cols), type: .percentageValueType, for: .width)
                 let header = cell.type == "tableHeader"
-                if header { b.backgroundColor = NSColor.labelColor.withAlphaComponent(0.06) }
+                let b = CellBlock(table: table, startingRow: r, rowSpan: 1, startingColumn: ci, columnSpan: 1)
+                b.header = header
+                b.setWidth(8, type: .absoluteValueType, for: .padding)
+                b.setValue(100 / CGFloat(cols), type: .percentageValueType, for: .width)
                 var c = ctx
                 c.blocks.append(b)
                 c.spacing = 6
@@ -1049,22 +1056,27 @@ extension NSColor {
 
 // MARK: Text blocks
 
-/// A block that draws its own background. AppKit hands `drawBackground` the frame of the part being redrawn, which
-/// for a hover under the mouse is a sliver of the block; a shape drawn from that sliver left bits of a quote bar
-/// where the mouse was. The block spans the text's width, so a frame that wide is the whole block, and is kept
-/// for the partial redraws that follow.
-class DrawnBlock: NSTextBlock {
-    private var full: NSRect?
+/// A table cell: its fill and a hairline on all four sides, as `.border` drew on every SwiftUI cell. TextKit's own
+/// cell borders never showed on a table's top and right edges.
+final class CellBlock: NSTextTableBlock {
+    var header = false
 
-    func frame(_ given: NSRect, in view: NSView?) -> NSRect {
-        let width = (view as? NSTextView)?.textContainer?.size.width ?? given.width
-        if given.width >= width - 2 { full = given }
-        return full ?? given
+    override func drawBackground(
+        withFrame frameRect: NSRect, in controlView: NSView?, characterRange: NSRange, layoutManager: NSLayoutManager
+    ) {
+        if header {
+            NSColor.labelColor.withAlphaComponent(0.06).setFill()
+            frameRect.fill()
+        }
+        NSColor.labelColor.withAlphaComponent(0.12).setStroke()
+        let edge = NSBezierPath(rect: frameRect.insetBy(dx: 0.25, dy: 0.25))
+        edge.lineWidth = 0.5
+        edge.stroke()
     }
 }
 
 /// A code block: 10 points of padding on a faint rounded background.
-final class CodeBlock: DrawnBlock {
+final class CodeBlock: NSTextBlock {
     init(topMargin: CGFloat) {
         super.init()
         setWidth(10, type: .absoluteValueType, for: .padding)
@@ -1077,12 +1089,12 @@ final class CodeBlock: DrawnBlock {
         withFrame frameRect: NSRect, in controlView: NSView?, characterRange: NSRange, layoutManager: NSLayoutManager
     ) {
         NSColor.labelColor.withAlphaComponent(0.05).setFill()
-        NSBezierPath(roundedRect: frame(frameRect, in: controlView), xRadius: 8, yRadius: 8).fill()
+        NSBezierPath(roundedRect: frameRect, xRadius: 8, yRadius: 8).fill()
     }
 }
 
 /// A quote: a 3-point bar at the leading edge, the text 13 points in.
-final class QuoteBlock: DrawnBlock {
+final class QuoteBlock: NSTextBlock {
     init(topMargin: CGFloat) {
         super.init()
         setWidth(13, type: .absoluteValueType, for: .padding, edge: .minX)
@@ -1094,15 +1106,16 @@ final class QuoteBlock: DrawnBlock {
     override func drawBackground(
         withFrame frameRect: NSRect, in controlView: NSView?, characterRange: NSRange, layoutManager: NSLayoutManager
     ) {
-        let f = frame(frameRect, in: controlView)
         NSColor.tertiaryLabelColor.setFill()
-        NSBezierPath(roundedRect: NSRect(x: f.minX, y: f.minY, width: 3, height: f.height), xRadius: 2, yRadius: 2)
-            .fill()
+        NSBezierPath(
+            roundedRect: NSRect(x: frameRect.minX, y: frameRect.minY, width: 3, height: frameRect.height), xRadius: 2,
+            yRadius: 2
+        ).fill()
     }
 }
 
 /// A panel: an icon in its colour, the text beside it, on a tinted rounded background with 12 points of padding.
-final class PanelBlock: DrawnBlock {
+final class PanelBlock: NSTextBlock {
     private let tint: NSColor
     private let icon: NSImage
 
@@ -1131,12 +1144,11 @@ final class PanelBlock: DrawnBlock {
     override func drawBackground(
         withFrame frameRect: NSRect, in controlView: NSView?, characterRange: NSRange, layoutManager: NSLayoutManager
     ) {
-        let f = frame(frameRect, in: controlView)
         tint.withAlphaComponent(0.1).setFill()
-        NSBezierPath(roundedRect: f, xRadius: 10, yRadius: 10).fill()
+        NSBezierPath(roundedRect: frameRect, xRadius: 10, yRadius: 10).fill()
         let size = icon.size
         icon.draw(
-            in: NSRect(x: f.minX + 12, y: f.minY + 12, width: size.width, height: size.height),
+            in: NSRect(x: frameRect.minX + 12, y: frameRect.minY + 12, width: size.width, height: size.height),
             from: .zero,
             operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
     }

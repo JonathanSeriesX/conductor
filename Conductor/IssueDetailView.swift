@@ -681,7 +681,12 @@ struct IssueDetailView: View {
                     } else {
                         HStack(alignment: .firstTextBaseline, spacing: 6) {
                             Image(systemName: "tag").foregroundStyle(.tertiary)
-                            Wrap { ForEach(labels, id: \.self) { Chip(text: $0) } }
+                            Wrap {
+                                ForEach(labels, id: \.self) { Chip(text: $0) }
+                                if let h = hint(.editLabels, { String(localized: "\($0) to edit labels") }) {
+                                    Text(h).keyHint(.caption)
+                                }
+                            }
                         }
                     }
                 }
