@@ -69,6 +69,10 @@ final class JQLTests: XCTestCase {
         let b = try issue("ES-10", priority: "1", updated: "2026-10-06T09:00:00.000Z")
         XCTAssertTrue(ListFilters.Sort(field: .updated, descending: true).areInOrder(b, a))
         XCTAssertTrue(ListFilters.Sort(field: .updated, descending: false).areInOrder(a, b))
+        // A tie on the field stays a tie for the merge, which must not split it; the list order breaks it by key.
+        let c = try issue("ES-11", priority: "3", updated: "2026-10-05T09:00:00.000Z")
+        XCTAssertEqual(ListFilters.Sort(field: .updated, descending: true).compare(a, c), .orderedSame)
+        XCTAssertTrue(ListFilters.Sort(field: .updated, descending: true).areInOrder(c, a))
         XCTAssertTrue(
             ListFilters.Sort(field: .priority, descending: true).areInOrder(b, a),
             "DESC is the highest priority (lowest id) first, as in JQL")

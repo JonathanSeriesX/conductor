@@ -48,7 +48,9 @@ final class BoardStore {
         IssueListStore.prefetchDetails(mine.map { ListRow(issue: $0, state: state) })
     }
 
-    var columns: [BoardConfiguration.Column] { config?.columnConfig.columns ?? [] }
+    /// A column with no status is Jira's own backlog placeholder on a Kanban board (Server lists it first): it can
+    /// never hold a card, and Jira's board does not draw it.
+    var columns: [BoardConfiguration.Column] { config?.columnConfig.columns.filter { !$0.statuses.isEmpty } ?? [] }
 
     /// With `fold`, subtasks whose parent is on the board disappear into the parent card's progress count.
     func issues(in column: BoardConfiguration.Column, from list: [Issue]? = nil, fold: Bool = false) -> [Issue] {

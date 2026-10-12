@@ -25,9 +25,7 @@
 		C0DE0A110000000000000010 /* Exceptions for "Conductor" folder in "Conductor" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
-				Conductor.entitlements,
 				Info.plist,
-				Signed.entitlements,
 			);
 			target = 3CB839982A2ACEF6F28983E5 /* Conductor */;
 		};

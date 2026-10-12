@@ -59,16 +59,28 @@ final class IssueListStore {
     var rows: [ListRow] = []
     /// Keys with a write on its way to Jira.
     var pending: Set<String> = []
-    var nextToken: String?
-    /// The part of the list (see `ListFilters.jqlParts`) the next page comes from.
-    private var part = 0
-    /// More rows to load: a next page, or a part not started.
-    var hasMore: Bool { nextToken != nil || single.map { part + 1 < $0.parts.count } == true }
+    /// One account's share of the list: its rows so far and where its next page starts.
+    private struct Page {
+        let state: AccountState
+        var rows: [ListRow]
+        /// The part of the list (see `ListFilters.jqlParts`) the next page comes from, and the page's token.
+        var part = 0
+        var token: String?
+        /// More rows to load: a next page, or a part not started. A page not fetched yet (cached, or kept from the
+        /// last load) is taken to have more when it is a full page, so the merge holds the same rows back.
+        var more: Bool
+        init(state: AccountState, rows: [ListRow], more: Bool? = nil) {
+            (self.state, self.rows, self.more) = (state, rows, more ?? (rows.count >= 50))
+        }
+    }
+    private var pages: [UUID: Page] = [:]
+    private var query: (jql: String, parts: [String], cache: Bool)?
+    var hasMore: Bool { pages.values.contains(where: \.more) }
     /// How many issues the query matches on the server, every account summed: the last count from the cache until
     /// this load's own answers. Nil when no count is known yet.
     var total: Int?
     /// The subtitle's number: the rows once the whole list is loaded, else the server's count.
-    var count: Int { single != nil && !hasMore && !isLoading ? rows.count : max(total ?? 0, rows.count) }
+    var count: Int { query != nil && !hasMore && !isLoading ? rows.count : max(total ?? 0, rows.count) }
     /// True from the start: a new list is always about to load, and must not flash "No issues" first.
     var isLoading = true
     var error: String?
@@ -77,7 +89,6 @@ final class IssueListStore {
     /// Jira rejected a typed query (half-written JQL, usually). Shown in the list, never as an alert.
     var queryError: String?
     private var generation = 0
-    private var single: (state: AccountState, jql: String, parts: [String], cache: Bool)?
     /// The query whose rows (cached or fresh) are on screen.
     private var shownKey = ""
     private var shown = ListFilters()
@@ -146,36 +157,52 @@ final class IssueListStore {
 
     /// Takes a change announced from elsewhere (a card moved on a board): the row shows it before any reload.
     func apply(_ c: Session.IssueChange) {
-        for i in rows.indices where c.targets.contains(rows[i].target) {
-            var issue = rows[i].issue
+        edit { row, issue in
+            guard c.targets.contains(row.target) else { return }
             if let fresh = c.issue { if fresh.key == issue.key { issue = fresh } } else { c.change?(&issue) }
-            if issue != rows[i].issue { rows[i] = ListRow(issue: issue, state: rows[i].state) }
+        }
+    }
+
+    /// Changes the rows' copies of `keys` at once, ahead of Jira's answer.
+    func patch(_ keys: [String], _ change: (inout Issue) -> Void) {
+        edit { row, issue in if keys.contains(issue.key) { change(&issue) } }
+    }
+
+    /// Changes issues in place, on screen and in the pages behind the screen, keeping their order until the next
+    /// load re-sorts. A row left equal is not reassigned: nothing redraws for a change that reached no row.
+    private func edit(_ change: (ListRow, inout Issue) -> Void) {
+        func run(_ rows: inout [ListRow]) -> Bool {
+            var changed = false
+            for i in rows.indices {
+                var issue = rows[i].issue
+                change(rows[i], &issue)
+                guard issue != rows[i].issue else { continue }
+                rows[i] = ListRow(issue: issue, state: rows[i].state)
+                changed = true
+            }
+            return changed
+        }
+        var shown = rows
+        if run(&shown) { rows = shown }
+        for (id, page) in pages {
+            var page = page
+            if run(&page.rows) { pages[id] = page }
         }
     }
 
     /// Loads the filters: one account with pagination, or every account merged in the chosen order.
-    /// Changes the rows' copies of `keys` at once, ahead of Jira's answer.
-    func patch(_ keys: [String], _ change: (inout Issue) -> Void) {
-        for i in rows.indices where keys.contains(rows[i].issue.key) {
-            var issue = rows[i].issue
-            change(&issue)
-            rows[i] = ListRow(issue: issue, state: rows[i].state)
-        }
-    }
-
     func load(_ f: ListFilters, session: Session) async {
         generation += 1
         let gen = generation
         // Every row of the list is here: the last page is in, or the rows reach the count.
-        let complete = single != nil ? !hasMore && !rows.isEmpty : (total ?? .max) <= rows.count
-        nextToken = nil
-        part = 0
-        single = nil
+        let complete = !hasMore && !rows.isEmpty
         sort = f.sort
         unbounded = !f.isBounded
         queryError = nil
         if unbounded {
             rows = []
+            pages = [:]
+            query = nil
             total = nil
             shownKey = ""
             shown = f
@@ -194,8 +221,8 @@ final class IssueListStore {
         let queryKey = queries.map { "\($0.0.id)|\($0.1)" }.joined()
         // Each account's rows stay put (from cache on a new query, else what is shown) until its own fresh
         // page lands, so the list never collapses to the fastest site and then grows back.
-        var byAccount: [UUID: [ListRow]] = Dictionary(grouping: rows, by: \.state.id)
         if shownKey != queryKey {
+            var byAccount = pages.mapValues(\.rows)
             var resorted = shown
             resorted.sort = f.sort
             if resorted == f, !rows.isEmpty {
@@ -214,42 +241,28 @@ final class IssueListStore {
                 byAccount = cacheable ? await Self.cachedRows(queries) : [:]
                 guard gen == generation else { return }
             }
-            show(merged(byAccount))
+            pages = Dictionary(
+                uniqueKeysWithValues: states.map { ($0.id, Page(state: $0, rows: byAccount[$0.id] ?? [])) })
+            show(merged())
             // Only now: a load superseded before its rows reached the screen must not let the next one skip them.
             shownKey = queryKey
         }
         shown = f
+        query = (f.jql, f.jqlParts, cacheable)
+        for id in pages.keys { (pages[id]!.part, pages[id]!.token) = (0, nil) }  // the first page replaces
         isLoading = true
-        if f.account == nil {
-            let tasks = queries.map { st, jql in
-                (
-                    st.id,
-                    Task<[ListRow]?, Never> { @MainActor in
-                        guard
-                            let page = try? await Self.pageWorth(
-                                f.jqlParts, whole: jql, part: 0, token: nil, state: st, cache: cacheable)
-                        else { return nil }
-                        return page.issues.map { ListRow(issue: $0, state: st) }
-                    }
-                )
-            }
-            for (id, t) in tasks {
-                let fresh = await t.value
-                guard gen == generation else { return }
-                if let fresh { byAccount[id] = fresh }  // a failed site keeps what it had
-                show(merged(byAccount))
-            }
-            isLoading = false
-            if cacheable { Self.prefetchDetails(rows) }
-        } else {
-            guard let (st, jql) = queries.first else {
-                rows = []
-                isLoading = false
-                return
-            }
-            single = (st, jql, f.jqlParts, cacheable)
-            await fetchPage(gen: gen, replacing: true)
+        let tasks = pages.keys.map { id in Task { @MainActor in try await self.fetchPage(id, gen: gen) } }
+        for t in tasks {
+            let result = await t.result
+            guard gen == generation else { return }
+            // Of several sites, a failed one keeps what it had; alone, it says what went wrong.
+            if case .failure(let e) = result, f.account != nil { fail(e, cacheable: cacheable) }
         }
+        isLoading = false
+        // A merge holds rows back behind the account furthest behind; it still opens on a page's worth, as one site does.
+        while gen == generation, hasMore, rows.count < 50 { await loadMore() }
+        guard gen == generation else { return }
+        if cacheable { Self.prefetchDetails(rows) }
     }
 
     /// One count request per account, in parallel with the page fetch; a failed site leaves the last count standing.
@@ -304,38 +317,65 @@ final class IssueListStore {
         rows = new
     }
 
-    private func merged(_ byAccount: [UUID: [ListRow]]) -> [ListRow] {
-        byAccount.count == 1
-            ? byAccount.values.first! : byAccount.values.flatMap { $0 }.sorted { sort.areInOrder($0.issue, $1.issue) }
+    /// Every account's rows in the chosen order, up to the last row of the account that is furthest behind: an
+    /// account with a page still to come can only add rows that sort after its own last one, so everything from
+    /// the others before that is final and nothing lands between rows already on screen. Rows that tie with that
+    /// last row on the sort field wait too: Jira orders ties as it likes, so the next page could sort among them.
+    /// One account shows as Jira sent it.
+    private func merged() -> [ListRow] {
+        if pages.count == 1 { return pages.values.first!.rows }
+        let all = pages.values.flatMap(\.rows).sorted { sort.areInOrder($0.issue, $1.issue) }
+        guard let bound = waiting.flatMap({ pages[$0]?.rows.last }) else { return all }
+        return Array(
+            all.prefix { sort.compare($0.issue, bound.issue) != .orderedSame && sort.areInOrder($0.issue, bound.issue) }
+        )
     }
 
+    /// The account the merge waits on: the one with more pages whose last row comes first.
+    private var waiting: UUID? {
+        pages.values.filter(\.more).min(by: {
+            guard let a = $0.rows.last else { return true }
+            guard let b = $1.rows.last else { return false }
+            return sort.areInOrder(a.issue, b.issue)
+        })?.state.id
+    }
+
+    /// The next page of the account the merge waits on, and the next again while nothing new reaches the screen:
+    /// a page of rows that all tie with the last one adds nothing until the tie is passed.
     func loadMore() async {
-        guard hasMore, !isLoading, single != nil else { return }
-        await fetchPage(gen: generation, replacing: false)
-    }
-
-    private func fetchPage(gen: Int, replacing: Bool) async {
-        guard let (st, jql, parts, cacheable) = single else { return }
+        guard hasMore, !isLoading, let cache = query?.cache else { return }
+        let gen = generation
         isLoading = true
         // Not for a superseded page: the load that replaced it is still running under the same flag.
         defer { if gen == generation { isLoading = false } }
-        do {
-            let page = try await Self.pageWorth(
-                parts, whole: jql, part: part, token: nextToken, state: st, cache: cacheable)
-            guard gen == generation else { return }
-            let fresh = page.issues.map { ListRow(issue: $0, state: st) }
-            if replacing { show(fresh) } else { rows += fresh }
-            (part, nextToken) = (page.part, page.token)
-            if replacing, cacheable { Self.prefetchDetails(rows) }
-        } catch {
-            guard gen == generation, !error.isOffline, !error.isCancelled else { return }
-            // A 400 on a typed search is the query itself; an alert would steal the keystrokes that fix it.
-            if !cacheable, (error as? JiraError)?.status == 400 {
-                queryError = error.localizedDescription
-                rows = []
-            } else {
-                self.error = error.localizedDescription
-            }
+        let before = rows.count
+        while gen == generation, rows.count == before, let id = waiting {
+            do { try await fetchPage(id, gen: gen) } catch { return fail(error, cacheable: cache) }
+        }
+    }
+
+    /// One account's next page into its `Page` and onto the screen; a page from the start replaces its rows.
+    private func fetchPage(_ id: UUID, gen: Int) async throws {
+        guard let q = query, let p = pages[id] else { return }
+        let page = try await Self.pageWorth(
+            q.parts, whole: q.jql, part: p.part, token: p.token, state: p.state, cache: q.cache)
+        guard gen == generation, pages[id] != nil else { return }
+        let fresh = page.issues.map { ListRow(issue: $0, state: p.state) }
+        let first = p.part == 0 && p.token == nil
+        pages[id]!.rows = first ? fresh : pages[id]!.rows + fresh
+        (pages[id]!.part, pages[id]!.token) = (page.part, page.token)
+        pages[id]!.more = page.token != nil || page.part + 1 < q.parts.count
+        show(merged())
+    }
+
+    private func fail(_ error: Error, cacheable: Bool) {
+        guard !error.isOffline, !error.isCancelled else { return }
+        // A 400 on a typed search is the query itself; an alert would steal the keystrokes that fix it.
+        if !cacheable, (error as? JiraError)?.status == 400 {
+            queryError = error.localizedDescription
+            rows = []
+        } else {
+            self.error = error.localizedDescription
         }
     }
 }

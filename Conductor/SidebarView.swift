@@ -126,6 +126,14 @@ struct ListFilters: Hashable, Codable {
 
         /// Client-side counterpart of `clause`, for merging pages from several sites into one list.
         func areInOrder(_ a: Issue, _ b: Issue) -> Bool {
+            let r = compare(a, b)
+            if r == .orderedSame { return a.key < b.key }
+            return descending ? r == .orderedDescending : r == .orderedAscending
+        }
+
+        /// The sort field alone, as `areInOrder` reads it before the direction and the tie-break by key: two
+        /// issues that tie here can come from Jira in any order, so a merge cannot put anything between them.
+        func compare(_ a: Issue, _ b: Issue) -> ComparisonResult {
             let r: ComparisonResult
             switch field {
             case .updated: r = (a.fields.updated ?? .distantPast).compare(b.fields.updated ?? .distantPast)
@@ -138,8 +146,8 @@ struct ListFilters: Hashable, Codable {
                 // key, the same way, as `jqlParts` asks Jira to.
                 switch (a.fields.duedate, b.fields.duedate) {
                 case (nil, nil): r = a.key.localizedStandardCompare(b.key)
-                case (nil, _): return false
-                case (_, nil): return true
+                case (nil, _): return descending ? .orderedAscending : .orderedDescending
+                case (_, nil): return descending ? .orderedDescending : .orderedAscending
                 case (let da?, let db?):
                     r = da == db ? a.key.localizedStandardCompare(b.key) : da.compare(db)
                 }
@@ -157,8 +165,7 @@ struct ListFilters: Hashable, Codable {
                     ra != rb
                     ? (ra < rb ? .orderedAscending : .orderedDescending) : sa.name.localizedStandardCompare(sb.name)
             }
-            if r == .orderedSame { return a.key < b.key }
-            return descending ? r == .orderedDescending : r == .orderedAscending
+            return r
         }
     }
 
