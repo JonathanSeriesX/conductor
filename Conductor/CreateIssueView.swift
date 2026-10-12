@@ -128,7 +128,9 @@ final class CreateIssueModel {
         if let p = priority, has("priority") { f["priority"] = .object(["id": .string(p.id)]) }
         if !labels.isEmpty, has("labels") { f["labels"] = .array(labels.map(JSONValue.string)) }
         let parent = parentKey.trimmingCharacters(in: .whitespaces).uppercased()
-        if !parent.isEmpty { f["parent"] = .object(["key": .string(parent)]) }
+        if !parent.isEmpty, let c = state?.client {
+            f.merge(c.parentFields(parent, subtask: type?.isSubtask == true)) { $1 }
+        }
         return f
     }
 }
@@ -471,7 +473,8 @@ struct CreateIssueView: View {
     /// Parents one level up in the same project: standard issues for a subtask, epics for the rest.
     private var parentJQL: String {
         let level = m.type?.isSubtask == true ? 0 : (m.type?.hierarchyLevel ?? 0) + 1
-        return "project = \"\(m.project?.key ?? "")\" AND hierarchyLevel = \(level) ORDER BY updated DESC"
+        let clause = m.state?.client.levelJQL(level) ?? "hierarchyLevel = \(level)"
+        return "project = \"\(m.project?.key ?? "")\" AND \(clause) ORDER BY updated DESC"
     }
 
     private func addLabel() {

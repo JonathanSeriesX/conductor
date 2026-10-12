@@ -72,6 +72,23 @@ struct IssueType: Codable, Hashable, Sendable, Identifiable {
     /// -1 subtask, 0 standard, 1 epic: a parent sits one level up.
     var hierarchyLevel: Int?
     var isSubtask: Bool { subtask == true }
+
+    private enum CodingKeys: String, CodingKey { case id, name, iconUrl, subtask, hierarchyLevel }
+}
+
+extension IssueType {
+    /// Server has no levels; its epic type is known to the client, which passes it in through `userInfo`.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        iconUrl = try c.decodeIfPresent(URL.self, forKey: .iconUrl)
+        subtask = try c.decodeIfPresent(Bool.self, forKey: .subtask)
+        hierarchyLevel = try c.decodeIfPresent(Int.self, forKey: .hierarchyLevel)
+        if hierarchyLevel == nil, let epic = decoder.userInfo[.epicType] as? String {
+            hierarchyLevel = subtask == true ? -1 : id == epic ? 1 : 0
+        }
+    }
 }
 
 struct Sprint: Codable, Hashable, Sendable, Identifiable {
@@ -79,6 +96,41 @@ struct Sprint: Codable, Hashable, Sendable, Identifiable {
     let name: String
     let state: String
     let originBoardId: Int?
+
+    private enum CodingKeys: String, CodingKey { case id, name, state, originBoardId }
+
+    init(from decoder: Decoder) throws {
+        // Server's sprint field holds Java's toString of each sprint:
+        // "com.atlassian.greenhopper.service.sprint.Sprint@1f[id=1,rapidViewId=3,state=ACTIVE,name=Sprint 1,…]".
+        if let s = try? decoder.singleValueContainer().decode(String.self) {
+            func value(_ key: String) -> String? {
+                // A name may hold commas: a value runs to the next ",key=" Jira writes, or to the closing bracket.
+                let keys = Self.serverKeys.joined(separator: "|")
+                guard let r = try? Regex("[\\[,]\(key)=(.*?)(?=,(?:\(keys))=|\\]$)"), let m = s.firstMatch(of: r)
+                else { return nil }
+                return m.output[1].substring.map(String.init)
+            }
+            guard let id = value("id").flatMap(Int.init) else {
+                throw DecodingError.dataCorrupted(
+                    .init(codingPath: decoder.codingPath, debugDescription: "Sprint \(s)"))
+            }
+            self.id = id
+            name = value("name") ?? ""
+            state = value("state")?.lowercased() ?? ""
+            originBoardId = value("rapidViewId").flatMap(Int.init)
+            return
+        }
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(Int.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        state = try c.decode(String.self, forKey: .state).lowercased()
+        originBoardId = try c.decodeIfPresent(Int.self, forKey: .originBoardId)
+    }
+
+    private static let serverKeys = [
+        "activatedDate", "autoStartStop", "completeDate", "endDate", "goal", "id", "incompleteIssuesDestinationId",
+        "name", "rapidViewId", "sequence", "startDate", "state", "synced",
+    ]
 }
 
 struct SprintPage: Codable, Sendable {
@@ -151,7 +203,7 @@ struct Issue: Codable, Hashable, Sendable, Identifiable {
         let updated: Date?
         let lastViewed: Date?
         let project: Project?
-        let parent: IssueRef?
+        var parent: IssueRef?
         let subtasks: [IssueRef]?
         var comment: CommentPage?
         let attachment: [Attachment]?
@@ -186,6 +238,13 @@ struct Issue: Codable, Hashable, Sendable, Identifiable {
         id = try c.decode(String.self, forKey: .id)
         key = try c.decode(String.self, forKey: .key)
         fields = try c.decode(Fields.self, forKey: .fields)
+        // Server names a standard issue's epic in a custom field, as a bare key; the client fills in the rest.
+        if fields.parent == nil, let link = decoder.userInfo[.epicLinkField] as? String {
+            let dyn = try c.nestedContainer(keyedBy: AnyKey.self, forKey: .fields)
+            if let epic = try? dyn.decodeIfPresent(String.self, forKey: AnyKey(link)) {
+                fields.parent = IssueRef(id: epic, key: epic, fields: .init(summary: "", status: nil, issuetype: nil))
+            }
+        }
         if let cached = try? c.decodeIfPresent([Sprint].self, forKey: .sprints) {
             sprints = cached
         } else if let sprintKey = decoder.userInfo[.sprintField] as? String {
@@ -258,6 +317,8 @@ struct AnyKey: CodingKey {
 extension CodingUserInfoKey {
     static let sprintField = CodingUserInfoKey(rawValue: "sprintField")!
     static let pointsFields = CodingUserInfoKey(rawValue: "pointsFields")!
+    static let epicLinkField = CodingUserInfoKey(rawValue: "epicLinkField")!
+    static let epicType = CodingUserInfoKey(rawValue: "epicType")!
 }
 
 // MARK: - Links, worklogs, watchers
@@ -327,8 +388,25 @@ struct CreateField: Codable, Hashable, Sendable, Identifiable {
     let allowedValues: [JSONValue]?
 }
 
-struct CreateMetaTypes: Codable, Sendable { let issueTypes: [IssueType] }
-struct CreateMetaFields: Codable, Sendable { let fields: [CreateField] }
+/// Cloud names the list `issueTypes` or `fields`; Server calls either one `values`.
+struct CreateMetaTypes: Decodable, Sendable {
+    let issueTypes: [IssueType]
+    private enum CodingKeys: String, CodingKey { case issueTypes, values }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        issueTypes =
+            try c.decodeIfPresent([IssueType].self, forKey: .issueTypes) ?? c.decode([IssueType].self, forKey: .values)
+    }
+}
+struct CreateMetaFields: Decodable, Sendable {
+    let fields: [CreateField]
+    private enum CodingKeys: String, CodingKey { case fields, values }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        fields =
+            try c.decodeIfPresent([CreateField].self, forKey: .fields) ?? c.decode([CreateField].self, forKey: .values)
+    }
+}
 
 struct EditField: Codable, Hashable, Sendable {
     let name: String
@@ -395,7 +473,7 @@ struct QuickFilter: Codable, Hashable, Sendable, Identifiable {
 struct QuickFilterPage: Codable, Sendable { let values: [QuickFilter] }
 
 struct AgileIssuePage: Codable, Sendable {
-    let issues: [Issue]
+    var issues: [Issue]
     let total: Int
     let startAt: Int
     let maxResults: Int

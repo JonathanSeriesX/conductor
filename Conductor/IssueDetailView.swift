@@ -120,7 +120,7 @@ final class IssueDetailStore {
             let i = pending ?? Task { try await client.issue(key) }
             async let t = client.transitions(key)
             async let m = client.editMeta(key)
-            async let kids = full ? client.search(jql: "parent = \"\(key)\" ORDER BY created ASC") : nil
+            async let kids = full ? client.search(jql: client.childrenJQL([key]) + " ORDER BY created ASC") : nil
             async let types = full ? state.linkTypes() : nil
             let fresh = try await i.value
             guard self.key == key else { return }
@@ -895,7 +895,7 @@ struct IssueDetailView: View {
                 ParentPicker(
                     key: key, current: issue.fields.parent?.key,
                     jql:
-                        "project = \"\(issue.fields.project?.key ?? "")\" AND hierarchyLevel = \((issue.fields.issuetype.hierarchyLevel ?? 0) + 1) ORDER BY updated DESC"
+                        "project = \"\(issue.fields.project?.key ?? "")\" AND \(jira?.client.levelJQL((issue.fields.issuetype.hierarchyLevel ?? 0) + 1) ?? "") ORDER BY updated DESC"
                 ) { new in
                     showParent = false
                     setParent(new)
@@ -1601,9 +1601,10 @@ struct IssueDetailView: View {
     /// Sets, replaces or removes the parent; the old one goes to the Bin.
     private func setParent(_ new: String?) {
         let old = store.issue?.fields.parent?.key
+        let subtask = store.issue?.fields.issuetype.isSubtask == true
         let account = target.accountID
         run {
-            try await $0.editIssue(key, fields: ["parent": new.map { .object(["key": .string($0)]) } ?? .null])
+            try await $0.editIssue(key, fields: $0.parentFields(new, subtask: subtask))
             await Bin.shared.put(.parent(old), account: account, key: key)
         }
     }

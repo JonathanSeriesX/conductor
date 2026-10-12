@@ -129,8 +129,7 @@ final class AccountState: Identifiable {
         // Children of epics, one query per page rather than one per epic.
         let epics = issues.filter { ($0.fields.issuetype.hierarchyLevel ?? 0) >= 1 }.map(\.key)
         if !epics.isEmpty,
-            let kids = try? await client.search(
-                jql: "parent in (" + epics.map { "\"\($0)\"" }.joined(separator: ",") + ") ORDER BY created ASC")
+            let kids = try? await client.search(jql: client.childrenJQL(epics) + " ORDER BY created ASC")
         {
             let grouped = Dictionary(
                 grouping: kids.issues.filter { !$0.fields.issuetype.isSubtask }, by: { $0.fields.parent?.key ?? "" })
@@ -209,7 +208,9 @@ final class AccountState: Identifiable {
         let publicMail: Set<String> = [
             "gmail", "icloud", "me", "outlook", "hotmail", "live", "yahoo", "proton", "protonmail", "fastmail", "hey",
         ]
-        let domain = account.email.split(separator: "@").last.map(String.init) ?? ""
+        // A Server account is named by username; its email comes with the user.
+        let email = account.isServer ? me?.emailAddress ?? "" : account.email
+        let domain = email.split(separator: "@").last.map(String.init) ?? ""
         var label = domain.split(separator: ".").dropLast().last.map(String.init) ?? ""
         if label.isEmpty || publicMail.contains(label.lowercased()) {
             label = host.split(separator: ".").first.map(String.init) ?? host
@@ -244,6 +245,7 @@ final class AccountState: Identifiable {
         me = c.me
         client.sprintField = c.sprintField
         client.pointsFields = c.pointsFields
+        client.epics = c.epics
         projects = c.projects
         filters = c.filters
         issueTypeNames = c.issueTypeNames
@@ -275,8 +277,10 @@ final class AccountState: Identifiable {
         if let ids = try? await custom {
             client.sprintField = ids.sprint
             client.pointsFields = ids.points
+            client.epics = ids.epics
             DiskCache.saveAsync(ids.sprint, account: account, name: "sprintField")
             DiskCache.saveAsync(ids.points, account: account, name: "pointsFields")
+            DiskCache.saveAsync(ids.epics, account: account, name: "epicFields")
         }
         await catalog
         error = nil
@@ -787,6 +791,7 @@ struct CachedAccount: Sendable {
     var me: JiraUser?
     var sprintField: String?
     var pointsFields: [String]
+    var epics: EpicFields?
     var projects: [Project]
     var filters: [Filter]
     var issueTypeNames: [String]
@@ -800,6 +805,7 @@ struct CachedAccount: Sendable {
         me = DiskCache.load(account: account, name: "me")
         sprintField = DiskCache.load(account: account, name: "sprintField")
         pointsFields = DiskCache.load(account: account, name: "pointsFields") ?? []
+        epics = DiskCache.load(account: account, name: "epicFields")
         projects = DiskCache.load(account: account, name: "projects") ?? []
         filters = DiskCache.load(account: account, name: "filters") ?? []
         issueTypeNames = DiskCache.load(account: account, name: "issueTypes") ?? []

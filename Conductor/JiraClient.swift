@@ -1,6 +1,7 @@
 import CryptoKit
 import Foundation
 import Security
+import Synchronization
 
 struct Account: Codable, Sendable, Equatable, Identifiable {
     var id: UUID
@@ -35,7 +36,8 @@ struct Account: Codable, Sendable, Equatable, Identifiable {
         if s.isEmpty { return nil }
         if !s.contains("://") { s = "https://" + s }
         guard var comps = URLComponents(string: s), var host = comps.host, !host.isEmpty else { return nil }
-        if !host.contains(".") { host += ".atlassian.net" }
+        // "team" is a Cloud site; "localhost:8080" and "[::1]" are a Server of one's own.
+        if !host.contains("."), !host.contains(":"), host != "localhost", comps.port == nil { host += ".atlassian.net" }
         comps.host = host
         // A pasted issue or board link: the site is what comes before Jira's own paths.
         var path = comps.path
@@ -59,14 +61,21 @@ struct JiraError: LocalizedError, Sendable {
         let errorMessages: [String]?
         let errors: [String: String]?
     }
-    init(status: Int, data: Data) {
+    /// `server`: a 401 there means the personal access token, as there is no email to get wrong.
+    init(status: Int, data: Data, server: Bool = false) {
         self.status = status
         let b = try? JSONDecoder().decode(Body.self, from: data)
         var m = b?.errorMessages ?? []
         // Jira names the field in the message itself ("Summary can't exceed…"), and one bad parent comes back
         // under two keys with one text; the key prefix would only make it read like a log line.
         for v in (b?.errors ?? [:]).values.sorted() where !m.contains(v) { m.append(v) }
-        if m.isEmpty, status == 401 { m = [String(localized: "Invalid email or API token.")] }
+        if m.isEmpty, status == 401 {
+            m = [
+                server
+                    ? String(localized: "Invalid personal access token.")
+                    : String(localized: "Invalid email or API token.")
+            ]
+        }
         messages = m
     }
 }
@@ -76,6 +85,8 @@ struct JiraClient: Sendable {
     var sprintField: String?
     /// Every numeric field named like story points; which one a project uses shows up in its editmeta.
     var pointsFields: [String] = []
+    /// Server only: epics are an issue type and a custom field there, where Cloud has `parent` and levels.
+    var epics: EpicFields?
 
     private var server: Bool { account.isServer }
     private var api: URL { account.site.appending(path: server ? "rest/api/2" : "rest/api/3") }
@@ -87,20 +98,38 @@ struct JiraClient: Sendable {
     }
     /// Server names people by username in queries and payloads where Cloud takes an account id.
     private var userKey: String { server ? "username" : "accountId" }
-    /// Server has no ADF: a description or comment goes as wiki-markup text, which `markdown` approximates.
-    /// ponytail: Markdown and wiki markup agree on plain text and lists; headings and bold differ.
+    /// Server has no ADF: a description, comment or work-log note goes as wiki markup.
     private func text(_ fields: [String: JSONValue]) -> [String: JSONValue] {
         guard server, let d = fields["description"], d.object != nil, let data = try? JSONEncoder().encode(d),
             let doc = try? JSONDecoder().decode(ADFNode.self, from: data)
         else { return fields }
         var f = fields
-        var mentions: [String: String] = [:]
-        f["description"] = .string(doc.markdown(mentions: &mentions))
+        f["description"] = .string(doc.wiki)
         return f
     }
     private func text(_ body: ADFNode) -> JSONValue {
-        var mentions: [String: String] = [:]
-        return server ? .string(body.markdown(mentions: &mentions)) : (try? JSONValue(body)) ?? .null
+        server ? .string(body.wiki) : (try? JSONValue(body)) ?? .null
+    }
+
+    /// The fields that make `key` the parent (nil: none). A Server issue names its epic in a custom field; only a
+    /// subtask has a `parent` there.
+    func parentFields(_ key: String?, subtask: Bool) -> [String: JSONValue] {
+        if server, !subtask, let link = epics?.link { return [link: key.map(JSONValue.string) ?? .null] }
+        return ["parent": key.map { .object(["key": .string($0)]) } ?? .null]
+    }
+
+    /// Issues whose parent is one of `keys`; on Server, also those whose epic is.
+    func childrenJQL(_ keys: [String]) -> String {
+        let list = keys.map { "\"\($0)\"" }.joined(separator: ",")
+        guard server, let link = epics?.link.split(separator: "_").last else { return "parent in (\(list))" }
+        return "(parent in (\(list)) OR cf[\(link)] in (\(list)))"
+    }
+
+    /// Issues at `level` of the hierarchy (0 standard, 1 epic), where a parent is looked for. Server has no levels:
+    /// its epics are an issue type, and every other type but the subtasks is standard.
+    func levelJQL(_ level: Int) -> String {
+        guard server, let epic = epics?.type else { return "hierarchyLevel = \(level)" }
+        return level == 0 ? "issuetype in standardIssueTypes() AND issuetype != \(epic)" : "issuetype = \(epic)"
     }
 
     /// What a list row carries: everything the issue page's right column shows, so a page opened from a row is
@@ -109,6 +138,7 @@ struct JiraClient: Sendable {
         var f =
             "summary,status,assignee,reporter,priority,issuetype,created,updated,lastViewed,project,watches,parent,subtasks,labels,duedate,components,fixVersions,timetracking"
         if let sprintField { f += "," + sprintField }
+        if let link = epics?.link { f += "," + link }
         for p in pointsFields { f += "," + p }
         return f
     }
@@ -116,6 +146,7 @@ struct JiraClient: Sendable {
         var f =
             "summary,description,status,assignee,reporter,priority,issuetype,labels,created,updated,comment,attachment,project,parent,subtasks,issuelinks,worklog,timetracking,watches,duedate,components,fixVersions"
         if let sprintField { f += "," + sprintField }
+        if let link = epics?.link { f += "," + link }
         for p in pointsFields { f += "," + p }
         return f
     }
@@ -145,7 +176,7 @@ struct JiraClient: Sendable {
         }
         await Connectivity.shared.reportSuccess(host: host)
         let status = (resp as? HTTPURLResponse)?.statusCode ?? 0
-        guard (200..<300).contains(status) else { throw JiraError(status: status, data: data) }
+        guard (200..<300).contains(status) else { throw JiraError(status: status, data: data, server: server) }
         return data
     }
 
@@ -166,6 +197,10 @@ struct JiraClient: Sendable {
         }
         if let sprintField { d.userInfo[.sprintField] = sprintField }
         d.userInfo[.pointsFields] = pointsFields
+        if let epics {
+            d.userInfo[.epicLinkField] = epics.link
+            d.userInfo[.epicType] = epics.type
+        }
         return d
     }
 
@@ -188,7 +223,7 @@ struct JiraClient: Sendable {
         if url.host == account.site.host { req.setValue(authHeader, forHTTPHeaderField: "Authorization") }
         let (data, resp) = try await URLSession.shared.data(for: req)
         let status = (resp as? HTTPURLResponse)?.statusCode ?? 0
-        guard (200..<300).contains(status) else { throw JiraError(status: status, data: data) }
+        guard (200..<300).contains(status) else { throw JiraError(status: status, data: data, server: server) }
         return data
     }
 
@@ -196,12 +231,22 @@ struct JiraClient: Sendable {
 
     func myself() async throws -> JiraUser { try await get("myself") }
 
-    /// Sprint and story points are custom fields whose ids differ per site.
-    func customFieldIds() async throws -> (sprint: String?, points: [String]) {
+    /// Sprint and story points are custom fields whose ids differ per site; so are a Server's epic fields.
+    func customFieldIds() async throws -> (sprint: String?, points: [String], epics: EpicFields?) {
         let fields: [FieldInfo] = try await get("field")
-        let sprint = fields.first { $0.schema?.custom == "com.pyxis.greenhopper.jira:gh-sprint" }?.id
+        func custom(_ type: String) -> String? {
+            fields.first { $0.schema?.custom == "com.pyxis.greenhopper.jira:\(type)" }?.id
+        }
         let points = fields.filter { ["story points", "story point estimate"].contains($0.name.lowercased()) }.map(\.id)
-        return (sprint, points)
+        var epics: EpicFields?
+        if server, let link = custom("gh-epic-link") {
+            // Jira Software's own record of which issue type is the epic; its name may be translated.
+            struct Properties: Decodable { let epicTypeId: String? }
+            let p: Properties? = try? await get(
+                "api/epicproperties", base: account.site.appending(path: "rest/greenhopper/1.0"))
+            epics = EpicFields(link: link, name: custom("gh-epic-label"), type: p?.epicTypeId)
+        }
+        return (custom("gh-sprint"), points, epics)
     }
 
     func projects() async throws -> [Project] {
@@ -240,7 +285,8 @@ struct JiraClient: Sendable {
             let end = start + page.issues.count
             let more = end < (page.total ?? 0) && !page.issues.isEmpty
             return SearchPage(
-                issues: page.issues, nextPageToken: more ? "\(end)" : nil, isLast: !more, total: page.total)
+                issues: await serverDetails(page.issues), nextPageToken: more ? "\(end)" : nil, isLast: !more,
+                total: page.total)
         }
         if let nextPageToken { q["nextPageToken"] = nextPageToken }
         return try await get("search/jql", query: q)
@@ -267,7 +313,91 @@ struct JiraClient: Sendable {
 
     /// The full record, with every comment and every work log.
     func issue(_ key: String) async throws -> Issue {
-        try await completing(get("issue/\(key)", query: ["fields": detailFields]))
+        let i: Issue = try await get("issue/\(key)", query: ["fields": detailFields])
+        return try await completing(await withEpics([i])[0])
+    }
+
+    /// What Server leaves out that Cloud sends: each epic's summary, each mentioned person's name.
+    private func serverDetails(_ issues: [Issue]) async -> [Issue] {
+        guard server else { return issues }
+        return await namingMentions(await withEpics(issues))
+    }
+
+    /// Server writes a mention as [~username]; the page shows the person's name, as Cloud's mention carries it.
+    /// Names come from the people the issues already show, then once per unknown username from Jira.
+    private func namingMentions(_ issues: [Issue]) async -> [Issue] {
+        let host = account.site.host() ?? ""
+        var names = Self.mentionNames.withLock { $0[host] ?? [:] }
+        var wanted = Set<String>()
+        for i in issues {
+            let f = i.fields
+            for u in [f.assignee, f.reporter].compactMap({ $0 }) + (f.comment?.comments.compactMap(\.author) ?? [])
+                + (f.worklog?.worklogs.compactMap(\.author) ?? [])
+            {
+                names[u.accountId] = u.displayName
+            }
+            for doc in [f.description].compactMap({ $0 }) + (f.comment?.comments.map(\.body) ?? [])
+                + (f.worklog?.worklogs.compactMap(\.comment) ?? [])
+            {
+                wanted.formUnion(doc.mentionIDs)
+            }
+        }
+        let unknown = wanted.subtracting(names.keys)
+        if !unknown.isEmpty {
+            await withTaskGroup(of: JiraUser?.self) { group in
+                for id in unknown { group.addTask { try? await get("user", query: ["username": id]) } }
+                for await u in group { if let u { names[u.accountId] = u.displayName } }
+            }
+        }
+        guard !wanted.isEmpty else { return issues }
+        Self.mentionNames.withLock { [names] in $0[host] = names }
+        return issues.map { i in
+            var i = i
+            i.fields.description = i.fields.description?.namingMentions(names)
+            if let page = i.fields.comment {
+                i.fields.comment = CommentPage(
+                    comments: page.comments.map {
+                        Comment(
+                            id: $0.id, author: $0.author, body: $0.body.namingMentions(names), created: $0.created,
+                            updated: $0.updated)
+                    }, total: page.total)
+            }
+            if let page = i.fields.worklog {
+                i.fields.worklog = WorklogPage(
+                    worklogs: page.worklogs.map {
+                        Worklog(
+                            id: $0.id, author: $0.author, comment: $0.comment?.namingMentions(names),
+                            started: $0.started,
+                            timeSpent: $0.timeSpent, timeSpentSeconds: $0.timeSpentSeconds)
+                    }, total: page.total)
+            }
+            return i
+        }
+    }
+    /// Display names by username, per Server host, for the whole run.
+    private static let mentionNames = Mutex<[String: [String: String]]>([:])
+
+    /// Server: each issue's epic, read from its epic-link field as a bare key, gets its summary, status and type,
+    /// all in one search.
+    private func withEpics(_ issues: [Issue]) async -> [Issue] {
+        let keys = Set(issues.compactMap { $0.fields.parent.flatMap { $0.fields.summary.isEmpty ? $0.key : nil } })
+        guard server, !keys.isEmpty else { return issues }
+        let jql = "key in (" + keys.sorted().map { "\"\($0)\"" }.joined(separator: ",") + ")"
+        guard
+            let page: SearchPage = try? await get(
+                "search", query: ["jql": jql, "fields": "summary,status,issuetype", "maxResults": "\(keys.count)"])
+        else { return issues }
+        var refs: [String: IssueRef] = [:]
+        for e in page.issues {
+            refs[e.key] = IssueRef(
+                id: e.id, key: e.key,
+                fields: .init(summary: e.fields.summary, status: e.fields.status, issuetype: e.fields.issuetype))
+        }
+        return issues.map { i in
+            var i = i
+            if let key = i.fields.parent?.key, let ref = refs[key] { i.fields.parent = ref }
+            return i
+        }
     }
 
     /// `issue` with all its comments and work logs, each fetched only when the copy lacks some, both at once.
@@ -276,7 +406,7 @@ struct JiraClient: Sendable {
         async let worklogs = allWorklogs(issue)
         var copy = try await comments
         if let w = try await worklogs { copy.fields.worklog = w }
-        return copy
+        return server ? await namingMentions([copy])[0] : copy
     }
 
     /// Every work log, in Jira's order. A search result and an issue of its own both carry the oldest 20; the
@@ -380,26 +510,50 @@ struct JiraClient: Sendable {
         return m.issueTypes
     }
 
+    /// On Server the epic link shows as `parent`, as Cloud's does, and the epic name is the summary's to fill.
     func createFields(project: String, issueType: String) async throws -> [CreateField] {
         let m: CreateMetaFields = try await get(
             "issue/createmeta/\(project)/issuetypes/\(issueType)", query: ["maxResults": "200"])
-        return m.fields
+        guard server, let epics else { return m.fields }
+        return m.fields.compactMap { f in
+            if f.fieldId == epics.name { return nil }
+            if f.fieldId == epics.link, !m.fields.contains(where: { $0.fieldId == "parent" }) {
+                return CreateField(
+                    fieldId: "parent", name: f.name, required: f.required, schema: f.schema,
+                    allowedValues: f.allowedValues)
+            }
+            return f
+        }
     }
 
     func createIssue(fields: [String: JSONValue]) async throws -> CreatedIssue {
         struct Body: Encodable { let fields: [String: JSONValue] }
-        return try await send("issue", method: "POST", body: Body(fields: text(fields)))
+        var f = text(fields)
+        if server, let name = epics?.name, f[name] == nil, let type = epics?.type,
+            f["issuetype"]?.object?["id"]?.string == type
+        {
+            f[name] = f["summary"]
+        }
+        return try await send("issue", method: "POST", body: Body(fields: f))
     }
 
-    func editMeta(_ key: String) async throws -> EditMeta { try await get("issue/\(key)/editmeta") }
+    /// On Server the epic link stands in for `parent`, so the page offers it the same way.
+    func editMeta(_ key: String) async throws -> EditMeta {
+        let m: EditMeta = try await get("issue/\(key)/editmeta")
+        guard server, let link = epics?.link, let field = m.fields[link], m.fields["parent"] == nil else { return m }
+        var fields = m.fields
+        fields["parent"] = field
+        return EditMeta(fields: fields)
+    }
 
     func editIssue(_ key: String, fields: [String: JSONValue]) async throws {
         struct Body: Encodable { let fields: [String: JSONValue] }
         _ = try await request("issue/\(key)", method: "PUT", body: Body(fields: text(fields)))
     }
 
-    /// Every label on the site, for suggestions while typing one.
+    /// Every label on the site, for suggestions while typing one. Server lists only the most used ones.
     func labels() async throws -> [String] {
+        if server { return try await jqlSuggestions(field: "labels", value: "").map(\.value) }
         struct Page: Decodable {
             let values: [String]
             let isLast: Bool
@@ -434,7 +588,7 @@ struct JiraClient: Sendable {
         req.httpBody = body
         let (resp, http) = try await URLSession.shared.data(for: req)
         let status = (http as? HTTPURLResponse)?.statusCode ?? 0
-        guard (200..<300).contains(status) else { throw JiraError(status: status, data: resp) }
+        guard (200..<300).contains(status) else { throw JiraError(status: status, data: resp, server: server) }
         return try decoder.decode([Attachment].self, from: resp)
     }
 
@@ -543,10 +697,30 @@ struct JiraClient: Sendable {
         let path = sprint.map { "board/\(id)/sprint/\($0)/issue" } ?? "board/\(id)/issue"
         var q = ["maxResults": "100", "startAt": "\(startAt)", "fields": listFields]
         if let jql { q["jql"] = jql }
-        return try await get(path, query: q, base: agile)
+        var page: AgileIssuePage = try await get(path, query: q, base: agile)
+        page.issues = await serverDetails(page.issues)
+        return page
     }
 
     func quickFilters(board: Int) async throws -> [QuickFilter] {
+        if server {
+            // Server's Agile API has no quick filters; the board's configuration page reads them from here.
+            struct Model: Decodable {
+                struct Config: Decodable {
+                    struct Q: Decodable {
+                        let id: Int
+                        let name: String
+                        let query: String
+                    }
+                    let quickFilters: [Q]
+                }
+                let quickFilterConfig: Config
+            }
+            let m: Model = try await get(
+                "rapidviewconfig/editmodel.json", query: ["rapidViewId": "\(board)"],
+                base: account.site.appending(path: "rest/greenhopper/1.0"))
+            return m.quickFilterConfig.quickFilters.map { QuickFilter(id: $0.id, name: $0.name, jql: $0.query) }
+        }
         let p: QuickFilterPage = try await get("board/\(board)/quickfilter", query: ["maxResults": "50"], base: agile)
         return p.values
     }
@@ -570,6 +744,13 @@ struct JiraClient: Sendable {
             URLQueryItem(name: "rapidView", value: String(board))
         ])
     }
+}
+
+/// A Server's epic fields: the custom field naming an issue's epic, the epic's own name field, the epic issue type.
+struct EpicFields: Codable, Hashable, Sendable {
+    let link: String
+    let name: String?
+    let type: String?
 }
 
 // MARK: - Keychain

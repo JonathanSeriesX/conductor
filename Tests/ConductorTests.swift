@@ -276,10 +276,10 @@ final class LiveReadTests: XCTestCase {
         XCTAssertEqual(page.comments.count, page.total)
         XCTAssertEqual(Set(page.comments.map(\.id)).count, page.total)
         XCTAssertEqual(page.comments.map(\.created), page.comments.map(\.created).sorted())
-        // A search result carries the first 20: completing it gives the same thread.
+        // A Cloud search result carries the first 20 (Server's carries them all): completing it gives the same thread.
         let search = try await c.search(jql: "key = \(key)", fields: c.detailFields)
         let found = try XCTUnwrap(search.issues.first)
-        XCTAssertFalse(found.hasAllComments)
+        if !c.account.isServer { XCTAssertFalse(found.hasAllComments) }
         let completed = try await c.completing(found)
         XCTAssertEqual(completed.fields.comment?.comments.map(\.id), page.comments.map(\.id))
     }
@@ -659,5 +659,265 @@ final class RowDateTests: XCTestCase {
         XCTAssertEqual(relativeDay(day(13)), "In 13 days")
         XCTAssertEqual(relativeDay(day(-9)), "9 days ago")
         XCTAssertFalse(relativeDay(day(30)).contains("days"), "further out the named style stands")
+    }
+}
+
+final class ServerTests: XCTestCase {
+    private let server = JiraClient(
+        account: Account(site: URL(string: "http://localhost:8080")!, email: "admin", token: "t"))
+
+    func testWikiMarkupReadsAsTheDocumentCloudWouldSend() {
+        let wiki = """
+            h2. Goal
+            Work *without* a _network_, -now- +really+ {{mono}} [Atlassian|https://atlassian.com] [~tester]
+
+            * cache issues
+            ** nested item
+            * queue writes
+
+            # first
+            # second
+
+            {code:swift}
+            let x = 1
+            {code}
+
+            {quote}A quote{quote}
+
+            ||Head 1||Head 2||
+            |cell a|[x|https://x.y]|
+
+            See !shot.png|thumbnail!
+            ----
+            """
+        let doc = ADFNode.document(wiki: wiki)
+        XCTAssertEqual(
+            doc.content?.map(\.type),
+            [
+                "heading", "paragraph", "bulletList", "orderedList", "codeBlock", "blockquote", "table", "paragraph",
+                "mediaSingle", "rule",
+            ])
+        let p = doc.content![1].content!
+        XCTAssertEqual(
+            p.map { $0.type == "text" ? ($0.marks?.first?.type ?? "plain") : $0.type },
+            [
+                "plain", "strong", "plain", "em", "plain", "strike", "plain", "underline", "plain", "code", "plain",
+                "link",
+                "plain", "mention",
+            ])
+        XCTAssertEqual(p.last?.attr("id"), "tester")
+        XCTAssertEqual(doc.content![2].content?.first?.content?.last?.type, "bulletList", "** nests in the item above")
+        XCTAssertEqual(doc.content![4].attr("language"), "swift")
+        XCTAssertEqual(doc.content![4].plainText, "let x = 1")
+        XCTAssertEqual(doc.content![6].content?.first?.content?.first?.type, "tableHeader")
+        XCTAssertEqual(doc.content![6].content?.last?.content?.count, 2, "a pipe inside a link stays in its cell")
+        XCTAssertEqual(doc.content![8].content?.first?.attr("alt"), "shot.png")
+    }
+
+    /// What the composer writes goes to Server as markup and comes back as the same document.
+    func testMarkdownSurvivesTheTripThroughWikiMarkup() {
+        let samples = [
+            "# Title\n\nSome **bold** and *italic* with `code` and a [link](https://x.y/z).",
+            "- one\n- two\n  1. nested\n\n> quoted",
+            "```swift\nlet a = 1\n```\n\n```\nplain\n```",
+            "| Name | Size |\n| --- | --- |\n| **a** | 1 |",
+            "snake_case_name, a - b, well-known, x+y, C++, 50%! [not a link] {braces} pipe | here",
+            "* starts with a star\n\n# not a heading\n\n- [ ] todo\n- [x] done",
+            "line one\nline two",
+        ]
+        for md in samples {
+            let doc = ADFNode.document(markdown: md)
+            let back = ADFNode.document(wiki: doc.wiki)
+            var m: [String: String] = [:]
+            XCTAssertEqual(back.markdown(mentions: &m), doc.markdown(mentions: &m), "via \(doc.wiki)")
+        }
+    }
+
+    func testMentionsGoOutAsUsernames() {
+        let doc = ADFNode.document(markdown: "ping @Taylor Tester", mentions: ["Taylor Tester": "tester"])
+        XCTAssertEqual(doc.wiki, "ping [~tester]")
+    }
+
+    func testAwkwardWikiNeverTraps() {
+        for s in [
+            "", "*", "**", "{code}", "{code}\nnever closed", "{quote}", "|", "||", "|a", "[", "[~]", "!", "!!", "h1.",
+            "h7. x", "# ", "#", "\\", "\\\\", "a\\", "{color:red}x", "{{", "-", "----", "* a\n### b\n* c", "+", "^x",
+            "😀 *😀*", "a\u{0301}", "\r\n\r\n",
+        ] {
+            let doc = ADFNode.document(wiki: s)
+            _ = ADFNode.document(wiki: doc.wiki)
+        }
+    }
+
+    func testServerSprintFieldDecodes() throws {
+        let s =
+            #""com.atlassian.greenhopper.service.sprint.Sprint@78214809[activatedDate=2026-10-12T01:00:14.672Z,autoStartStop=false,completeDate=<null>,endDate=2026-10-24T09:00:00.000Z,goal=<null>,id=1,incompleteIssuesDestinationId=<null>,name=QA, Sprint 1,rapidViewId=3,sequence=1,startDate=2026-10-10T09:00:00.000Z,state=ACTIVE,synced=false]""#
+        let sprint = try JSONDecoder().decode(Sprint.self, from: Data(s.utf8))
+        XCTAssertEqual(sprint.id, 1)
+        XCTAssertEqual(sprint.name, "QA, Sprint 1")
+        XCTAssertEqual(sprint.state, "active")
+        XCTAssertEqual(sprint.originBoardId, 3)
+    }
+
+    func testEpicLinkReadsAsTheParentAndEpicsHaveALevel() throws {
+        var c = server
+        c.epics = EpicFields(link: "customfield_10100", name: "customfield_10102", type: "10000")
+        let issue = try c.decoder.decode(
+            Issue.self,
+            from: Data(
+                #"{"id":"1","key":"QA-2","fields":{"summary":"s","customfield_10100":"QA-1","status":{"id":"1","name":"To Do","statusCategory":{"key":"new","name":"To Do"}},"issuetype":{"id":"10001","name":"Story","subtask":false}}}"#
+                    .utf8))
+        XCTAssertEqual(issue.fields.parent?.key, "QA-1")
+        XCTAssertEqual(issue.fields.issuetype.hierarchyLevel, 0)
+        let epic = try c.decoder.decode(
+            IssueType.self, from: Data(#"{"id":"10000","name":"Epic","subtask":false}"#.utf8))
+        XCTAssertEqual(epic.hierarchyLevel, 1)
+        XCTAssertEqual(c.parentFields("QA-1", subtask: false), ["customfield_10100": .string("QA-1")])
+        XCTAssertEqual(c.parentFields("QA-1", subtask: true), ["parent": .object(["key": .string("QA-1")])])
+        XCTAssertEqual(c.childrenJQL(["QA-1"]), #"(parent in ("QA-1") OR cf[10100] in ("QA-1"))"#)
+    }
+
+    func testLocalServerSitesStayAsTyped() {
+        XCTAssertEqual(Account.normalizeSite("http://localhost:8080")?.absoluteString, "http://localhost:8080")
+        XCTAssertEqual(Account.normalizeSite("localhost:8080/jira")?.absoluteString, "https://localhost:8080/jira")
+        XCTAssertEqual(Account.normalizeSite("jira:8443")?.absoluteString, "https://jira:8443")
+        XCTAssertTrue(server.account.isServer)
+    }
+}
+
+/// Every Server-specific path against a real Jira Data Center. Skipped unless the environment names one:
+/// TEST_RUNNER_CONDUCTOR_SERVER_SITE / _TOKEN and a project key in _PROJECT (xcodebuild strips the prefix).
+final class LiveServerTests: XCTestCase {
+    func testEveryReadAndWriteSpeaksServer() async throws {
+        let env = ProcessInfo.processInfo.environment
+        guard let site = env["CONDUCTOR_SERVER_SITE"].flatMap(Account.normalizeSite),
+            let token = env["CONDUCTOR_SERVER_TOKEN"], let project = env["CONDUCTOR_SERVER_PROJECT"]
+        else { throw XCTSkip("No live Server in the environment") }
+        var c = JiraClient(account: Account(site: site, email: "", token: token))
+        XCTAssertTrue(c.account.isServer)
+        let me = try await c.myself()
+        let ids = try await c.customFieldIds()
+        c.sprintField = ids.sprint
+        c.pointsFields = ids.points
+        c.epics = ids.epics
+        let epics = try XCTUnwrap(ids.epics, "Jira Software's epic fields")
+        XCTAssertNotNil(epics.type)
+        XCTAssertNotNil(ids.sprint)
+
+        // Create: the type list and fields decode, the epic link shows as the parent, an epic gets its name.
+        let types = try await c.createIssueTypes(project: project)
+        let story = try XCTUnwrap(types.first { $0.name == "Story" })
+        let epicType = try XCTUnwrap(types.first { $0.id == epics.type })
+        XCTAssertEqual(epicType.hierarchyLevel, 1)
+        let fields = try await c.createFields(project: project, issueType: story.id)
+        XCTAssertTrue(fields.contains { $0.fieldId == "parent" })
+        XCTAssertFalse(fields.contains { $0.fieldId == epics.link })
+        let epicFields = try await c.createFields(project: project, issueType: epicType.id)
+        XCTAssertFalse(epicFields.contains { $0.fieldId == epics.name }, "the epic name follows the summary")
+        let epic = try await c.createIssue(fields: [
+            "project": .object(["key": .string(project)]), "issuetype": .object(["id": .string(epicType.id)]),
+            "summary": .string("[DC test] Epic"),
+        ])
+        let doc = ADFNode.document(markdown: "## Plan\n\n- **one**\n- two\n\n```swift\nlet a = 1\n```")
+        var f: [String: JSONValue] = [
+            "project": .object(["key": .string(project)]), "issuetype": .object(["id": .string(story.id)]),
+            "summary": .string("[DC test] Story"), "description": try JSONValue(doc),
+            "labels": .array([.string("dc-test")]), "assignee": .object(["name": .string(me.accountId)]),
+        ]
+        f.merge(c.parentFields(epic.key, subtask: false)) { $1 }
+        let created = try await c.createIssue(fields: f)
+
+        // Read: the description comes back as the document sent, the epic as the parent with its summary.
+        var issue = try await c.issue(created.key)
+        var m: [String: String] = [:]
+        XCTAssertEqual(issue.fields.description?.markdown(mentions: &m), doc.markdown(mentions: &m))
+        XCTAssertEqual(issue.fields.parent?.key, epic.key)
+        XCTAssertEqual(issue.fields.parent?.fields.summary, "[DC test] Epic")
+        XCTAssertEqual(issue.fields.assignee?.accountId, me.accountId)
+        let found = try await c.search(jql: "key = \(created.key)")
+        XCTAssertEqual(found.issues.first?.fields.parent?.fields.summary, "[DC test] Epic")
+        let kids = try await c.search(jql: c.childrenJQL([epic.key]))
+        XCTAssertEqual(kids.issues.map(\.key), [created.key])
+        let parents = try await c.search(jql: "project = \(project) AND \(c.levelJQL(1))")
+        XCTAssertTrue(parents.issues.contains { $0.key == epic.key })
+        let count = try await c.approximateCount(jql: "project = \(project)")
+        XCTAssertGreaterThanOrEqual(count, 2)
+
+        // Edit: the parent goes through the epic link, which the edit screen offers as `parent`.
+        let meta = try await c.editMeta(created.key)
+        XCTAssertNotNil(meta.fields["parent"])
+        try await c.editIssue(created.key, fields: c.parentFields(nil, subtask: false))
+        issue = try await c.issue(created.key)
+        XCTAssertNil(issue.fields.parent)
+        try await c.editIssue(created.key, fields: c.parentFields(epic.key, subtask: false))
+        try await c.editIssue(created.key, fields: ["summary": .string("[DC test] Story, edited")])
+
+        // Comments in markup, a mention by username, then gone again.
+        try await c.addComment(
+            created.key, body: .document(markdown: "Hi @Me, *see* `this`", mentions: ["Me": me.accountId]))
+        issue = try await c.issue(created.key)
+        let comment = try XCTUnwrap(issue.fields.comment?.comments.last)
+        XCTAssertEqual(
+            comment.body.content?.first?.content?.map(\.type), ["text", "mention", "text", "text", "text", "text"])
+        try await c.updateComment(created.key, id: comment.id, body: .document(markdown: "edited"))
+        try await c.deleteComment(created.key, id: comment.id)
+
+        // Work log, watching, assignment, transitions, sprints, labels, links, attachments, history.
+        try await c.addWorklog(
+            created.key, seconds: 1800, comment: .document(markdown: "**half** an hour"), started: .now,
+            adjustsEstimate: false)
+        issue = try await c.issue(created.key)
+        let log = try XCTUnwrap(issue.fields.worklog?.worklogs.last)
+        XCTAssertEqual(log.comment?.content?.first?.content?.first?.marks?.first?.type, "strong")
+        try await c.deleteWorklog(created.key, id: log.id)
+        try await c.watch(created.key, false, me: me.accountId)
+        let unwatched = try await c.watchers(created.key)
+        XCTAssertFalse(unwatched.contains { $0.accountId == me.accountId })
+        try await c.watch(created.key, true, me: me.accountId)
+        let watched = try await c.watchers(created.key)
+        XCTAssertTrue(watched.contains { $0.accountId == me.accountId })
+        try await c.assign(created.key, to: nil)
+        let assignable = try await c.assignableUsers(created.key, query: me.accountId)
+        XCTAssertFalse(assignable.isEmpty)
+        let people = try await c.users(matching: me.accountId)
+        XCTAssertFalse(people.isEmpty)
+        let transitions = try await c.transitions(created.key)
+        if let t = transitions.first(where: { $0.to.statusCategory.key == "indeterminate" }) {
+            try await c.transition(created.key, to: t.id)
+        }
+        let labels = try await c.labels()
+        XCTAssertTrue(labels.contains("dc-test"))
+        let boards = try await c.boards(project: project)
+        let board = try XCTUnwrap(boards.first)
+        _ = try await c.boardConfiguration(board.id)
+        _ = try await c.quickFilters(board: board.id)
+        if let sprint = try await c.sprints(board: board.id).first, let field = c.sprintField {
+            try await c.editIssue(created.key, fields: [field: .number(Double(sprint.id))])
+            issue = try await c.issue(created.key)
+            XCTAssertEqual(issue.sprints?.first?.id, sprint.id)
+            XCTAssertEqual(issue.sprints?.first?.state, sprint.state)
+            let page = try await c.boardIssues(board.id, sprint: sprint.id)
+            XCTAssertTrue(page.issues.contains { $0.key == created.key })
+            try await c.editIssue(created.key, fields: [field: .null])
+        }
+        let linkTypes = try await c.linkTypes()
+        let type = try XCTUnwrap(linkTypes.first)
+        try await c.link(type: type.name, from: created.key, to: epic.key)
+        issue = try await c.issue(created.key)
+        let link = try XCTUnwrap(issue.fields.issuelinks?.first)
+        try await c.deleteLink(id: link.id)
+        let uploaded = try await c.uploadAttachment(created.key, data: Data("hello".utf8), filename: "note.txt")
+        let attachment = try XCTUnwrap(uploaded.first)
+        let bytes = try await c.data(for: attachment.content)
+        XCTAssertEqual(bytes, Data("hello".utf8))
+        try await c.deleteAttachment(id: attachment.id)
+        let history = try await c.changelog(created.key)
+        XCTAssertFalse(history.isEmpty)
+        let picked = try await c.pickIssues(query: created.key)
+        XCTAssertFalse(picked.isEmpty)
+        _ = try await c.jqlAutocomplete()
+        _ = try await c.favouriteFilters()
+        let projects = try await c.projects()
+        XCTAssertFalse(projects.isEmpty)
     }
 }
