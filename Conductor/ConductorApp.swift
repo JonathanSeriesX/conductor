@@ -27,7 +27,9 @@ struct ConductorApp: App {
                 .task {
                     await session.restore()
                     Notifier.shared.start(session)
-                    UpdateChecker.shared.checkIfDue()
+                    #if GITHUB_BUILD
+                        UpdateChecker.shared.checkIfDue()
+                    #endif
                 }
                 // Sidebar (200) and list (420) at their narrowest still leave the preview a readable width.
                 .frame(minWidth: 1100, minHeight: 560)
@@ -70,9 +72,12 @@ struct ConductorApp: App {
             CommandGroup(replacing: .textEditing) {
                 Button("Find Issues") { session.focusSearchRequested = true }.keyboardShortcut("f")
             }
-            CommandGroup(after: .appSettings) {
-                Button("Check for Updates…") { UpdateChecker.shared.check(interactive: true) }
-            }
+            // The App Store build updates through the App Store, which forbids an updater of its own.
+            #if GITHUB_BUILD
+                CommandGroup(after: .appSettings) {
+                    Button("Check for Updates…") { UpdateChecker.shared.check(interactive: true) }
+                }
+            #endif
             CommandGroup(replacing: .help) {}  // there is no help book; the system item would only say so
             SidebarCommands()
             ToolbarCommands()
