@@ -295,13 +295,7 @@ struct Foldable<Header: View, Content: View>: View {
     @State private var clip: CGFloat?
     /// Read only when the content folds, so kept where SwiftUI does not watch: as state, the window's edge changed on
     /// every frame of a scroll and re-rendered every card, a 250-comment thread included, each time.
-    @State private var measured = Measured()
-    private final class Measured {
-        /// The content's own height, the header's, and the window's bottom edge from the header's top.
-        var content: CGFloat = 0
-        var header: CGFloat = 0
-        var visibleBottom: CGFloat = .infinity
-    }
+    @State private var measured = FoldMeasure()
     /// Without bounce: a spring's overshoot is a share of the distance, and a long fold travels far.
     private static var curve: Animation { .smooth(duration: 0.25) }
 
@@ -310,6 +304,7 @@ struct Foldable<Header: View, Content: View>: View {
             header
                 .contentShape(.rect)
                 .onTapGesture { fold() }
+                .background(ScrollProbe(measured: measured))
                 .onGeometryChange(for: CGFloat.self) {
                     $0.size.height
                 } action: {
@@ -330,11 +325,6 @@ struct Foldable<Header: View, Content: View>: View {
                     .clipShape(.rect.inset(by: clip == nil ? -1000 : 0))
                     .opacity(collapsed?.wrappedValue == true ? 0 : 1)  // and fades, as it did before
             }
-        }
-        .onGeometryChange(for: CGFloat.self) {
-            $0.bounds(of: .scrollView)?.maxY ?? .infinity
-        } action: {
-            measured.visibleBottom = $0
         }
     }
 
@@ -369,6 +359,36 @@ struct Foldable<Header: View, Content: View>: View {
                 }
             }
         }
+    }
+}
+
+/// What a fold needs to know about its header: its height, its content's, and where the window's bottom edge is.
+private final class FoldMeasure {
+    var content: CGFloat = 0
+    var header: CGFloat = 0
+    /// The header's AppKit view, placed under it by `ScrollProbe`.
+    weak var probe: NSView?
+    /// The scroll view's bottom edge from the header's top, read when a fold starts. Watched through SwiftUI's
+    /// geometry instead, it changed on every frame of a scroll and cost the page a layout pass each time.
+    var visibleBottom: CGFloat {
+        guard let probe, let sv = probe.enclosingScrollView, let doc = sv.documentView else { return .infinity }
+        return probe.convert(sv.documentVisibleRect, from: doc).maxY
+    }
+}
+
+/// An empty view under a header, so the fold can ask AppKit where the header sits in its scroll view.
+private struct ScrollProbe: NSViewRepresentable {
+    let measured: FoldMeasure
+    func makeNSView(context: Context) -> ProbeView {
+        let v = ProbeView()
+        measured.probe = v
+        return v
+    }
+    func updateNSView(_ v: ProbeView, context: Context) { measured.probe = v }
+
+    final class ProbeView: NSView {
+        override var isFlipped: Bool { true }
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
     }
 }
 

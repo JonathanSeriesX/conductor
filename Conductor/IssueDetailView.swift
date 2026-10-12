@@ -306,7 +306,6 @@ struct IssueDetailView: View {
     @State private var isDropTargeted = false
     @FocusState private var summaryFocused: Bool
     @FocusState private var descriptionFocused: Bool
-    @FocusState private var editCommentFocused: Bool
     @FocusState private var commentFocused: Bool
     @State private var commentRequest = 0
     /// Content is under the toolbar: the preview column then draws the toolbar's band.
@@ -498,11 +497,7 @@ struct IssueDetailView: View {
             }
             // The toolbar has no background, so blur what scrolls under it instead of letting buttons sit on text.
             .softScrollEdge(band: embedded ? scrolled : nil)
-            .onScrollGeometryChange(for: Bool.self) {
-                $0.contentOffset.y + $0.contentInsets.top > 1
-            } action: {
-                scrolled = $1
-            }
+            .modifier(ScrolledWatch(on: embedded, scrolled: $scrolled))
             .onChange(of: commentRequest) {
                 // The composer sits at the newest end of the thread.
                 withAnimation { proxy.scrollTo("comments", anchor: newestFirst ? .top : .bottom) }
@@ -1281,65 +1276,56 @@ struct IssueDetailView: View {
             } else if list.isEmpty {
                 Text("No comments yet").foregroundStyle(.tertiary)
             }
-            // Lazy: a comment costs a few ms to build, and a long thread on a step along the trail held the page
-            // for 100 ms. Only the ones on screen are built; the rest as they scroll in.
-            LazyVStack(alignment: .leading, spacing: 16) {
-                ForEach(newestFirst ? list.reversed() : list) { c in
-                    HStack(alignment: .top, spacing: 10) {
-                        Avatar(user: c.author, size: 26)
-                        VStack(alignment: .leading, spacing: 6) {
-                            HStack(spacing: 6) {
-                                Text(c.author?.displayName ?? String(localized: "Unknown")).font(
-                                    .callout.weight(.semibold))
-                                Text(c.created.formatted(.relative(presentation: .named))).font(.caption)
-                                    .foregroundStyle(
-                                        .secondary
-                                    ).help(c.created.formatted())
-                                if c.updated.timeIntervalSince(c.created) > 60 {
-                                    Text("· edited").font(.caption).foregroundStyle(.tertiary)
-                                }
-                                Spacer()
-                                if c.author?.accountId == jira?.me?.accountId, editingCommentID == nil {
-                                    // Plain buttons, not a menu: editing your own comment is a one-click thing.
-                                    Button {
-                                        beginCommentEdit(c)
-                                    } label: {
-                                        Label("Edit", systemImage: "pencil").labelStyle(.iconOnly)
-                                    }
-                                    .buttonStyle(.plain).foregroundStyle(.tertiary).help("Edit comment")
-                                    DeleteButton(help: "Delete comment") { deleteComment(c) }
-                                }
-                            }
-                            if editingCommentID == c.id {
-                                Composer(
-                                    text: $editDraft, mentions: $editMentions, placeholder: "Edit comment",
-                                    uploadImage: uploadPasted, focus: $editCommentFocused,
-                                    actions: AnyView(
-                                        HStack(spacing: 10) {
-                                            Button("Cancel") { cancelCommentEdit() }.glassButton()
-                                                .keyboardShortcut(.cancelAction)
-                                            Button("Save") { saveCommentEdit(c) }.glassButton(prominent: true)
-                                                .keyboardShortcut(
-                                                    editCommentFocused
-                                                        ? KeyboardShortcut(.return, modifiers: .command) : nil
-                                                )
-                                                .disabled(
-                                                    editDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                                        })
-                                )
-                                .focusSoon($editCommentFocused)
-                            } else {
-                                ADFView(node: c.body).background(ReaderMenu())
-                            }
-                        }
-                    }
-                }
+            // AppKit: rows reused as they scroll, text laid out once, so a thread of a thousand comments scrolls at
+            // the display's rate (see CommentThread.swift).
+            if !list.isEmpty {
+                CommentThread(
+                    comments: newestFirst ? list.reversed() : list, attachments: issue.fields.attachment ?? [],
+                    meID: jira?.me?.accountId, editingID: editingCommentID,
+                    editor: { c, focus in AnyView(commentEditor(c, focus: focus)) },
+                    onEdit: beginCommentEdit, onDelete: deleteComment, onPreview: preview, loadImage: loadImage)
             }
             if !newestFirst {
                 Divider()
                 commentComposer()
             }
         }
+    }
+
+    /// The editor on one comment, hosted in its AppKit row: the environment it needs goes with it.
+    private func commentEditor(_ c: Comment, focus: FocusState<Bool>.Binding) -> some View {
+        Composer(
+            text: $editDraft, mentions: $editMentions, placeholder: "Edit comment", uploadImage: uploadPasted,
+            focus: focus,
+            actions: AnyView(
+                HStack(spacing: 10) {
+                    Button("Cancel") { cancelCommentEdit() }.glassButton().keyboardShortcut(.cancelAction)
+                    Button("Save") { saveCommentEdit(c) }.glassButton(prominent: true)
+                        .keyboardShortcut(focus.wrappedValue ? KeyboardShortcut(.return, modifiers: .command) : nil)
+                        .disabled(editDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                })
+        )
+        .environment(session)
+        .environment(\.jira, jira)
+        .environment(\.adfAttachments, store.issue?.fields.attachment ?? [])
+        .environment(\.previewURL, $store.previewURL)
+    }
+
+    /// An image from memory, disk or the site for the thread's rows, as `RemoteImage` and `InlineImage` load theirs.
+    private func loadImage(_ url: URL, maxPixels: Int) async -> NSImage? {
+        if let hit = ImageCache.shared.object(forKey: url as NSURL) { return hit }
+        if let data = await DiskCache.imageData(for: url),
+            let img = await DiskCache.decodeImage(data, maxPixels: maxPixels)
+        {
+            ImageCache.shared.setObject(img, forKey: url as NSURL)
+            return img
+        }
+        guard let client = session.client(for: url), let data = try? await client.data(for: url),
+            let img = await DiskCache.decodeImage(data, maxPixels: maxPixels)
+        else { return nil }
+        DiskCache.saveImage(data, for: url)
+        ImageCache.shared.setObject(img, forKey: url as NSURL)
+        return img
     }
 
     private func commentComposer() -> some View {
@@ -2360,6 +2346,24 @@ struct LogWorkView: View {
         }
         let leftovers = t.replacing(/(\d+(?:\.\d+)?)\s*[wdhm]/, with: "").trimmingCharacters(in: .whitespaces)
         return matched && leftovers.isEmpty && total > 0 ? Int(total) : nil
+    }
+}
+
+/// Whether content has scrolled under the toolbar, for the preview column's band. A window does without: watched,
+/// the scroll position ran through SwiftUI's graph on every frame of a scroll.
+private struct ScrolledWatch: ViewModifier {
+    let on: Bool
+    @Binding var scrolled: Bool
+    @ViewBuilder func body(content: Content) -> some View {
+        if on {
+            content.onScrollGeometryChange(for: Bool.self) {
+                $0.contentOffset.y + $0.contentInsets.top > 1
+            } action: {
+                scrolled = $1
+            }
+        } else {
+            content
+        }
     }
 }
 

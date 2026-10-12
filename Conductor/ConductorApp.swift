@@ -18,6 +18,7 @@ struct ConductorApp: App {
         PopoverFocusReturn.install()
         Shortcuts.guardTyping()
         ReaderMenus.install()
+        _ = Self.probe
     }
 
     var body: some Scene {
@@ -380,3 +381,45 @@ struct RootView: View {
         if let id = filters.account, session.state(id) == nil, let f = session.filters(for: .assigned) { filters = f }
     }
 }
+
+#if DEBUG
+    /// With CONDUCTOR_FRAMES set: once a second, how many display-link ticks the main thread answered late (over
+    /// 12.5 ms apart, a dropped frame at 120 Hz) and the longest gap, on stderr. For scroll tests; the screen
+    /// recorder counts the window server's drops too.
+    @MainActor final class FrameProbe: NSObject {
+        static let shared = FrameProbe()
+        private var link: CADisplayLink?
+        private var last: CFTimeInterval = 0
+        private var n = 0, late = 0, worst: CFTimeInterval = 0, second: CFTimeInterval = 0
+        func start() {
+            link = NSScreen.screens[0].displayLink(target: self, selector: #selector(tick))
+            link?.add(to: .main, forMode: .common)
+        }
+        @objc private func tick(_ l: CADisplayLink) {
+            let now = CACurrentMediaTime()
+            if last > 0 {
+                let dt = now - last
+                n += 1
+                if dt > 0.0125 { late += 1 }
+                worst = max(worst, dt)
+            }
+            last = now
+            if now - second > 1 {
+                FileHandle.standardError.write(
+                    "FRAMES \(n) late \(late) worst \(Int(worst * 1000))ms\n".data(using: .utf8)!)
+                n = 0
+                late = 0
+                worst = 0
+                second = now
+            }
+        }
+    }
+
+    extension ConductorApp {
+        static let probe: Void = {
+            if ProcessInfo.processInfo.environment["CONDUCTOR_FRAMES"] != nil { FrameProbe.shared.start() }
+        }()
+    }
+#else
+    extension ConductorApp { static let probe: Void = () }
+#endif
