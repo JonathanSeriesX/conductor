@@ -444,6 +444,14 @@ struct SidebarView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 14).padding(.vertical, 8)
         }
+        // Double-click (or ↩) on a project row opens its board. Read here, not with a double-tap recogniser on the
+        // row: that made every single click wait out the double-click interval before the list switched.
+        .contextMenu(forSelectionType: ListFilters.self) { _ in } primaryAction: { rows in
+            guard let f = rows.first, let id = f.account, let key = f.project else { return }
+            var bare = ListFilters()
+            (bare.account, bare.project) = (id, key)
+            if f == bare { openWindow(id: "board", value: BoardTarget(accountID: id, projectKey: key)) }
+        }
         .sheet(isPresented: $showAddAccount) { LoginView(isSheet: true) }
         .onChange(of: session.addAccountRequested) { _, on in
             if on {
@@ -560,7 +568,6 @@ struct SidebarView: View {
                 .clipShape(.rect(cornerRadius: 4))
         }
         .tag(row)
-        .onTapGesture(count: 2) { openWindow(id: "board", value: BoardTarget(accountID: st.id, projectKey: p.key)) }
         .contextMenu {
             Button("Open Board", systemImage: "rectangle.split.3x1") {
                 openWindow(id: "board", value: BoardTarget(accountID: st.id, projectKey: p.key))
