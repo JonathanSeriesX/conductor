@@ -5529,96 +5529,96 @@
         }
       }
     },
-    "Add label, ↩ to add" : {
+    "New label · ↩ to add · ⌘↩ to save" : {
       "localizations" : {
         "ar" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "أضف تسمية، ↩ للإضافة"
+            "value" : "تسمية جديدة · ↩ للإضافة · ⌘↩ للحفظ"
           }
         },
         "de" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Stichwort, ↩ zum Hinzufügen"
+            "value" : "Neues Stichwort · ↩ hinzufügen · ⌘↩ speichern"
           }
         },
         "es" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Añadir etiqueta, ↩ para añadir"
+            "value" : "Nueva etiqueta · ↩ añadir · ⌘↩ guardar"
           }
         },
         "fr" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Nouvelle étiquette, ↩ pour l’ajouter"
+            "value" : "Nouvelle étiquette · ↩ ajouter · ⌘↩ enregistrer"
           }
         },
         "hi" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "लेबल लिखें, जोड़ने के लिए ↩"
+            "value" : "नया लेबल · ↩ जोड़ें · ⌘↩ सहेजें"
           }
         },
         "it" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Nuova etichetta, ↩ per aggiungere"
+            "value" : "Nuova etichetta · ↩ aggiungi · ⌘↩ salva"
           }
         },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "ラベルを入力して ↩ で追加"
+            "value" : "新しいラベル · ↩ で追加 · ⌘↩ で保存"
           }
         },
         "ko" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "레이블 입력, ↩ 추가"
+            "value" : "새 레이블 · ↩ 추가 · ⌘↩ 저장"
           }
         },
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Nowa etykieta, ↩ — dodaj"
+            "value" : "Nowa etykieta · ↩ — dodaj · ⌘↩ — zachowaj"
           }
         },
         "pt-BR" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Adicionar rótulo, ↩ para incluir"
+            "value" : "Novo rótulo · ↩ adicionar · ⌘↩ salvar"
           }
         },
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Новая метка, ↩ — добавить"
+            "value" : "Новая метка · ↩ — добавить · ⌘↩ — сохранить"
           }
         },
         "tr" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Etiket ekle, ↩ ile onayla"
+            "value" : "Yeni etiket · ↩ ekle · ⌘↩ kaydet"
           }
         },
         "uk" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Нова мітка, ↩ — додати"
+            "value" : "Нова мітка · ↩ — додати · ⌘↩ — зберегти"
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "输入标签，按 ↩ 添加"
+            "value" : "新标签 · ↩ 添加 · ⌘↩ 保存"
           }
         },
         "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "輸入標籤，按 ↩ 新增"
+            "value" : "新標籤 · ↩ 新增 · ⌘↩ 儲存"
           }
         }
       }

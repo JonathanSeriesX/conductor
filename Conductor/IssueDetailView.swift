@@ -294,6 +294,8 @@ struct IssueDetailView: View {
     @State private var editMentions: [String: String] = [:]
     @State private var showAssign = false
     @State private var showLabels = false
+    /// Too near the bottom of the window for the labels editor to open below its row.
+    @State private var labelsLow = false
     @State private var showLink = false
     @State private var showLogWork = false
     @State private var showDueDate = false
@@ -570,7 +572,7 @@ struct IssueDetailView: View {
                 TextField("Summary", text: Binding($summaryDraft, or: ""), axis: .vertical)
                     .font(.system(.largeTitle, design: .rounded, weight: .semibold))
                     .textFieldStyle(.plain)
-                    .lineLimit(1...4)
+                    .lineLimit(1...)
                     .focused($summaryFocused)
                     .onSubmit { saveSummary() }
                     .onExitCommand {
@@ -680,7 +682,14 @@ struct IssueDetailView: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(!store.canEdit("labels"))
-                .popover(isPresented: $showLabels, arrowEdge: .bottom) {
+                // Above the row when the whole editor (field, six matches, Save) would run past the bottom of the
+                // window: opened below, it jumps up as the matches appear.
+                .onGeometryChange(for: Bool.self) { p in
+                    (p.bounds(of: .scrollView)?.maxY ?? .infinity) - p.size.height < 360
+                } action: {
+                    labelsLow = $0
+                }
+                .popover(isPresented: $showLabels, arrowEdge: labelsLow ? .top : .bottom) {
                     LabelsEditor(labels: labels, suggestions: store.allLabels) { new in
                         showLabels = false
                         run { try await $0.editIssue(key, fields: ["labels": .array(new.map(JSONValue.string))]) }
@@ -2149,6 +2158,8 @@ struct LabelsEditor: View {
     var suggestions: [String] = []
     var onSave: ([String]) -> Void
     @State private var draft = ""
+    /// The match ↓ and ↑ walked to, which ↩ adds.
+    @State private var highlighted: Int?
     @FocusState private var focused: Bool
 
     private var matches: [String] {
@@ -2162,9 +2173,16 @@ struct LabelsEditor: View {
             Text("Labels").font(.headline)
             if labels.isEmpty { Text("No labels").foregroundStyle(.tertiary).font(.callout) }
             Wrap { ForEach(labels, id: \.self) { l in Chip(text: l) { labels.removeAll { $0 == l } } } }
-            TextField("Add label, ↩ to add", text: $draft).textFieldStyle(.roundedBorder).onSubmit(add).focused(
-                $focused)
-            ForEach(matches, id: \.self) { m in
+            TextField("New label · ↩ to add · ⌘↩ to save", text: $draft).textFieldStyle(.roundedBorder)
+                .onSubmit(add).focused($focused)
+                .onKeyPress(.downArrow) { step(1) }
+                .onKeyPress(.upArrow) { step(-1) }
+                // A comma ends a label, so several can be typed or pasted in one go.
+                .onChange(of: draft) {
+                    highlighted = nil
+                    if draft.contains(",") { add() }
+                }
+            ForEach(Array(matches.enumerated()), id: \.element) { i, m in
                 Button {
                     labels.append(m)
                     draft = ""
@@ -2172,6 +2190,7 @@ struct LabelsEditor: View {
                     Text(m).frame(maxWidth: .infinity, alignment: .leading).contentShape(.rect)
                 }
                 .buttonStyle(.plain).padding(.horizontal, 6).padding(.vertical, 3)
+                .background(i == highlighted ? Color.accentColor.opacity(0.18) : .clear, in: .rect(cornerRadius: 6))
             }
             HStack {
                 Spacer()
@@ -2186,10 +2205,21 @@ struct LabelsEditor: View {
         .focusSoon($focused)
     }
 
+    private func step(_ by: Int) -> KeyPress.Result {
+        guard !matches.isEmpty else { return .ignored }
+        highlighted = max(0, min(matches.count - 1, (highlighted ?? -1) + by))
+        return .handled
+    }
+
     private func add() {
-        let l = draft.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: " ", with: "-")
-        guard !l.isEmpty else { return }
-        if !labels.contains(l) { labels.append(l) }
+        if let h = highlighted, matches.indices.contains(h) {
+            labels.append(matches[h])
+        } else {
+            for l in draft.split(separator: ",") {
+                let l = l.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: " ", with: "-")
+                if !l.isEmpty, !labels.contains(l) { labels.append(l) }
+            }
+        }
         draft = ""
     }
 }
