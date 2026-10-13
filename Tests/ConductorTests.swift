@@ -94,6 +94,43 @@ final class JQLTests: XCTestCase {
             ["ES-1", "ES-2", "ES-4", "ES-3"])
     }
 
+    /// A merged list waits only for the others' rows that tie with the slowest account's last one: that account's
+    /// own tied rows show at once, in Jira's order. A reload keeps the rows below its fresh page until one reaches them.
+    @MainActor func testMergeShowsTheWaitingAccountsTiesAndAReloadNeverShortensTheList() throws {
+        let site = { (h: String) in
+            AccountState(account: Account(site: URL(string: "https://\(h).atlassian.net")!, email: "e", token: "t"))
+        }
+        let (a, b) = (site("a"), site("b"))
+        let decoder = a.client.decoder
+        func row(_ key: String, _ second: Int, _ st: AccountState) throws -> ListRow {
+            let issue = try decoder.decode(
+                Issue.self,
+                from: Data(
+                    #"{"id":"1","key":"\#(key)","fields":{"summary":"s","updated":"2026-10-05T09:00:\#(String(format: "%02d", second)).000Z","status":{"id":"1","name":"To Do","statusCategory":{"key":"new","name":"To Do"}},"issuetype":{"id":"1","name":"Task"}}}"#
+                        .utf8))
+            return ListRow(issue: issue, state: st)
+        }
+        // A's page ends in a tie that runs on into its next page; its keys sort against Jira's order on purpose.
+        let rowsA = [try row("A-1", 10, a), try row("A-9", 5, a), try row("A-10", 5, a), try row("A-2", 5, a)]
+        let rowsB = [try row("B-1", 7, b), try row("B-2", 5, b), try row("B-3", 3, b)]
+        let sort = ListFilters.Sort(field: .updated, descending: true)
+        XCTAssertEqual(
+            IssueListStore.merge([rowsA, rowsB], bound: rowsA.last, sort: sort).map(\.issue.key),
+            ["A-1", "B-1", "A-9", "A-10", "A-2"])
+        XCTAssertEqual(
+            IssueListStore.merge([rowsA, rowsB], bound: nil, sort: sort).map(\.issue.key),
+            ["A-1", "B-1", "A-9", "A-10", "A-2", "B-2", "B-3"], "everything is in: ties go in account order")
+
+        // B-0 is new, B-2 moved further down: the rows below the fresh page stay, less what it already holds.
+        let old = [try row("B-1", 7, b), try row("B-2", 5, b), try row("B-3", 3, b), try row("B-4", 2, b)]
+        let fresh = [try row("B-0", 9, b), try row("B-1", 7, b), try row("B-3", 3, b)]
+        XCTAssertEqual(
+            IssueListStore.refreshed(old, fetched: fresh, more: true).map(\.issue.key), ["B-0", "B-1", "B-3", "B-4"])
+        XCTAssertEqual(
+            IssueListStore.refreshed(old, fetched: fresh, more: false).map(\.issue.key), ["B-0", "B-1", "B-3"],
+            "the list ends with the fresh rows")
+    }
+
     /// Jira puts undated issues first under "duedate DESC"; the list puts them last whichever way it sorts.
     @MainActor func testDueDateOrderPutsUndatedLast() throws {
         func issue(_ key: String, due: String?) throws -> Issue {

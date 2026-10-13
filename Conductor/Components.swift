@@ -881,6 +881,9 @@ struct PageKeys: NSViewRepresentable {
         guard let rect = targets.lazy.compactMap({ self.frames[$0] }).first, let page else { return action() }
         page.reveal(rect, placement, then: action)
     }
+
+    /// The page at its top, in the same frame: see `PageKeyView.toTop`.
+    func toTop() { page?.toTop() }
 }
 
 extension View {
@@ -958,6 +961,17 @@ final class PageKeyView: NSView {
         if (fr as? NSTextView)?.isEditable == true || fr is NSTableView { return false }
         if let v = fr as? NSView, v.isDescendant(of: sv) { return true }
         return standalone
+    }
+
+    /// The page's top at the toolbar's inset, where it rests, in the update that shows the next issue: no frame of it
+    /// at the last one's scroll position, as `ScrollViewProxy.scrollTo` left.
+    func toTop() {
+        guard let sv = enclosingScrollView else { return }
+        let clip = sv.contentView
+        let y = -sv.contentInsets.top
+        guard abs(clip.bounds.minY - y) >= 0.5 else { return }
+        clip.setBoundsOrigin(NSPoint(x: clip.bounds.minX, y: y))
+        sv.reflectScrolledClipView(clip)
     }
 
     /// `rect` is in the page's coordinates. See `PageReveal`.

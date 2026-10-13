@@ -55,18 +55,23 @@ final class IssueDetailStore {
     /// A row from a list has the summary and status but no description or comments yet.
     var isPartial: Bool { issue?.fields.comment == nil }
 
-    /// The issue this store holds. One store serves the preview column across selections.
+    /// The issue this store holds, and its account: one store serves the preview column across selections, and a
+    /// search for a key lists that key once per site. By the key alone, QA-16 of another site was the same issue,
+    /// so the page kept the first one and every click on the others did nothing.
     private(set) var key: String?
+    private(set) var account: UUID?
+    func holds(_ state: AccountState, _ key: String) -> Bool { self.key == key && account == state.id }
 
     func load(_ state: AccountState, key: String, full: Bool = true) async {
         let client = state.client
         var pending: Task<Issue, Error>?
-        if self.key != key {
+        if !holds(state, key) {
             // Another issue. Everything the page is built from is gathered first and put in place in one step;
             // until then the previous issue stays on screen. Shown piecemeal (the list row's copy, then the
             // disk's), each step pushed the cards around. Replies for an issue left meanwhile are dropped by the
             // key checks after each await.
             self.key = key
+            account = state.id
             let account = state.account
             async let diskIssue: Issue? = DiskCache.loadAsync(account: account, name: "issue-\(key)")
             async let diskMeta: EditMeta? = DiskCache.loadAsync(account: account, name: "editmeta-\(key)")
@@ -74,7 +79,7 @@ final class IssueDetailStore {
             async let diskChildren: [Issue]? =
                 full ? DiskCache.loadAsync(account: account, name: "children-\(key)") : nil
             let (cached, meta, trans, kids) = await (diskIssue, diskMeta, diskTransitions, diskChildren)
-            guard self.key == key else { return }
+            guard holds(state, key) else { return }
             // Memory's copy when it is full, no less complete than the disk's and at least as new.
             var next = cached
             if let p = state.peek[key], p.fields.comment != nil, p.isComplete || cached?.isComplete != true,
@@ -88,24 +93,24 @@ final class IssueDetailStore {
                 let fetch = Task { try await client.issue(key) }
                 pending = fetch
                 next = await Self.first(of: fetch, within: .milliseconds(1500))
-                guard self.key == key else { return }
+                guard holds(state, key) else { return }
             } else if let n = next, !n.isComplete {
                 // A prefetched copy carries Jira's first 20 comments: the rest first, so the thread shows whole
                 // rather than growing under the reader. Offline or slow, the copy as it is after three seconds.
                 let complete = Task { try await client.completing(n) }
                 next = await Self.first(of: complete, within: .seconds(3)) ?? n
-                guard self.key == key else { return }
+                guard holds(state, key) else { return }
             }
             let shown = next ?? state.peek[key]
             // Assignees of subtasks, children and links from memory and disk, before any request.
             let seeds = await Self.known(Self.relatedKeys(of: shown, children: kids ?? []), state: state)
-            guard self.key == key else { return }
+            guard holds(state, key) else { return }
             var list: [Sprint] = []
             if full, let project = shown?.fields.project?.key,
                 meta.map({ m in client.sprintField.map { m.fields[$0] != nil } ?? false }) ?? false
             {
                 list = await state.cachedSprints(project: project)  // never Jira: the fresh list comes after
-                guard self.key == key else { return }
+                guard holds(state, key) else { return }
             }
             issue = shown
             editMeta = meta ?? shown.flatMap { state.editMetaByWorkflow[AccountState.workflowKey($0)] }
@@ -124,21 +129,21 @@ final class IssueDetailStore {
             async let kids = full ? client.search(jql: client.childrenJQL([key]) + " ORDER BY created ASC") : nil
             async let types = full ? state.linkTypes() : nil
             let fresh = try await i.value
-            guard self.key == key else { return }
+            guard holds(state, key) else { return }
             update(\.issue, fresh)
             DiskCache.saveAsync(fresh, account: state.account, name: "issue-\(key)")
             Spotlight.index([fresh], host: state.host)
-            if let fresh = try? await t, self.key == key {
+            if let fresh = try? await t, holds(state, key) {
                 update(\.transitions, fresh)
                 DiskCache.saveAsync(fresh, account: state.account, name: "transitions-\(key)")
                 if let i = issue { state.learnTransitions(fresh, of: i) }
             }
-            if let fresh = try? await m, self.key == key {
+            if let fresh = try? await m, holds(state, key) {
                 update(\.editMeta, fresh)
                 DiskCache.saveAsync(fresh, account: state.account, name: "editmeta-\(key)")
             }
             if full {
-                if let page = try? await kids, self.key == key {
+                if let page = try? await kids, holds(state, key) {
                     update(\.children, page.issues.filter { !$0.fields.issuetype.isSubtask })
                     DiskCache.saveAsync(children, account: state.account, name: "children-\(key)")
                 }
@@ -146,7 +151,7 @@ final class IssueDetailStore {
                 prefetchRelated(state)
             }
         } catch {
-            guard self.key == key else { return }
+            guard holds(state, key) else { return }
             if (error as? JiraError)?.status == 404 {
                 gone = true
                 issue = nil
@@ -157,21 +162,21 @@ final class IssueDetailStore {
         }
         if full, canEdit(client.sprintField), let project = issue?.fields.project?.key {
             let list = await state.sprints(project: project)
-            if self.key == key { update(\.sprints, list) }
+            if holds(state, key) { update(\.sprints, list) }
         }
         if full, let project = issue?.fields.project?.key {
             state.warm("assignable-\(project)") { try await client.assignableUsers(project: project, query: "") }
         }
         if full, allLabels.isEmpty, canEdit("labels") {
             let (now, fresh) = state.memo("labels") { try await client.labels() }
-            if let now, self.key == key { update(\.allLabels, now) }
-            if let list = await fresh.value, self.key == key { update(\.allLabels, list) }
+            if let now, holds(state, key) { update(\.allLabels, now) }
+            if let list = await fresh.value, holds(state, key) { update(\.allLabels, list) }
         }
     }
 
     /// Takes a change announced from elsewhere (a card moved on a board) before this page's own reload.
     func apply(_ c: Session.IssueChange) {
-        guard c.targets.contains(where: { $0.key == key }) else { return }
+        guard c.targets.contains(where: { $0.key == key && $0.accountID == account }) else { return }
         if let i = c.issue {
             if i.key == key { update(\.issue, i) }
         } else if let change = c.change, var i = issue {
@@ -206,9 +211,9 @@ final class IssueDetailStore {
         for k in keys where related[k] == nil { if let p = state.peek[k] { related[k] = p } }
         let missing = Set(keys).filter { state.prefetched[$0] == nil || state.peek[$0] == nil }
         guard !missing.isEmpty else { return }
-        let key = self.key
+        guard let key else { return }
         Task { @MainActor in
-            for i in await state.fetchDetails(Array(missing)) where self.key == key { related[i.key] = i }
+            for i in await state.fetchDetails(Array(missing)) where holds(state, key) { related[i.key] = i }
         }
     }
 
@@ -249,7 +254,7 @@ final class IssueDetailStore {
             return false
         }
         // The page may show another issue by now: refreshing this one would put its body under that key.
-        if self.key == key { await load(state, key: key, full: false) }
+        if holds(state, key) { await load(state, key: key, full: false) }
         return true
     }
 }
@@ -336,7 +341,9 @@ struct IssueDetailView: View {
     /// The load this page's own write would trigger: `perform` has refreshed the issue already.
     @State private var ownLoad = ""
     @Environment(\.scenePhase) private var scenePhase
-    private var loadID: String { "\(key)|\(session.reloadTick)|\(session.writeTicks[key] ?? 0)" }
+    private var loadID: String {
+        "\(target.accountID)|\(key)|\(session.reloadTick)|\(session.writeTicks[key] ?? 0)"
+    }
 
     var body: some View {
         Group {
@@ -375,7 +382,7 @@ struct IssueDetailView: View {
         }
         // A write to this issue in another window bumps its tick, so this page follows it.
         .task(id: loadID) {
-            if let jira, store.key != key || loadID != ownLoad { await store.load(jira, key: key) }
+            if let jira, !store.holds(jira, key) || loadID != ownLoad { await store.load(jira, key: key) }
         }
         // The same view serves one issue after another (a fresh view would take the toolbar with it for a frame).
         .onChange(of: target) { old, _ in
@@ -502,15 +509,13 @@ struct IssueDetailView: View {
                 .padding(.top, embedded ? 10 : 12)
                 .coordinateSpace(.named(PageReveal.space))
                 .background(PageKeys(standalone: !embedded, reveal: pageReveal))
-                // The anchor is the padded page, not the header: scrolled to its top, the header kept none of the
-                // padding above it, and every next issue sat 10 pt higher than the first.
-                .id("top")
             }
             // The toolbar has no background, so blur what scrolls under it instead of letting buttons sit on text.
             .softScrollEdge(band: embedded ? scrolled : nil)
             .modifier(ScrolledWatch(on: embedded, scrolled: $scrolled))
-            // When the next issue is on screen, not when it was asked for: the previous one stays until then.
-            .onChange(of: store.issue?.key) { proxy.scrollTo("top", anchor: .top) }
+            // When the next issue is on screen, not when it was asked for: the previous one stays until then. By
+            // its id too: the same key on another site is another issue.
+            .onChange(of: store.issue.map { "\($0.id)|\($0.key)" }) { pageReveal.toTop() }
             #if DEBUG
                 .task {
                     guard ProcessInfo.processInfo.environment["CONDUCTOR_SCROLL"] == "comments" else { return }
@@ -682,6 +687,7 @@ struct IssueDetailView: View {
                     node: d, attachments: issue.fields.attachment ?? [], loadImage: loadImage, onPreview: preview,
                     client: jira?.client, toggleTask: flip
                 )
+                .padding(.horizontal, -TextLayout.pad)  // the view's gutter for code pills, outside the card's text
                 .frame(maxWidth: .infinity, alignment: .leading)
             } else if store.isPartial {
                 DelayedSpinner()
@@ -1388,14 +1394,19 @@ struct IssueDetailView: View {
 
     @ToolbarContentBuilder private var toolbar: some ToolbarContent {
         // The preview column's Back sits with its actions; a split view would put a .navigation item at the
-        // window's leading edge, over the list.
+        // window's leading edge, over the list. Always there, greyed with nowhere to go, as Safari's: arriving with
+        // the first step to a subtask, it shoved Refresh and the centred actions sideways, and Refresh blinked out
+        // for a frame.
         if embedded {
             ToolbarItem {
-                if let back {
-                    Button(action: back) { Label("Back", systemImage: "chevron.backward") }
-                        .help("Back to the previous issue (⌘[)")
-                        .keyboardShortcut("[", modifiers: .command)
+                Button {
+                    back?()
+                } label: {
+                    Label("Back", systemImage: "chevron.backward")
                 }
+                .help("Back to the previous issue (⌘[)")
+                .keyboardShortcut("[", modifiers: .command)
+                .disabled(back == nil)
             }
         }
         // A window's title is the crumb, with Back before it (see WindowTitle).
@@ -1617,7 +1628,7 @@ struct IssueDetailView: View {
         return Task {
             let ok = await store.perform(jira, key: key, op)
             if ok {
-                ownLoad = "\(key)|\(session.reloadTick)|\((session.writeTicks[key] ?? 0) + 1)"
+                ownLoad = "\(target.accountID)|\(key)|\(session.reloadTick)|\((session.writeTicks[key] ?? 0) + 1)"
                 session.writeTicks[key, default: 0] += 1
                 session.listTick += 1
             }
@@ -1638,7 +1649,9 @@ struct IssueDetailView: View {
             store.issue?.fields = f
         }
         let task = run(op)
-        Task { if !(await task.value), store.key == before?.key { store.issue = before } }
+        Task {
+            if !(await task.value), store.key == before?.key, store.account == target.accountID { store.issue = before }
+        }
         return task
     }
 
@@ -2619,7 +2632,10 @@ private struct CrumbStep: ViewModifier {
     let dx: CGFloat
     let away: Bool
     func body(content: Content) -> some View {
-        content.offset(x: away ? dx : 0).blur(radius: away ? 3 : 0).opacity(away ? 0 : 1)
+        // The travel as a drawing effect: a toolbar item applied `.offset` at once, so the old title jumped its 10 pt
+        // in one frame and only then blurred out where it landed.
+        content.visualEffect { [away, dx] c, _ in c.offset(x: away ? dx : 0) }.blur(radius: away ? 3 : 0)
+            .opacity(away ? 0 : 1)
     }
 }
 

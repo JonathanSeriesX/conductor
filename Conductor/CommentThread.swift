@@ -402,20 +402,20 @@ private struct HostedEditor: View {
     }
 }
 
-/// Lays text out as the rows' text views do (TextKit 1, no padding) and reports its height.
+/// Lays text out as the rows' text views do (TextKit 1, the pill gutter) and reports its height at a text width.
 @MainActor private final class TextMeasurer {
     private let storage = NSTextStorage()
-    private let manager = NSLayoutManager()
+    private let manager = TextLayout()
     private let container = NSTextContainer(size: NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude))
 
     init() {
-        container.lineFragmentPadding = 0
+        container.lineFragmentPadding = TextLayout.pad
         manager.addTextContainer(container)
         storage.addLayoutManager(manager)
     }
 
     func height(of s: NSAttributedString, width: CGFloat) -> CGFloat {
-        container.size = NSSize(width: max(1, width), height: CGFloat.greatestFiniteMagnitude)
+        container.size = NSSize(width: max(1, width) + 2 * TextLayout.pad, height: CGFloat.greatestFiniteMagnitude)
         storage.setAttributedString(s)
         manager.ensureLayout(for: container)
         return ceil(manager.usedRect(for: container).height)
@@ -620,7 +620,11 @@ private struct HostedEditor: View {
         if !edited.isHidden { place(edited, x - 2, (hh - es.height) / 2, es.width, es.height) }
         let by = hh + 6
         let bh = max(0, bounds.height - by)
-        if let editorView { place(editorView, cx, by, cw, bh) } else { place(body, cx, by, cw, bh) }
+        if let editorView {
+            place(editorView, cx, by, cw, bh)
+        } else {
+            place(body, cx - TextLayout.pad, by, cw + 2 * TextLayout.pad, bh)
+        }
         // The whole text now, not line by line as it draws: laid out in pieces while a row scrolls in, a table's
         // first row came out short.
         if !body.isHidden, let tc = body.textContainer { body.layoutManager?.ensureLayout(for: tc) }
@@ -696,9 +700,12 @@ class CommentTextView: NSTextView {
 
     init() {
         let storage = NSTextStorage()
-        let manager = NSLayoutManager()
+        let manager = TextLayout()
         let container = NSTextContainer(size: NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude))
-        container.lineFragmentPadding = 0
+        // Room for a code pill's rounded end at the start of a line (see `TextLayout`): TextKit draws nothing outside
+        // a line, so the line starts this far before the text, and whoever places the view makes it as much wider
+        // on each side.
+        container.lineFragmentPadding = TextLayout.pad
         container.widthTracksTextView = true
         storage.addLayoutManager(manager)
         manager.addTextContainer(container)
@@ -811,7 +818,8 @@ class CommentTextView: NSTextView {
 
     /// The attachment cell under the pointer, with its frame.
     private func cell(at event: NSEvent) -> (cell: NSTextAttachmentCell, frame: NSRect)? {
-        let p = convert(event.locationInWindow, from: nil)
+        let o = textContainerOrigin
+        let p = convert(event.locationInWindow, from: nil).applying(.init(translationX: -o.x, y: -o.y))
         guard let lm = layoutManager, let tc = textContainer, let storage = textStorage, storage.length > 0 else {
             return nil
         }
@@ -823,12 +831,13 @@ class CommentTextView: NSTextView {
             let cell = (storage.attribute(.attachment, at: i, effectiveRange: nil) as? NSTextAttachment)?.attachmentCell
                 as? NSTextAttachmentCell
         else { return nil }
-        return (cell, frame)
+        return (cell, frame.offsetBy(dx: o.x, dy: o.y))
     }
 
     /// An attribute of the text under the pointer; nil off the text (to the right of a short line, say).
     private func attribute(_ key: NSAttributedString.Key, at event: NSEvent) -> Any? {
-        let p = convert(event.locationInWindow, from: nil)
+        let o = textContainerOrigin
+        let p = convert(event.locationInWindow, from: nil).applying(.init(translationX: -o.x, y: -o.y))
         guard let lm = layoutManager, let tc = textContainer, let storage = textStorage, storage.length > 0 else {
             return nil
         }
@@ -836,6 +845,10 @@ class CommentTextView: NSTextView {
         guard lm.lineFragmentUsedRect(forGlyphAt: glyph, effectiveRange: nil).contains(p) else { return nil }
         return storage.attribute(key, at: lm.characterIndexForGlyph(at: glyph), effectiveRange: nil)
     }
+
+    /// Never scrolls the page: on every resize NSTextView brings its selection into view, unselected or not, and laid
+    /// out as the next issue appeared, a comment pulled the whole page up under the toolbar to its first line.
+    override func scrollToVisible(_ rect: NSRect) -> Bool { false }
 
     /// Quick Look asks the first responder first, and a text view answers for its selected attachments: none, so
     /// the panel opened by `.quickLookPreview` read "No items selected" once a comment had been clicked.
@@ -868,8 +881,8 @@ struct DescriptionText: NSViewRepresentable {
     }
 
     func sizeThatFits(_ proposal: ProposedViewSize, nsView v: DescriptionTextView, context: Context) -> CGSize? {
-        guard let w = proposal.width, w.isFinite, w > 0 else { return nil }
-        return CGSize(width: w, height: v.height(at: w))
+        guard let w = proposal.width, w.isFinite, w > 2 * TextLayout.pad else { return nil }
+        return CGSize(width: w, height: v.height(at: w - 2 * TextLayout.pad))
     }
 }
 
@@ -1270,7 +1283,14 @@ struct DescriptionText: NSViewRepresentable {
 
     private func inline(_ node: ADFNode, _ base: Base) -> NSAttributedString {
         let s = NSMutableAttributedString()
-        for n in node.content ?? [] { s.append(run(n, base)) }
+        for n in node.content ?? [] {
+            let r = run(n, base)
+            // A code pill's room before it: the character ahead of it moves its successor along.
+            if r.length > 0, s.length > 0, r.attribute(.code, at: 0, effectiveRange: nil) != nil {
+                s.addAttribute(.kern, value: TextLayout.room, range: NSRange(location: s.length - 1, length: 1))
+            }
+            s.append(r)
+        }
         return s
     }
 
@@ -1293,8 +1313,21 @@ struct DescriptionText: NSViewRepresentable {
                 default: break
                 }
             }
-            attrs[.font] = base.font(mono: code, bold: bold, italic: italic)
-            if code { attrs[.backgroundColor] = NSColor.labelColor.withAlphaComponent(0.08) }
+            if code {
+                // A size under the text's, as monospaced letters run large beside it, on a pill (see `TextLayout`).
+                var mono = base
+                mono.size = (base.size * 0.9).rounded()
+                attrs[.font] = mono.font(mono: true, bold: bold, italic: italic)
+                let text = node.text ?? ""
+                attrs[.code] =
+                    ceil(NSAttributedString(string: text, attributes: attrs).size().width) + 2 * TextLayout.room
+                let s = NSMutableAttributedString(string: text, attributes: attrs)
+                if s.length > 0 {
+                    s.addAttribute(.kern, value: TextLayout.room, range: NSRange(location: s.length - 1, length: 1))
+                }
+                return s
+            }
+            attrs[.font] = base.font(bold: bold, italic: italic)
             return NSAttributedString(string: node.text ?? "", attributes: attrs)
         case "hardBreak":
             return NSAttributedString(string: "\u{2028}", attributes: [.font: base.font()])
@@ -1637,6 +1670,57 @@ final class ChipCell: NSTextAttachmentCell {
 extension NSAttributedString.Key {
     /// On an expand's title line: the expand's path, for the click that opens or closes it.
     static let expand = NSAttributedString.Key("conductor.expand")
+    /// On inline code: the run's width with its pill, which `TextLayout` draws and keeps on one line while short.
+    static let code = NSAttributedString.Key("conductor.code")
+}
+
+/// TextKit 1 with inline code as GitHub and Slack draw it: a rounded pill around each line's part of the run, where
+/// `.backgroundColor` filled whole line heights and, on a wrapped run, ran to the edge of the text on both lines.
+/// A run up to half a line wide never wraps: it moves to the next line whole.
+final class TextLayout: NSLayoutManager, NSLayoutManagerDelegate {
+    /// How far the pill reaches past the letters on each side, and the room the text makes for it with kerning: a
+    /// point more, so a bracket beside it never touches.
+    static let pad: CGFloat = 3
+    static let room: CGFloat = 4
+
+    override init() {
+        super.init()
+        delegate = self
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    func layoutManager(_ lm: NSLayoutManager, shouldBreakLineByWordBeforeCharacterAt i: Int) -> Bool {
+        guard let s = lm.textStorage, i < s.length else { return true }
+        var run = NSRange()
+        guard let width = s.attribute(.code, at: i, effectiveRange: &run) as? CGFloat, i > run.location else {
+            return true
+        }
+        return width > (lm.textContainers.first?.size.width ?? 0) / 2
+    }
+
+    override func drawBackground(forGlyphRange glyphs: NSRange, at origin: NSPoint) {
+        super.drawBackground(forGlyphRange: glyphs, at: origin)
+        guard let s = textStorage, let container = textContainers.first else { return }
+        let chars = characterRange(forGlyphRange: glyphs, actualGlyphRange: nil)
+        s.enumerateAttribute(.code, in: chars) { value, range, _ in
+            guard value != nil, let font = s.attribute(.font, at: range.location, effectiveRange: nil) as? NSFont
+            else { return }
+            let run = glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+            NSColor.labelColor.withAlphaComponent(0.08).setFill()
+            enumerateLineFragments(forGlyphRange: run) { line, _, _, lineGlyphs, _ in
+                let part = NSIntersectionRange(lineGlyphs, run)
+                guard part.length > 0 else { return }
+                var box = self.boundingRect(forGlyphRange: part, in: container)
+                // The last letter's advance carries the kerning after it; the pill ends at the letter.
+                if NSMaxRange(part) == NSMaxRange(run) { box.size.width -= Self.room }
+                let baseline = line.minY + self.location(forGlyphAt: part.location).y
+                let rect = NSRect(
+                    x: box.minX - Self.pad + origin.x, y: baseline - font.ascender - 1 + origin.y,
+                    width: box.width + 2 * Self.pad, height: font.ascender - font.descender + 2)
+                NSBezierPath(roundedRect: rect, xRadius: 4, yRadius: 4).fill()
+            }
+        }
+    }
 }
 
 extension NSFont {

@@ -66,6 +66,8 @@ final class IssueListStore {
         /// The part of the list (see `ListFilters.jqlParts`) the next page comes from, and the page's token.
         var part = 0
         var token: String?
+        /// How many of `rows` this load fetched; the rest are the last load's, kept below them (see `fetchPage`).
+        var fetched = 0
         /// More rows to load: a next page, or a part not started. A page not fetched yet (cached, or kept from the
         /// last load) is taken to have more when it is a full page, so the merge holds the same rows back.
         var more: Bool
@@ -260,6 +262,15 @@ final class IssueListStore {
             // Of several sites, a failed one keeps what it had; alone, it says what went wrong.
             if case .failure(let e) = result, f.account != nil { fail(e, cacheable: cacheable) }
         }
+        // The rows a reload kept below its first page are refreshed in place, page by page, as far as they reach.
+        while gen == generation,
+            let id = pages.first(where: { $0.value.more && $0.value.rows.count > $0.value.fetched })?.key
+        {
+            let before = pages[id]?.fetched
+            do { try await fetchPage(id, gen: gen) } catch { break }
+            if pages[id]?.fetched == before { break }  // an empty page that still says "more"
+        }
+        guard gen == generation else { return }
         isLoading = false
         // A merge holds rows back behind the account furthest behind; it still opens on a page's worth, as one site does.
         while gen == generation, hasMore, rows.count < 50 { await loadMore() }
@@ -313,24 +324,43 @@ final class IssueListStore {
     }
 
     /// Replaces the rows unless nothing changed: a refresh that brings the same page back must not redraw the list.
-    private func show(_ new: [ListRow]) {
+    /// `animated` for fresh rows replacing ones on screen: an edited issue glides to its new place, as in Mail,
+    /// instead of every row jumping at once.
+    private func show(_ new: [ListRow], animated: Bool = false) {
         guard new.count != rows.count || zip(new, rows).contains(where: { $0.id != $1.id || $0.issue != $1.issue })
         else { return }
-        rows = new
+        if animated, !rows.isEmpty {
+            withAnimation(.smooth(duration: 0.35)) { rows = new }
+        } else {
+            rows = new
+        }
     }
 
     /// Every account's rows in the chosen order, up to the last row of the account that is furthest behind: an
     /// account with a page still to come can only add rows that sort after its own last one, so everything from
-    /// the others before that is final and nothing lands between rows already on screen. Rows that tie with that
-    /// last row on the sort field wait too: Jira orders ties as it likes, so the next page could sort among them.
+    /// the others before that is final and nothing lands between rows already on screen. The others' rows that tie
+    /// with that last row on the sort field wait too, as its next page can bring more of the tie. Ties keep Jira's
+    /// order inside an account, so the waiting account's own rows all show: a site that dates to the second (Server)
+    /// and a bulk edit made hundreds of rows tie, and the list opened on the dozen before them.
     /// One account shows as Jira sent it.
     private func merged() -> [ListRow] {
         if pages.count == 1 { return pages.values.first!.rows }
-        let all = pages.values.flatMap(\.rows).sorted { sort.areInOrder($0.issue, $1.issue) }
-        guard let bound = waiting.flatMap({ pages[$0]?.rows.last }) else { return all }
-        return Array(
-            all.prefix { sort.compare($0.issue, bound.issue) != .orderedSame && sort.areInOrder($0.issue, bound.issue) }
-        )
+        return Self.merge(
+            pages.keys.sorted { $0.uuidString < $1.uuidString }.map { pages[$0]!.rows },
+            bound: waiting.flatMap { pages[$0]?.rows.last }, sort: sort)
+    }
+
+    /// `merged` for accounts' rows in a fixed order, `bound` the last row of the account the merge waits on.
+    static func merge(_ accounts: [[ListRow]], bound: ListRow?, sort: ListFilters.Sort) -> [ListRow] {
+        let rows = accounts.flatMap { own in
+            guard let bound, own.first?.state !== bound.state else { return own }
+            return own.filter {
+                sort.compare($0.issue, bound.issue) != .orderedSame && sort.areInOrder($0.issue, bound.issue)
+            }
+        }
+        // Stable, on the field alone: ties stay in Jira's order within an account, and in account order across them.
+        let first: ComparisonResult = sort.descending ? .orderedDescending : .orderedAscending
+        return rows.sorted { sort.compare($0.issue, $1.issue) == first }
     }
 
     /// The account the merge waits on: the one with more pages whose last row comes first.
@@ -360,18 +390,31 @@ final class IssueListStore {
         }
     }
 
-    /// One account's next page into its `Page` and onto the screen; a page from the start replaces its rows.
+    /// One account's next page into its `Page` and onto the screen. A page from the start replaces the rows it
+    /// covers, and the rows of the last load below them stay until a fresh page reaches them: a reload (the app
+    /// coming to the front, an edit, the timer) took a long list back to its first page, and a merged one to the
+    /// few rows before the furthest-behind account's 50th, then grew it back under the reader.
     private func fetchPage(_ id: UUID, gen: Int) async throws {
         guard let q = query, let p = pages[id] else { return }
         let page = try await Self.pageWorth(
             q.parts, whole: q.jql, part: p.part, token: p.token, state: p.state, cache: q.cache)
         guard gen == generation, pages[id] != nil else { return }
-        let fresh = page.issues.map { ListRow(issue: $0, state: p.state) }
         let first = p.part == 0 && p.token == nil
-        pages[id]!.rows = first ? fresh : pages[id]!.rows + fresh
+        let fetched =
+            (first ? [] : Array(p.rows.prefix(p.fetched))) + page.issues.map { ListRow(issue: $0, state: p.state) }
+        let more = page.token != nil || page.part + 1 < q.parts.count
+        pages[id]!.rows = Self.refreshed(p.rows, fetched: fetched, more: more)
+        pages[id]!.fetched = fetched.count
         (pages[id]!.part, pages[id]!.token) = (page.part, page.token)
-        pages[id]!.more = page.token != nil || page.part + 1 < q.parts.count
-        show(merged())
+        pages[id]!.more = more
+        show(merged(), animated: !isLoadingMore)
+    }
+
+    /// One account's rows during a load: what it fetched so far, then the last load's rows from where those end,
+    /// less any the fresh pages already hold; none once the list has no more.
+    static func refreshed(_ old: [ListRow], fetched: [ListRow], more: Bool) -> [ListRow] {
+        let keys = Set(fetched.map(\.id))
+        return fetched + (more ? old.dropFirst(fetched.count).filter { !keys.contains($0.id) } : [])
     }
 
     private func fail(_ error: Error, cacheable: Bool) {
@@ -477,10 +520,14 @@ struct IssueListView: View {
                         topLeadingRadius: above ? 0 : 6, bottomLeadingRadius: below ? 0 : 6,
                         bottomTrailingRadius: below ? 0 : 6, topTrailingRadius: above ? 0 : 6
                     )
+                    // Unselected rows in the table's own colour, not clear: a row gliding to its new place
+                    // passes over the others, and see-through it drew its text over theirs.
                     .fill(
                         emphasized
                             ? Color.accentColor
-                            : selected ? Color(nsColor: .unemphasizedSelectedContentBackgroundColor) : .clear
+                            : selected
+                                ? Color(nsColor: .unemphasizedSelectedContentBackgroundColor)
+                                : Color(nsColor: .controlBackgroundColor)
                     )
                     // 10, not 8: the ring AppKit draws around right-clicked rows then runs 1 pt inside this block on
                     // every side, as Mail's does; at 8 it sat 3 pt in at the sides and 1 pt at the top and bottom.

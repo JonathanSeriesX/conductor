@@ -598,6 +598,12 @@ final class Session {
     func refreshAll() async {
         let tasks = states.map { st in
             Task { @MainActor in
+                // An account whose launch check failed runs it again whole: only a check that passes clears the
+                // sidebar's error mark, and a refresh that merely reached it left the mark up for good.
+                if st.error != nil {
+                    do { try await st.load() } catch { if !error.isCancelled { st.error = error.localizedDescription } }
+                    return
+                }
                 await st.refreshCatalog()
                 await st.prefetchLists()
             }
@@ -607,17 +613,25 @@ final class Session {
 
     /// Tries the network again; when it answers, every list and open issue reloads.
     func reconnect() async {
+        let offline = Connectivity.shared.isOffline
+        let failed = Set(states.filter { $0.error != nil }.map(\.id))
         await refreshAll()
         for account in accounts where unreachable[account.id] != nil { await retry(account) }
-        if !Connectivity.shared.isOffline { reloadTick += 1 }
+        // Only once something came back: a site that keeps failing must not reload every page every 20 s.
+        if !Connectivity.shared.isOffline,
+            offline || states.contains(where: { failed.contains($0.id) && $0.error == nil })
+        {
+            reloadTick += 1
+        }
     }
 
-    /// While offline, retries every 20 s so a dropped VPN or a sleeping laptop recovers on its own.
+    /// While offline or with an account that failed its check, retries every 20 s so a dropped VPN, a sleeping
+    /// laptop or a site that was down recovers on its own.
     private func watchConnectivity() {
         Task { @MainActor in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(20))
-                if Connectivity.shared.isOffline { await reconnect() }
+                if Connectivity.shared.isOffline || states.contains(where: { $0.error != nil }) { await reconnect() }
             }
         }
     }
