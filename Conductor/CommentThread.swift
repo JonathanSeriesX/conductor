@@ -1,4 +1,5 @@
 import AppKit
+import Quartz
 import SwiftUI
 
 // The comment thread in AppKit. A thread of a thousand comments scrolls at the display's rate because nothing is
@@ -675,7 +676,7 @@ final class SymbolButton: NSView {
 /// A comment's text: selectable, never editable, laid out by TextKit 1 (text blocks draw the code, quote, panel
 /// and table backgrounds). A right-click offers Copy when there is a selection, and nothing otherwise, as the
 /// reader menu on SwiftUI text does.
-final class CommentTextView: NSTextView {
+class CommentTextView: NSTextView {
     init() {
         let storage = NSTextStorage()
         let manager = NSLayoutManager()
@@ -710,6 +711,115 @@ final class CommentTextView: NSTextView {
         let m = NSMenu()
         m.addItem(withTitle: String(localized: "Copy"), action: #selector(copy(_:)), keyEquivalent: "")
         return m
+    }
+
+    /// Quick Look asks the first responder first, and a text view answers for its selected attachments: none, so
+    /// the panel opened by `.quickLookPreview` read "No items selected" once a comment had been clicked.
+    override func acceptsPreviewPanelControl(_ panel: QLPreviewPanel!) -> Bool { false }
+}
+
+// MARK: - The description
+
+/// The description as one TextKit view, so a selection runs across paragraphs, lists, tables and panels (SwiftUI
+/// selects within one Text at a time). A click that selects nothing and opens no link or image opens the editor
+/// at that point.
+struct DescriptionText: NSViewRepresentable {
+    let node: ADFNode
+    let attachments: [Attachment]
+    let loadImage: (URL, Int) async -> NSImage?
+    let onPreview: (Attachment) -> Void
+    /// Nil where the description is read-only.
+    let onClick: ((CGPoint) -> Void)?
+
+    func makeNSView(context: Context) -> DescriptionTextView { DescriptionTextView() }
+
+    func updateNSView(_ v: DescriptionTextView, context: Context) {
+        v.loadImage = loadImage
+        v.onPreview = onPreview
+        v.onClick = onClick
+        v.show(node, attachments: attachments)
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView v: DescriptionTextView, context: Context) -> CGSize? {
+        guard let w = proposal.width, w.isFinite, w > 0 else { return nil }
+        return CGSize(width: w, height: v.height(at: w))
+    }
+}
+
+@MainActor final class DescriptionTextView: CommentTextView, NSTextViewDelegate {
+    var loadImage: (URL, Int) async -> NSImage? = { _, _ in nil }
+    var onPreview: (Attachment) -> Void = { _ in }
+    var onClick: ((CGPoint) -> Void)?
+    private var shown: (node: ADFNode, attachments: [Attachment])?
+    private var loading: Set<URL> = []
+    /// Measured apart from the live layout: SwiftUI probes several widths and only sets the frame it settles on.
+    private let measurer = TextMeasurer()
+    private var heights: [CGFloat: CGFloat] = [:]
+    /// A link or an image took this click.
+    private var taken = false
+
+    override init() {
+        super.init()
+        delegate = self
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    func show(_ node: ADFNode, attachments: [Attachment]) {
+        guard shown?.node != node || shown?.attachments != attachments else { return }
+        shown = (node, attachments)
+        render()
+    }
+
+    private func render() {
+        guard let shown else { return }
+        let text = ADFAttributed.render(shown.node, attachments: shown.attachments) { [weak self] in
+            self?.image(for: $0)
+        }
+        textStorage?.setAttributedString(text)
+        heights = [:]
+        invalidateIntrinsicContentSize()
+    }
+
+    func height(at width: CGFloat) -> CGFloat {
+        if let h = heights[width] { return h }
+        let h = measurer.height(of: textStorage ?? NSTextStorage(), width: width)
+        heights[width] = h
+        return h
+    }
+
+    /// A cached inline image, or nil while it loads: the text is rebuilt once it has.
+    private func image(for a: Attachment) -> NSImage? {
+        let url = a.content
+        if let hit = ImageCache.shared.object(forKey: url as NSURL) { return hit }
+        guard !loading.contains(url) else { return nil }
+        loading.insert(url)
+        let load = loadImage
+        Task { [weak self] in
+            let image = await load(url, 1600)
+            guard let self else { return }
+            loading.remove(url)
+            if image != nil { render() }
+        }
+        return nil
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        taken = false
+        super.mouseDown(with: event)  // tracks the mouse until it is up: a drag selects, a link or image opens
+        guard !taken, selectedRange().length == 0 else { return }
+        onClick?(convert(event.locationInWindow, from: nil))
+    }
+
+    func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
+        taken = true
+        return false
+    }
+
+    func textView(
+        _ textView: NSTextView, clickedOn cell: NSTextAttachmentCellProtocol, in cellFrame: NSRect, at charIndex: Int
+    ) {
+        taken = true
+        if let image = cell as? ImageCell { onPreview(image.file) }
     }
 }
 

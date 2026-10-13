@@ -287,7 +287,6 @@ struct IssueDetailView: View {
     /// The same for the description, handed to its composer, which owns that editor's selection.
     @State private var descriptionCaret: CGPoint?
     /// When a link in the description was last clicked, so that click does not also start editing.
-    @State private var linkOpened: Date?
     @State private var editOriginal = ""
     /// The comment whose editor is open. An id, not the comment: the draft outlives the page's copy of the issue.
     @State private var editingCommentID: String?
@@ -631,32 +630,15 @@ struct IssueDetailView: View {
                     .font(.caption).foregroundStyle(.orange)
                 }
             } else if let d = issue.fields.description, !(d.content ?? []).isEmpty {
-                ADFView(node: d)
-                    // A new view for new text: the selectable text's accessibility element kept the first text it
-                    // was given, so VoiceOver read the previous issue's description after a switch.
-                    .id(d)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentShape(.rect)
-                    .background(ReaderMenu())  // a right-click copies a selection and does nothing else
-                    // A link click runs through openURL first; the tap that follows must not open the editor.
-                    .environment(
-                        \.openURL,
-                        OpenURLAction { url in
-                            linkOpened = .now
-                            return .systemAction(url)
-                        }
-                    )
-                    .simultaneousGesture(
-                        SpatialTapGesture().onEnded { tap in
-                            guard store.canEdit("description") else { return }
-                            let at = tap.location
-                            Task {
-                                try? await Task.sleep(for: .milliseconds(80))
-                                if let t = linkOpened, t.timeIntervalSinceNow > -0.5 { return }
-                                descriptionCaret = at
-                                beginDescriptionEdit(issue)
-                            }
-                        })
+                DescriptionText(
+                    node: d, attachments: issue.fields.attachment ?? [], loadImage: loadImage, onPreview: preview,
+                    onClick: store.canEdit("description")
+                        ? { at in
+                            descriptionCaret = at
+                            beginDescriptionEdit(issue)
+                        } : nil
+                )
+                .frame(maxWidth: .infinity, alignment: .leading)
             } else if store.isPartial {
                 DelayedSpinner()
             } else if store.canEdit("description") {
