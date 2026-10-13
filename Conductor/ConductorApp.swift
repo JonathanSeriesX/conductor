@@ -19,6 +19,7 @@ struct ConductorApp: App {
         Shortcuts.guardTyping()
         ReaderMenus.install()
         BinUndo.install()
+        AttachmentOpener.installQuickLookCopy()
         _ = Self.probe
     }
 

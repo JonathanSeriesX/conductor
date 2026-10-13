@@ -24,6 +24,8 @@ struct CommentThread: NSViewRepresentable {
     let onPreview: (Attachment) -> Void
     /// An image from memory, disk or the site, shrunk to `maxPixels`; it lands in `ImageCache`.
     let loadImage: (URL, Int) async -> NSImage?
+    /// Downloads an inline image dragged or copied out.
+    let client: JiraClient?
 
     func makeNSView(context: Context) -> CommentThreadView { CommentThreadView() }
 
@@ -32,6 +34,7 @@ struct CommentThread: NSViewRepresentable {
         v.onDelete = onDelete
         v.onPreview = onPreview
         v.loadImage = loadImage
+        v.client = client
         v.update(comments: comments, attachments: attachments, meID: meID, editingID: editingID, editor: editor)
     }
 
@@ -70,6 +73,7 @@ private struct HostedEditor: View {
     var onEdit: (Comment) -> Void = { _ in }
     var onDelete: (Comment) -> Void = { _ in }
     var onPreview: (Attachment) -> Void = { _ in }
+    var client: JiraClient?
     var loadImage: (URL, Int) async -> NSImage? = { _, _ in nil }
 
     private(set) var comments: [Comment] = []
@@ -421,7 +425,7 @@ private struct HostedEditor: View {
 // MARK: - A row
 
 /// One comment: the avatar, then the name, when, "· edited", Edit and Delete on a line, and the text under them.
-@MainActor final class CommentRowView: NSView, NSTextViewDelegate {
+@MainActor final class CommentRowView: NSView, NSTextViewDelegate, NSDraggingSource {
     struct Key: Equatable {
         let id: String
         let text: ObjectIdentifier?
@@ -620,6 +624,25 @@ private struct HostedEditor: View {
         if !body.isHidden, let tc = body.textContainer { body.layoutManager?.ensureLayout(for: tc) }
     }
 
+    /// An inline image dragged out of the window goes as its file.
+    func drag(_ a: Attachment, with event: NSEvent, from view: NSView, picture: NSImage?, in frame: NSRect) {
+        guard let client = thread.client else { return }
+        let item = NSDraggingItem(pasteboardWriter: AttachmentPromise(a, client: client))
+        item.setDraggingFrame(frame, contents: picture)
+        view.beginDraggingSession(with: [item], event: event, source: self)
+    }
+
+    nonisolated func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext)
+        -> NSDragOperation
+    {
+        .copy
+    }
+
+    func copy(_ a: Attachment) {
+        guard let client = thread.client else { return }
+        Task { await AttachmentOpener.copy(a, client: client) }
+    }
+
     /// A click on an inline image opens it in Quick Look, as a click on the SwiftUI image did.
     func textView(
         _ textView: NSTextView, clickedOn cell: NSTextAttachmentCellProtocol, in cellFrame: NSRect,
@@ -676,7 +699,7 @@ final class SymbolButton: NSView {
 /// A comment's text: selectable, never editable, laid out by TextKit 1 (text blocks draw the code, quote, panel
 /// and table backgrounds). A right-click offers Copy when there is a selection, and nothing otherwise, as the
 /// reader menu on SwiftUI text does.
-class CommentTextView: NSTextView {
+final class CommentTextView: NSTextView {
     init() {
         let storage = NSTextStorage()
         let manager = NSLayoutManager()
@@ -707,120 +730,55 @@ class CommentTextView: NSTextView {
     override func draw(_ dirtyRect: NSRect) { super.draw(bounds) }
 
     override func menu(for event: NSEvent) -> NSMenu? {
-        guard selectedRange().length > 0 else { return nil }
         let m = NSMenu()
+        if let (cell, _) = imageCell(at: event) {
+            let item = NSMenuItem(title: String(localized: "Copy"), action: #selector(copyImage(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = cell
+            m.addItem(item)
+            return m
+        }
+        guard selectedRange().length > 0 else { return nil }
         m.addItem(withTitle: String(localized: "Copy"), action: #selector(copy(_:)), keyEquivalent: "")
         return m
+    }
+
+    @objc private func copyImage(_ sender: NSMenuItem) {
+        if let cell = sender.representedObject as? ImageCell { (delegate as? CommentRowView)?.copy(cell.file) }
+    }
+
+    /// A press on an inline image: a drag takes the image out as its file, a release is a click (Quick Look).
+    /// Neither goes through the text view's own tracking, which would select the image.
+    override func mouseDown(with event: NSEvent) {
+        guard let (cell, frame) = imageCell(at: event), let row = delegate as? CommentRowView,
+            let next = window?.nextEvent(matching: [.leftMouseUp, .leftMouseDragged])
+        else { return super.mouseDown(with: event) }
+        if next.type == .leftMouseDragged {
+            row.drag(cell.file, with: event, from: self, picture: cell.picture, in: frame)
+        } else {
+            row.textView(self, clickedOn: cell, in: frame, at: 0)
+        }
+    }
+
+    private func imageCell(at event: NSEvent) -> (ImageCell, NSRect)? {
+        let p = convert(event.locationInWindow, from: nil)
+        guard let lm = layoutManager, let tc = textContainer, let storage = textStorage, storage.length > 0 else {
+            return nil
+        }
+        let glyph = lm.glyphIndex(for: p, in: tc)
+        let frame = lm.boundingRect(forGlyphRange: NSRange(location: glyph, length: 1), in: tc)
+        guard frame.contains(p) else { return nil }
+        let i = lm.characterIndexForGlyph(at: glyph)
+        guard
+            let cell = (storage.attribute(.attachment, at: i, effectiveRange: nil) as? NSTextAttachment)?.attachmentCell
+                as? ImageCell
+        else { return nil }
+        return (cell, frame)
     }
 
     /// Quick Look asks the first responder first, and a text view answers for its selected attachments: none, so
     /// the panel opened by `.quickLookPreview` read "No items selected" once a comment had been clicked.
     override func acceptsPreviewPanelControl(_ panel: QLPreviewPanel!) -> Bool { false }
-}
-
-// MARK: - The description
-
-/// The description as one TextKit view, so a selection runs across paragraphs, lists, tables and panels (SwiftUI
-/// selects within one Text at a time). A click that selects nothing and opens no link or image opens the editor
-/// at that point.
-struct DescriptionText: NSViewRepresentable {
-    let node: ADFNode
-    let attachments: [Attachment]
-    let loadImage: (URL, Int) async -> NSImage?
-    let onPreview: (Attachment) -> Void
-    /// Nil where the description is read-only.
-    let onClick: ((CGPoint) -> Void)?
-
-    func makeNSView(context: Context) -> DescriptionTextView { DescriptionTextView() }
-
-    func updateNSView(_ v: DescriptionTextView, context: Context) {
-        v.loadImage = loadImage
-        v.onPreview = onPreview
-        v.onClick = onClick
-        v.show(node, attachments: attachments)
-    }
-
-    func sizeThatFits(_ proposal: ProposedViewSize, nsView v: DescriptionTextView, context: Context) -> CGSize? {
-        guard let w = proposal.width, w.isFinite, w > 0 else { return nil }
-        return CGSize(width: w, height: v.height(at: w))
-    }
-}
-
-@MainActor final class DescriptionTextView: CommentTextView, NSTextViewDelegate {
-    var loadImage: (URL, Int) async -> NSImage? = { _, _ in nil }
-    var onPreview: (Attachment) -> Void = { _ in }
-    var onClick: ((CGPoint) -> Void)?
-    private var shown: (node: ADFNode, attachments: [Attachment])?
-    private var loading: Set<URL> = []
-    /// Measured apart from the live layout: SwiftUI probes several widths and only sets the frame it settles on.
-    private let measurer = TextMeasurer()
-    private var heights: [CGFloat: CGFloat] = [:]
-    /// A link or an image took this click.
-    private var taken = false
-
-    override init() {
-        super.init()
-        delegate = self
-    }
-    required init?(coder: NSCoder) { fatalError() }
-
-    func show(_ node: ADFNode, attachments: [Attachment]) {
-        guard shown?.node != node || shown?.attachments != attachments else { return }
-        shown = (node, attachments)
-        render()
-    }
-
-    private func render() {
-        guard let shown else { return }
-        let text = ADFAttributed.render(shown.node, attachments: shown.attachments) { [weak self] in
-            self?.image(for: $0)
-        }
-        textStorage?.setAttributedString(text)
-        heights = [:]
-        invalidateIntrinsicContentSize()
-    }
-
-    func height(at width: CGFloat) -> CGFloat {
-        if let h = heights[width] { return h }
-        let h = measurer.height(of: textStorage ?? NSTextStorage(), width: width)
-        heights[width] = h
-        return h
-    }
-
-    /// A cached inline image, or nil while it loads: the text is rebuilt once it has.
-    private func image(for a: Attachment) -> NSImage? {
-        let url = a.content
-        if let hit = ImageCache.shared.object(forKey: url as NSURL) { return hit }
-        guard !loading.contains(url) else { return nil }
-        loading.insert(url)
-        let load = loadImage
-        Task { [weak self] in
-            let image = await load(url, 1600)
-            guard let self else { return }
-            loading.remove(url)
-            if image != nil { render() }
-        }
-        return nil
-    }
-
-    override func mouseDown(with event: NSEvent) {
-        taken = false
-        super.mouseDown(with: event)  // tracks the mouse until it is up: a drag selects, a link or image opens
-        guard !taken, selectedRange().length == 0 else { return }
-        onClick?(convert(event.locationInWindow, from: nil))
-    }
-
-    func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
-        taken = true
-        return false
-    }
-
-    func textView(
-        _ textView: NSTextView, clickedOn cell: NSTextAttachmentCellProtocol, in cellFrame: NSRect, at charIndex: Int
-    ) {
-        taken = true
-        if let image = cell as? ImageCell { onPreview(image.file) }
-    }
 }
 
 // MARK: - ADF → attributed string
@@ -1269,7 +1227,7 @@ final class PanelBlock: NSTextBlock {
 /// An inline image: fitted into 520 by 360 points (or the line's width), rounded; a grey box until it has loaded.
 final class ImageCell: NSTextAttachmentCell {
     let file: Attachment
-    private let picture: NSImage?
+    let picture: NSImage?
 
     init(attachment: Attachment, picture: NSImage?) {
         self.file = attachment

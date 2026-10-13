@@ -69,6 +69,16 @@ struct ADFNode: Codable, Hashable, Sendable {
 
     func attr(_ k: String) -> String? { attrs?[k]?.string }
 
+    /// The task item with this localId flipped between done and to do.
+    mutating func flipTask(_ id: String) {
+        if type == "taskItem", attr("localId") == id {
+            let done = attr("state") == "DONE"
+            attrs?["state"] = .string(done ? "TODO" : "DONE")
+        } else {
+            for i in (content ?? []).indices { content?[i].flipTask(id) }
+        }
+    }
+
     /// Jira Server sends a description or comment as wiki-markup text, not a document.
     init(from decoder: Decoder) throws {
         if let s = try? decoder.singleValueContainer().decode(String.self) {
@@ -202,11 +212,8 @@ extension Color {
 
 struct ADFView: View {
     let node: ADFNode
-    /// Off where a click starts editing: selectable text swallows the click before any tap gesture sees it.
-    var selectable = true
-    @ViewBuilder var body: some View {
-        let blocks = VStack(alignment: .leading, spacing: 10) { ADFBlocks(nodes: node.content ?? []) }
-        if selectable { blocks.textSelection(.enabled) } else { blocks.textSelection(.disabled) }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) { ADFBlocks(nodes: node.content ?? []) }.textSelection(.enabled)
     }
 }
 
@@ -223,6 +230,8 @@ struct ADFBlock: View {
     let node: ADFNode
     @Environment(\.adfAttachments) private var attachments
     @Environment(\.adfHeaderCell) private var headerCell
+    @Environment(\.adfToggleTask) private var toggleTask
+    @State private var expanded = false
 
     var body: some View {
         switch node.type {
@@ -298,15 +307,29 @@ struct ADFBlock: View {
             VStack(alignment: .leading, spacing: 6) {
                 ForEach(Array((node.content ?? []).enumerated()), id: \.offset) { _, item in
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Image(systemName: item.attr("state") == "DONE" ? "checkmark.circle.fill" : "circle")
-                            .foregroundStyle(item.attr("state") == "DONE" ? .green : .secondary)
+                        let done = item.attr("state") == "DONE"
+                        let mark = Image(systemName: done ? "checkmark.circle.fill" : "circle")
+                            .foregroundStyle(done ? .green : .secondary)
+                        if let toggleTask, let id = item.attr("localId") {
+                            Button {
+                                toggleTask.flip(id)
+                            } label: {
+                                mark
+                            }.buttonStyle(.plain)
+                        } else {
+                            mark
+                        }
                         Text(item.inlineAttributed()).fixedSize(horizontal: false, vertical: true)
                     }
                 }
             }
         case "expand", "nestedExpand":
-            DisclosureGroup(node.attr("title") ?? String(localized: "Details")) {
+            DisclosureGroup(isExpanded: $expanded) {
                 VStack(alignment: .leading, spacing: 8) { ADFBlocks(nodes: node.content ?? []) }.padding(.top, 6)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } label: {
+                // The title toggles as the chevron does; as selectable text it took the click for a selection.
+                Button(node.attr("title") ?? String(localized: "Details")) { expanded.toggle() }.buttonStyle(.plain)
             }
         case "layoutSection":
             HStack(alignment: .top, spacing: 16) {
@@ -378,6 +401,14 @@ extension EnvironmentValues {
     @Entry var adfAttachments: [Attachment] = []
     /// Set by the issue view: the Quick Look URL an inline image writes to when clicked.
     @Entry var previewURL: Binding<URL?>? = nil
+    /// Set by the issue view where the description can be edited: flips the task with this localId, in Jira too.
+    @Entry var adfToggleTask: TaskToggle? = nil
+}
+
+/// Equal to any other, so a new closure on each update does not re-render every block that reads it.
+struct TaskToggle: Equatable {
+    let flip: (String) -> Void
+    static func == (a: Self, b: Self) -> Bool { true }
 }
 
 struct InlineImage: View {
@@ -424,6 +455,13 @@ struct InlineImage: View {
         }
         .onHover { inside in inside ? NSCursor.pointingHand.push() : NSCursor.pop() }
         .help("\(attachment.filename) — click to preview")
+        .onDrag { AttachmentOpener.dragItem(attachment) ?? NSItemProvider() }
+        .background(ReaderMenuPass())  // the reader menu monitor leaves this right-click to the menu below
+        .contextMenu {
+            Button("Copy", systemImage: "doc.on.doc") {
+                if let c = jira?.client { Task { await AttachmentOpener.copy(attachment, client: c) } }
+            }
+        }
     }
 }
 

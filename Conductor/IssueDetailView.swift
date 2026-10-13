@@ -1,3 +1,4 @@
+import Quartz
 import QuickLook
 import SwiftUI
 import UniformTypeIdentifiers
@@ -285,7 +286,6 @@ struct IssueDetailView: View {
     /// The summary editor just opened and its caret still has to be placed.
     @State private var caretPending = false
     /// The same for the description, handed to its composer, which owns that editor's selection.
-    @State private var descriptionCaret: CGPoint?
     /// When a link in the description was last clicked, so that click does not also start editing.
     @State private var editOriginal = ""
     /// The comment whose editor is open. An id, not the comment: the draft outlives the page's copy of the issue.
@@ -372,7 +372,6 @@ struct IssueDetailView: View {
         .onChange(of: target) { old, _ in
             commitSummary(of: old)
             summaryDraft = nil
-            descriptionCaret = nil
             caretPending = false
             for show in [
                 $showAssign, $showLabels, $showLink, $showLogWork, $showDueDate, $showRemind, $showParent,
@@ -513,6 +512,7 @@ struct IssueDetailView: View {
         }
         .environment(\.adfAttachments, issue.fields.attachment ?? [])
         .environment(\.previewURL, $store.previewURL)
+        .environment(\.adfToggleTask, store.canEdit("description") ? TaskToggle(flip: toggleTask) : nil)
     }
 
     /// Everything between the description and the comments.
@@ -611,7 +611,7 @@ struct IssueDetailView: View {
                 Composer(
                     text: Binding($descriptionDraft, or: ""), mentions: $descriptionMentions,
                     placeholder: "Description", minHeight: 140, maxHeight: 420, uploadImage: uploadPasted,
-                    focus: $descriptionFocused, caret: descriptionCaret,
+                    focus: $descriptionFocused,
                     actions: AnyView(
                         HStack(spacing: 10) {
                             Button("Cancel") { cancelDescriptionEdit() }.glassButton().keyboardShortcut(.cancelAction)
@@ -622,23 +622,30 @@ struct IssueDetailView: View {
                         })
                 )
                 .focusSoon($descriptionFocused)
-                if issue.fields.description?.hasLossyNodes == true {
-                    Label(
-                        "This description has images, panels or other content the editor can't keep. Saving replaces them with the text shown here; Cancel leaves the description as it is.",
-                        systemImage: "exclamationmark.triangle"
-                    )
+                if issue.fields.description?.hasLossyNodes == true, let web = jira?.client.browseURL(key) {
+                    Label {
+                        Text(
+                            "This description has images, panels or other content the editor can't keep. Saving replaces them with the text shown here; Cancel leaves the description as it is."
+                        ) + Text(verbatim: " ") + Text(editOnWeb(web))
+                    } icon: {
+                        Image(systemName: "exclamationmark.triangle")
+                    }
                     .font(.caption).foregroundStyle(.orange)
+                    // The link closes this editor as it opens the web's: that one keeps what this one would lose.
+                    .environment(
+                        \.openURL,
+                        OpenURLAction { url in
+                            cancelDescriptionEdit()
+                            return .systemAction(url)
+                        })
                 }
             } else if let d = issue.fields.description, !(d.content ?? []).isEmpty {
-                DescriptionText(
-                    node: d, attachments: issue.fields.attachment ?? [], loadImage: loadImage, onPreview: preview,
-                    onClick: store.canEdit("description")
-                        ? { at in
-                            descriptionCaret = at
-                            beginDescriptionEdit(issue)
-                        } : nil
-                )
-                .frame(maxWidth: .infinity, alignment: .leading)
+                ADFView(node: d)
+                    // A new view for new text: the selectable text's accessibility element kept the first text it
+                    // was given, so VoiceOver read the previous issue's description after a switch.
+                    .id(d)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(ReaderMenu())  // a right-click copies a selection and does nothing else
             } else if store.isPartial {
                 DelayedSpinner()
             } else if store.canEdit("description") {
@@ -1064,6 +1071,9 @@ struct IssueDetailView: View {
                         Button("Open", systemImage: "arrow.up.forward.app") {
                             if let c = jira?.client { Task { await AttachmentOpener.open(a, client: c) } }
                         }
+                        Button("Copy", systemImage: "doc.on.doc") {
+                            if let c = jira?.client { Task { await AttachmentOpener.copy(a, client: c) } }
+                        }
                         Button("Save As…", systemImage: "square.and.arrow.down") { saveAs(a) }
                         Divider()
                         Button("Delete", systemImage: "trash", role: .destructive) {
@@ -1270,7 +1280,8 @@ struct IssueDetailView: View {
                     comments: newestFirst ? list.reversed() : list, attachments: issue.fields.attachment ?? [],
                     meID: jira?.me?.accountId, editingID: editingCommentID,
                     editor: { c, focus in AnyView(commentEditor(c, focus: focus)) },
-                    onEdit: beginCommentEdit, onDelete: deleteComment, onPreview: preview, loadImage: loadImage)
+                    onEdit: beginCommentEdit, onDelete: deleteComment, onPreview: preview, loadImage: loadImage,
+                    client: jira?.client)
             }
             if !newestFirst {
                 Divider()
@@ -1643,6 +1654,20 @@ struct IssueDetailView: View {
         }
     }
 
+    private func editOnWeb(_ url: URL) -> AttributedString {
+        var s = AttributedString(localized: "Edit on the web")
+        s.link = url
+        return s
+    }
+
+    /// A click on a task's circle flips it, in Jira too. Cloud only: wiki markup has no task lists.
+    private func toggleTask(_ localId: String) {
+        guard var doc = store.issue?.fields.description else { return }
+        doc.flipTask(localId)
+        guard let value = try? JSONValue(doc) else { return }
+        _ = optimistic({ $0.description = doc }) { try await $0.editIssue(key, fields: ["description": value]) }
+    }
+
     private func beginDescriptionEdit(_ issue: Issue) {
         var mentions: [String: String] = [:]
         descriptionDraft = issue.fields.description?.markdown(mentions: &mentions) ?? ""
@@ -1654,7 +1679,6 @@ struct IssueDetailView: View {
     /// never by a switch to another issue or a relaunch.
     private func cancelDescriptionEdit() {
         descriptionDraft = nil
-        descriptionCaret = nil
         returnKeyboard()
     }
 
@@ -1667,7 +1691,6 @@ struct IssueDetailView: View {
     private func saveDescription() {
         guard let draft = descriptionDraft else { return }
         descriptionDraft = nil
-        descriptionCaret = nil
         returnKeyboard()
         guard draft != descriptionOriginal else { return }
         let doc = ADFNode.document(markdown: draft, mentions: descriptionMentions)
@@ -1808,6 +1831,13 @@ struct AttachmentTile: View {
         }
         .buttonStyle(.plain)
         .help("\(attachment.filename) — click to preview")
+        // ponytail: a hover fetches files under 25 MB so a drag out has the file; a bigger one only drags once
+        // it was previewed, opened or copied.
+        .onHover { inside in
+            guard inside, attachment.size < 25_000_000, let client else { return }
+            Task { _ = await AttachmentOpener.download(attachment, client: client) }
+        }
+        .onDrag { AttachmentOpener.dragItem(attachment) ?? NSItemProvider() }
     }
 
     private var icon: String {
@@ -1886,23 +1916,122 @@ struct CommentComposer: View {
 }
 
 enum AttachmentOpener {
+    private static func file(for attachment: Attachment) -> URL {
+        FileManager.default.temporaryDirectory.appending(path: "attachments/\(attachment.id)/\(attachment.filename)")
+    }
+
+    private static func store(_ data: Data, for attachment: Attachment) -> URL {
+        let file = file(for: attachment)
+        try? FileManager.default.createDirectory(
+            at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? data.write(to: file)
+        return file
+    }
+
     /// Downloads with auth into the app's temp folder; the same file is reused on later calls.
     static func download(_ attachment: Attachment, client: JiraClient) async -> URL? {
-        let dir = FileManager.default.temporaryDirectory.appending(
-            path: "attachments/\(attachment.id)", directoryHint: .isDirectory)
-        let file = dir.appending(path: attachment.filename)
+        let file = file(for: attachment)
         if FileManager.default.fileExists(atPath: file.path) { return file }
         // An inline image already has its bytes in the image cache; reuse them instead of fetching again.
         var data = await DiskCache.imageData(for: attachment.content)
         if data == nil { data = try? await client.data(for: attachment.content) }
         guard let data else { return nil }
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        try? data.write(to: file)
-        return file
+        return store(data, for: attachment)
     }
 
     static func open(_ attachment: Attachment, client: JiraClient) async {
         if let file = await download(attachment, client: client) { NSWorkspace.shared.open(file) }
+    }
+
+    static func type(_ attachment: Attachment) -> UTType {
+        UTType(mimeType: attachment.mimeType ?? "")
+            ?? UTType(filenameExtension: (attachment.filename as NSString).pathExtension) ?? .data
+    }
+
+    /// For a drag out of the app: the file, once it is here (downloaded, or shown inline from the image cache).
+    /// SwiftUI turns a provider's file into a promise only when the file exists, so a tile fetches on hover.
+    static func dragItem(_ attachment: Attachment) -> NSItemProvider? {
+        var file = file(for: attachment)
+        if !FileManager.default.fileExists(atPath: file.path) {
+            guard let data = DiskCache.imageDataNow(for: attachment.content) else { return nil }
+            file = store(data, for: attachment)
+        }
+        let p = NSItemProvider(contentsOf: file)
+        p?.suggestedName = attachment.filename
+        return p
+    }
+
+    /// The file onto the pasteboard, and a picture's bytes beside it: Finder pastes the file, an editor the picture.
+    @MainActor static func copy(file: URL) {
+        let item = NSPasteboardItem()
+        item.setString(file.absoluteString, forType: .fileURL)
+        if let type = UTType(filenameExtension: file.pathExtension), type.conforms(to: .image),
+            let data = try? Data(contentsOf: file)
+        {
+            item.setData(data, forType: NSPasteboard.PasteboardType(type.identifier))
+        }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.writeObjects([item])
+    }
+
+    static func copy(_ attachment: Attachment, client: JiraClient) async {
+        if let file = await download(attachment, client: client) { await copy(file: file) }
+    }
+
+    /// ⌘C while a Quick Look panel is up copies what it shows: the panel takes the keys, and nothing behind it
+    /// knows what is on view.
+    static func installQuickLookCopy() {
+        NSEvent.addLocalMonitorForEvents(matching: .keyDown) { e in
+            guard e.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
+                e.charactersIgnoringModifiers == "c"
+            else { return e }
+            let copied = MainActor.assumeIsolated {  // delivered on the main thread
+                guard QLPreviewPanel.sharedPreviewPanelExists(), let panel = QLPreviewPanel.shared(),
+                    panel.isKeyWindow, let url = panel.currentPreviewItem?.previewItemURL
+                else { return false }
+                copy(file: url)
+                return true
+            }
+            return copied ? nil : e
+        }
+    }
+}
+
+/// A file promised to the drop target: the attachment downloads as it lands. Its own delegate, so the session
+/// keeps it alive.
+final class AttachmentPromise: NSFilePromiseProvider, NSFilePromiseProviderDelegate {
+    private let attachment: Attachment
+    private let client: JiraClient
+
+    init(_ attachment: Attachment, client: JiraClient) {
+        self.attachment = attachment
+        self.client = client
+        super.init()
+        fileType = AttachmentOpener.type(attachment).identifier
+        delegate = self
+    }
+
+    func filePromiseProvider(_ p: NSFilePromiseProvider, fileNameForType fileType: String) -> String {
+        attachment.filename
+    }
+
+    func filePromiseProvider(
+        _ p: NSFilePromiseProvider, writePromiseTo url: URL, completionHandler: @escaping (Error?) -> Void
+    ) {
+        nonisolated(unsafe) let done = completionHandler
+        let attachment = attachment
+        let client = client
+        Task {
+            guard let file = await AttachmentOpener.download(attachment, client: client) else {
+                return done(CocoaError(.fileNoSuchFile))
+            }
+            do {
+                try FileManager.default.copyItem(at: file, to: url)
+                done(nil)
+            } catch {
+                done(error)
+            }
+        }
     }
 }
 

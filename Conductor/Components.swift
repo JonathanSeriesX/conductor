@@ -678,6 +678,16 @@ final class ReaderMenuArea: NSView {
     override func hitTest(_ point: NSPoint) -> NSView? { nil }  // the text above takes every click
 }
 
+/// A spot inside a reader area whose right-click is the view's own (an inline image's menu), not the reader's.
+struct ReaderMenuPass: NSViewRepresentable {
+    func makeNSView(context: Context) -> ReaderMenuHole { ReaderMenuHole() }
+    func updateNSView(_ view: ReaderMenuHole, context: Context) {}
+}
+
+final class ReaderMenuHole: NSView {
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
 @MainActor enum ReaderMenus {
     static func install() {
         NSEvent.addLocalMonitorForEvents(matching: .rightMouseDown) { e in
@@ -686,7 +696,12 @@ final class ReaderMenuArea: NSView {
             // Only marked text: editors (the composer, a summary or comment being edited) are never marked, so
             // they keep their own menu. SwiftUI's selectable text is a text view that calls itself editable too,
             // so that cannot tell them apart.
-            guard let area = areas(in: root).last(where: { $0.convert($0.bounds, to: root).contains(at) }) else {
+            guard
+                let area = views(ReaderMenuArea.self, in: root).last(where: {
+                    $0.convert($0.bounds, to: root).contains(at)
+                })
+            else { return e }
+            if views(ReaderMenuHole.self, in: root).contains(where: { $0.convert($0.bounds, to: root).contains(at) }) {
                 return e
             }
             // A selection in this text: SwiftUI's text interaction view holds it and has the keyboard, and says
@@ -709,12 +724,12 @@ final class ReaderMenuArea: NSView {
         }
     }
 
-    /// Every marked area in the window, outermost first, so the innermost one under the pointer wins.
-    private static func areas(in view: NSView) -> [ReaderMenuArea] {
+    /// Every marked view in the window, outermost first, so the innermost one under the pointer wins.
+    private static func views<T: NSView>(_ type: T.Type, in view: NSView) -> [T] {
         guard !view.isHidden else { return [] }
-        var out: [ReaderMenuArea] = []
-        if let a = view as? ReaderMenuArea { out.append(a) }
-        for sub in view.subviews { out += areas(in: sub) }
+        var out: [T] = []
+        if let a = view as? T { out.append(a) }
+        for sub in view.subviews { out += views(type, in: sub) }
         return out
     }
 }
