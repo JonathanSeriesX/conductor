@@ -621,7 +621,7 @@ private struct HostedEditor: View {
 
     /// A click on an inline image opens it in Quick Look, as a click on the SwiftUI image did.
     func textView(
-        _ textView: NSTextView, clickedOnCell cell: NSTextAttachmentCellProtocol, in cellFrame: NSRect,
+        _ textView: NSTextView, clickedOn cell: NSTextAttachmentCellProtocol, in cellFrame: NSRect,
         at charIndex: Int
     ) {
         if let image = cell as? ImageCell { thread.onPreview(image.file) }
@@ -1168,7 +1168,7 @@ final class ImageCell: NSTextAttachmentCell {
     }
     required init(coder: NSCoder) { fatalError() }
 
-    private func size(forWidth w: CGFloat) -> NSSize {
+    nonisolated private func size(forWidth w: CGFloat) -> NSSize {
         guard let picture, picture.size.width > 0, picture.size.height > 0 else {
             return NSSize(width: min(240, w), height: 140)
         }
