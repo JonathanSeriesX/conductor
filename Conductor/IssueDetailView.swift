@@ -296,6 +296,9 @@ struct IssueDetailView: View {
     @State private var showLabels = false
     /// Too near the bottom of the window for the labels editor to open below its row.
     @State private var labelsLow = false
+    /// What a key asked to open on the page. The page scrolls it into view first: on a long issue it is off screen,
+    /// and a popover hung from it showed nowhere, so the key seemed to do nothing.
+    @State private var revealing: Anchor?
     @State private var showLink = false
     @State private var showLogWork = false
     @State private var showDueDate = false
@@ -504,6 +507,21 @@ struct IssueDetailView: View {
             }
             // When the next issue is on screen, not when it was asked for: the previous one stays until then.
             .onChange(of: store.issue?.key) { proxy.scrollTo("top", anchor: .top) }
+            // No anchor: the least scroll that shows it, none when it is in view already.
+            .onChange(of: revealing) { _, anchor in
+                guard let anchor else { return }
+                revealing = nil
+                withAnimation {
+                    proxy.scrollTo(anchor)
+                } completion: {
+                    switch anchor {
+                    case .status: showStatus = true
+                    case .priority: showPriority = true
+                    case .assignee: showAssign = true
+                    case .labels: showLabels = true
+                    }
+                }
+            }
             #if DEBUG
                 .task {
                     guard ProcessInfo.processInfo.environment["CONDUCTOR_SCROLL"] == "comments" else { return }
@@ -578,6 +596,19 @@ struct IssueDetailView: View {
                     .onExitCommand {
                         summaryDraft = nil
                         NSApp.keyWindow?.focusList()
+                    }
+                    // Unfocused, the field leaves out its last line when SwiftUI rounds its height a fraction of a
+                    // point under the text's, so it blinked as the editor opened and was gone
+                    // whenever the editor lost the keyboard. Until it has the keyboard the title is drawn as text in
+                    // its place; clicks go through to the field.
+                    .opacity(summaryFocused ? 1 : 0)
+                    .overlay(alignment: .topLeading) {
+                        if !summaryFocused {
+                            Text(summaryDraft ?? "")
+                                .font(.system(.largeTitle, design: .rounded, weight: .semibold))
+                                .fixedSize(horizontal: false, vertical: true)
+                                .allowsHitTesting(false)
+                        }
                     }
                     .padding(.horizontal, 8).padding(.vertical, 4)
                     .background(.quaternary.opacity(0.4), in: .rect(cornerRadius: 10))
@@ -682,6 +713,7 @@ struct IssueDetailView: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(!store.canEdit("labels"))
+                .id(Anchor.labels)
                 // Above the row when the whole editor (field, six matches, Save) would run past the bottom of the
                 // window: opened below, it jumps up as the matches appear.
                 .onGeometryChange(for: Bool.self) { p in
@@ -739,6 +771,7 @@ struct IssueDetailView: View {
             .menuStyle(.button).buttonStyle(.plain).fixedSize()
             .disabled(store.transitions.isEmpty)
             .editable(!store.transitions.isEmpty)
+            .id(Anchor.status)
             // The keyboard's way in (Linear's S): a menu cannot be opened from code, a popover can.
             .popover(isPresented: $showStatus, arrowEdge: embedded ? .bottom : .leading) {
                 PickList(items: store.transitions.map { ($0.id, $0.name, $0.to.id == issue.fields.status.id) }) { id in
@@ -763,6 +796,7 @@ struct IssueDetailView: View {
                 }
                 .menuStyle(.button).buttonStyle(.plain).fixedSize()
                 .editable()
+                .id(Anchor.priority)
                 .popover(isPresented: $showPriority, arrowEdge: embedded ? .bottom : .leading) {
                     PickList(items: store.priorities.map { ($0.id, $0.name, $0.id == issue.fields.priority?.id) }) {
                         id in
@@ -799,6 +833,7 @@ struct IssueDetailView: View {
             }
             .buttonStyle(.plain)
             .editable()
+            .id(Anchor.assignee)
             .popover(isPresented: $showAssign, arrowEdge: embedded ? .bottom : .leading) {
                 PeoplePicker(scope: .issue(key), current: issue.fields.assignee) { user in
                     showAssign = false
@@ -1510,13 +1545,13 @@ struct IssueDetailView: View {
         case .openInWindow: openWindow(id: "issue", value: target)
         case .copyLink: copyToPasteboard(jira.client.browseURL(key).absoluteString)
         case .copyKey: copyToPasteboard(key)
-        case .assign: showAssign = true
+        case .assign: revealing = .assignee
         case .assignToMe:
             let me = jira.me?.accountId
             run { try await $0.assign(key, to: me) }
-        case .changeStatus: showStatus = true
-        case .changePriority: showPriority = true
-        case .editLabels: showLabels = true
+        case .changeStatus: revealing = .status
+        case .changePriority: revealing = .priority
+        case .editLabels: revealing = .labels
         case .watch:
             let on = store.issue?.fields.watches?.isWatching != true
             let me = jira.me?.accountId
@@ -2223,6 +2258,9 @@ struct LabelsEditor: View {
         draft = ""
     }
 }
+
+/// What a key opens a popover from, on the issue page.
+private enum Anchor: Hashable { case status, priority, assignee, labels }
 
 /// A bin icon that deletes at once and asks nothing: what it deletes lands in the Bin (Window menu) to be put back.
 struct DeleteButton: View {
