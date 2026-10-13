@@ -940,3 +940,33 @@ final class LiveServerTests: XCTestCase {
         XCTAssertFalse(projects.isEmpty)
     }
 }
+
+/// A 700-point clip under a 52-point toolbar, over a 3000-point page: the page's top is at clip y -52 and 648 points show.
+final class PageRevealTests: XCTestCase {
+    func y(_ r: CGRect, _ p: PageReveal.Placement, from clipY: CGFloat) -> CGFloat? {
+        PageReveal.destination(
+            showing: r, p, visible: CGRect(x: 0, y: clipY, width: 600, height: 700), top: 52, bottom: 0, page: 3000)
+    }
+
+    func testInViewWithRoomStays() {
+        XCTAssertNil(y(CGRect(x: 0, y: 300, width: 600, height: 20), .middle, from: -52))
+    }
+
+    func testRowOffScreenOrTightAgainstAnEdgeIsCentred() {
+        XCTAssertEqual(y(CGRect(x: 0, y: 1500, width: 600, height: 20), .middle, from: -52), 1510 - 324 - 52)
+        // 8 points under the toolbar: in view, but cramped.
+        XCTAssertEqual(y(CGRect(x: 0, y: 1060, width: 600, height: 20), .middle, from: 1000), 1070 - 324 - 52)
+    }
+
+    func testEditorNearThePageTopGoesToTheTop() {
+        XCTAssertEqual(y(CGRect(x: 0, y: 200, width: 600, height: 1000), .start, from: 2000), -52)
+    }
+
+    func testEditorFarDownStopsAMarginUnderTheToolbar() {
+        XCTAssertEqual(y(CGRect(x: 0, y: 2000, width: 600, height: 100), .start, from: -52), 2000 - 48 - 52)
+    }
+
+    func testScrollStopsAtThePageEnd() {
+        XCTAssertEqual(y(CGRect(x: 0, y: 2980, width: 600, height: 20), .middle, from: -52), 3000 - 700)
+    }
+}

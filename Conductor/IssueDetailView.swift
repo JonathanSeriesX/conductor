@@ -296,9 +296,8 @@ struct IssueDetailView: View {
     @State private var showLabels = false
     /// Too near the bottom of the window for the labels editor to open below its row.
     @State private var labelsLow = false
-    /// What a key asked to open on the page. The page scrolls it into view first: on a long issue it is off screen,
-    /// and a popover hung from it showed nowhere, so the key seemed to do nothing.
-    @State private var revealing: Anchor?
+    /// Scrolls what a key acts on into view first: see `PageReveal`.
+    @State private var pageReveal = PageReveal()
     @State private var showLink = false
     @State private var showLogWork = false
     @State private var showDueDate = false
@@ -468,6 +467,7 @@ struct IssueDetailView: View {
                                 priorityField(issue)
                                 reporterField(issue)
                             }
+                            .pageTarget(PageTarget.fields, in: pageReveal)
                             commentsCard(issue)
                             metadata { fields(issue) }
                         } else {
@@ -493,7 +493,8 @@ struct IssueDetailView: View {
                 }
                 .padding(.horizontal, 20).padding(.bottom, 20)
                 .padding(.top, embedded ? 10 : 17)  // the crumb sits on the line of the list's chips
-                .background(PageKeys(standalone: !embedded))
+                .coordinateSpace(.named(PageReveal.space))
+                .background(PageKeys(standalone: !embedded, reveal: pageReveal))
                 // The anchor is the padded page, not the header: scrolled to its top, the header kept none of the
                 // padding above it, and every next issue sat 10 pt higher than the first.
                 .id("top")
@@ -501,27 +502,8 @@ struct IssueDetailView: View {
             // The toolbar has no background, so blur what scrolls under it instead of letting buttons sit on text.
             .softScrollEdge(band: embedded ? scrolled : nil)
             .modifier(ScrolledWatch(on: embedded, scrolled: $scrolled))
-            .onChange(of: commentRequest) {
-                // The composer sits at the newest end of the thread.
-                withAnimation { proxy.scrollTo("comments", anchor: newestFirst ? .top : .bottom) }
-            }
             // When the next issue is on screen, not when it was asked for: the previous one stays until then.
             .onChange(of: store.issue?.key) { proxy.scrollTo("top", anchor: .top) }
-            // No anchor: the least scroll that shows it, none when it is in view already.
-            .onChange(of: revealing) { _, anchor in
-                guard let anchor else { return }
-                revealing = nil
-                withAnimation {
-                    proxy.scrollTo(anchor)
-                } completion: {
-                    switch anchor {
-                    case .status: showStatus = true
-                    case .priority: showPriority = true
-                    case .assignee: showAssign = true
-                    case .labels: showLabels = true
-                    }
-                }
-            }
             #if DEBUG
                 .task {
                     guard ProcessInfo.processInfo.environment["CONDUCTOR_SCROLL"] == "comments" else { return }
@@ -536,7 +518,7 @@ struct IssueDetailView: View {
 
     /// Everything between the description and the comments.
     @ViewBuilder private func cards(_ issue: Issue) -> some View {
-        descriptionCard(issue)
+        descriptionCard(issue).pageTarget(PageTarget.description, in: pageReveal)
         if let atts = issue.fields.attachment, !atts.isEmpty {
             GlassCard(title: "Attachments", hint: hint(.attach) { String(localized: "\($0) to add") }) {
                 attachments(atts)
@@ -617,6 +599,7 @@ struct IssueDetailView: View {
                     .focusSoon($summaryFocused)
                     .onReceive(NotificationCenter.default.publisher(for: NSTextView.didChangeSelectionNotification)) {
                         placeCaret(in: $0.object as? NSTextView)
+                        alignSummaryEditor($0.object as? NSTextView)
                     }
             } else {
                 // A click edits, as on the web; a right-click is the issue's menu. Not selectable text, whose
@@ -635,6 +618,7 @@ struct IssueDetailView: View {
                     }
             }
         }
+        .pageTarget(PageTarget.summary, in: pageReveal)
     }
 
     private func descriptionCard(_ issue: Issue) -> some View {
@@ -713,7 +697,7 @@ struct IssueDetailView: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(!store.canEdit("labels"))
-                .id(Anchor.labels)
+                .pageTarget(PageTarget.labels, in: pageReveal)
                 // Above the row when the whole editor (field, six matches, Save) would run past the bottom of the
                 // window: opened below, it jumps up as the matches appear.
                 .onGeometryChange(for: Bool.self) { p in
@@ -771,7 +755,7 @@ struct IssueDetailView: View {
             .menuStyle(.button).buttonStyle(.plain).fixedSize()
             .disabled(store.transitions.isEmpty)
             .editable(!store.transitions.isEmpty)
-            .id(Anchor.status)
+            .pageTarget(PageTarget.status, in: pageReveal)
             // The keyboard's way in (Linear's S): a menu cannot be opened from code, a popover can.
             .popover(isPresented: $showStatus, arrowEdge: embedded ? .bottom : .leading) {
                 PickList(items: store.transitions.map { ($0.id, $0.name, $0.to.id == issue.fields.status.id) }) { id in
@@ -796,7 +780,7 @@ struct IssueDetailView: View {
                 }
                 .menuStyle(.button).buttonStyle(.plain).fixedSize()
                 .editable()
-                .id(Anchor.priority)
+                .pageTarget(PageTarget.priority, in: pageReveal)
                 .popover(isPresented: $showPriority, arrowEdge: embedded ? .bottom : .leading) {
                     PickList(items: store.priorities.map { ($0.id, $0.name, $0.id == issue.fields.priority?.id) }) {
                         id in
@@ -833,7 +817,7 @@ struct IssueDetailView: View {
             }
             .buttonStyle(.plain)
             .editable()
-            .id(Anchor.assignee)
+            .pageTarget(PageTarget.assignee, in: pageReveal)
             .popover(isPresented: $showAssign, arrowEdge: embedded ? .bottom : .leading) {
                 PeoplePicker(scope: .issue(key), current: issue.fields.assignee) { user in
                     showAssign = false
@@ -1376,6 +1360,7 @@ struct IssueDetailView: View {
         ) { doc in
             await run { try await $0.addComment(key, body: doc) }.value
         }
+        .pageTarget(PageTarget.composer, in: pageReveal)
     }
 
     // MARK: Toolbar
@@ -1545,24 +1530,41 @@ struct IssueDetailView: View {
         case .openInWindow: openWindow(id: "issue", value: target)
         case .copyLink: copyToPasteboard(jira.client.browseURL(key).absoluteString)
         case .copyKey: copyToPasteboard(key)
-        case .assign: revealing = .assignee
+        case .assign: reveal(.assignee, .middle) { showAssign = true }
         case .assignToMe:
             let me = jira.me?.accountId
             run { try await $0.assign(key, to: me) }
-        case .changeStatus: revealing = .status
-        case .changePriority: revealing = .priority
-        case .editLabels: revealing = .labels
+        case .changeStatus: reveal(.status, .middle) { showStatus = true }
+        case .changePriority: reveal(.priority, .middle) { showPriority = true }
+        case .editLabels: reveal(.labels, .middle) { showLabels = true }
         case .watch:
             let on = store.issue?.fields.watches?.isWatching != true
             let me = jira.me?.accountId
             run { try await $0.watch(key, on, me: me) }
         case .transition(let id): transition(id)
         case .remind: showRemind = true
+        // An editor already open keeps its draft and only takes the keyboard back: starting over dropped the typing.
         case .editSummary:
-            caretPending = true
-            summaryDraft = summary
-        case .editDescription: if let issue = store.issue { beginDescriptionEdit(issue) }
-        case .comment: commentRequest += 1
+            reveal(.summary, .start) {
+                guard summaryDraft == nil else { return refocus($summaryFocused) }
+                caretPending = true
+                summaryDraft = summary
+            }
+        case .editDescription:
+            guard let issue = store.issue else { return }
+            reveal(.description, .start) {
+                guard descriptionDraft == nil else { return refocus($descriptionFocused) }
+                beginDescriptionEdit(issue)
+            }
+        case .comment:
+            // A folded thread opens first, so there is a box to write in.
+            let thread = fold("\(shownKey)|comments")
+            let opening = thread.wrappedValue
+            thread.wrappedValue = false
+            Task {
+                if opening { try? await Task.sleep(for: .milliseconds(300)) }
+                reveal(.composer, .middle) { commentRequest += 1 }
+            }
         case .attach: attachFiles()
         case .link: showLink = true
         case .logWork: showLogWork = true
@@ -1644,6 +1646,16 @@ struct IssueDetailView: View {
     /// Puts the caret under the click that opened the editor, or at the end when a key opened it (⌘E).
     /// Focus selects everything; this runs inside that selection change, so no frame ever shows it.
     /// The editor sits where the text was, in the same font, so the character under the point is the one clicked.
+    /// AppKit hangs the summary's field editor in a focus clip view whose bounds can start half a point off its frame
+    /// (when SwiftUI rounded the field's height under its text's), which drew the text half a point above the title it
+    /// replaced. Called on every selection change, as typing a new line lays the clip view out again.
+    private func alignSummaryEditor(_ tv: NSTextView?) {
+        guard summaryDraft != nil, let tv, tv.isFieldEditor, tv.window?.firstResponder === tv, let clip = tv.superview,
+            (clip.superview as? NSTextField)?.cell?.wraps == true, clip.bounds.origin != clip.frame.origin
+        else { return }
+        clip.setBoundsOrigin(clip.frame.origin)
+    }
+
     private func placeCaret(in tv: NSTextView?) {
         guard caretPending, let tv, let window = tv.window, window.isKeyWindow, window.firstResponder === tv,
             tv.selectedRange().length == (tv.string as NSString).length, tv.selectedRange().length > 0
@@ -1709,6 +1721,22 @@ struct IssueDetailView: View {
         doc.flipTask(localId)
         guard let value = try? JSONValue(doc) else { return }
         _ = optimistic({ $0.description = doc }) { try await $0.editIssue(key, fields: ["description": value]) }
+    }
+
+    /// Focus an editor whose focus state may be true already while the keyboard is elsewhere.
+    private func refocus(_ focus: FocusState<Bool>.Binding) {
+        focus.wrappedValue = false
+        DispatchQueue.main.async { focus.wrappedValue = true }
+    }
+
+    /// `PageReveal.reveal` on this page; the action is dropped when another issue came in meanwhile.
+    private func reveal(
+        _ target: PageTarget, _ placement: PageReveal.Placement, then action: @escaping @MainActor () -> Void
+    ) {
+        let shown = store.issue?.key
+        // The preview's status, assignee and priority sit in a lazy grid: off screen they have no frame, their card has.
+        let card: [PageTarget] = [.status, .assignee, .priority].contains(target) ? [.fields] : []
+        pageReveal.reveal([target] + card, placement) { if store.issue?.key == shown { action() } }
     }
 
     private func beginDescriptionEdit(_ issue: Issue) {
@@ -2259,8 +2287,12 @@ struct LabelsEditor: View {
     }
 }
 
-/// What a key opens a popover from, on the issue page.
-private enum Anchor: Hashable { case status, priority, assignee, labels }
+/// What a key acts on, on the issue page.
+private enum PageTarget: Hashable {
+    case summary, description, status, priority, assignee, labels, composer
+    /// The preview column's card of status, assignee, priority and reporter, a lazy grid.
+    case fields
+}
 
 /// A bin icon that deletes at once and asks nothing: what it deletes lands in the Bin (Window menu) to be put back.
 struct DeleteButton: View {

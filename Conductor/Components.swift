@@ -816,8 +816,73 @@ enum Folds {
 /// the list (← goes back to the list), in an issue window whenever no editor has it. Sits behind the page's content.
 struct PageKeys: NSViewRepresentable {
     let standalone: Bool
+    var reveal: PageReveal?
     func makeNSView(context: Context) -> PageKeyView { PageKeyView() }
-    func updateNSView(_ v: PageKeyView, context: Context) { v.standalone = standalone }
+    func updateNSView(_ v: PageKeyView, context: Context) {
+        v.standalone = standalone
+        reveal?.page = v
+    }
+}
+
+/// Brings what a key acts on into view, with room around it, before the key's action runs: on a long page the target
+/// was often off screen, and a popover or editor opening there looked as if the key did nothing. Layout records where
+/// each target is (`pageTarget`); a class, so neither that nor scrolling redraws the page.
+@MainActor final class PageReveal {
+    /// The page's coordinate space, set on the page that `PageKeys` sits behind.
+    static let space = "page"
+    /// The margin a target keeps from the toolbar and the window's bottom.
+    nonisolated static let room: CGFloat = 48
+    fileprivate var frames: [AnyHashable: CGRect] = [:]
+    fileprivate weak var page: PageKeyView?
+
+    enum Placement {
+        /// A row a popover hangs from: centred, which leaves the popover room either way.
+        case middle
+        /// An editor that opens at the target's top: the page's top when that shows it, else the target's top a margin
+        /// under the toolbar. Only its first 320 points need to show.
+        case start
+    }
+
+    /// Where the page's clip view goes to show `r` (document coordinates, y down), or nil when `r` is in view with room
+    /// around it already. `visible` is the clip's bounds; `top` and `bottom` are its insets (the toolbar), so the page's
+    /// top is at -top; `page` is the document's height.
+    nonisolated static func destination(
+        showing r: CGRect, _ placement: Placement, visible: CGRect, top inset: CGFloat, bottom: CGFloat, page: CGFloat
+    ) -> CGFloat? {
+        var r = r
+        if placement == .start { r.size.height = min(r.height, 320) }
+        let top = visible.minY + inset
+        let height = visible.height - inset - bottom
+        if r.minY >= top + room, r.maxY <= top + height - room { return nil }
+        var y: CGFloat
+        switch placement {
+        case .middle where r.height < height - 2 * room: y = r.midY - height / 2 - inset
+        case .start where r.maxY <= height - room: y = -inset
+        default: y = r.minY - room - inset
+        }
+        y = min(max(y, -inset), max(-inset, page - visible.height))
+        return abs(y - visible.minY) < 1 ? nil : y
+    }
+
+    /// Scrolls the first of `targets` that is laid out into view and then runs `action`; runs it at once when that is
+    /// in view with room around it already, or none is on the page. A row in a lazy grid is laid out only on screen, so
+    /// the grid itself comes after it.
+    func reveal(_ targets: [AnyHashable], _ placement: Placement, then action: @escaping @MainActor () -> Void) {
+        guard let rect = targets.lazy.compactMap({ self.frames[$0] }).first, let page else { return action() }
+        page.reveal(rect, placement, then: action)
+    }
+}
+
+extension View {
+    /// Records where this sits on the page, for `PageReveal`.
+    func pageTarget(_ key: AnyHashable, in reveal: PageReveal) -> some View {
+        onGeometryChange(for: CGRect.self) {
+            $0.frame(in: .named(PageReveal.space))
+        } action: {
+            reveal.frames[key] = $0
+        }
+        .onDisappear { reveal.frames[key] = nil }
+    }
 }
 
 extension Notification.Name {
@@ -832,6 +897,8 @@ final class PageKeyView: NSView {
     private var hadFocus = false
 
     override var acceptsFirstResponder: Bool { true }
+    /// As the page's SwiftUI coordinates: y grows downwards from the page's top.
+    override var isFlipped: Bool { true }
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
     override func viewDidMoveToWindow() {
@@ -881,6 +948,27 @@ final class PageKeyView: NSView {
         if (fr as? NSTextView)?.isEditable == true || fr is NSTableView { return false }
         if let v = fr as? NSView, v.isDescendant(of: sv) { return true }
         return standalone
+    }
+
+    /// `rect` is in the page's coordinates. See `PageReveal`.
+    func reveal(_ rect: CGRect, _ placement: PageReveal.Placement, then action: @escaping @MainActor () -> Void) {
+        guard let sv = enclosingScrollView, let doc = sv.documentView,
+            let y = PageReveal.destination(
+                showing: convert(rect, to: doc), placement, visible: sv.contentView.bounds, top: sv.contentInsets.top,
+                bottom: sv.contentInsets.bottom, page: doc.frame.height)
+        else { return action() }
+        let clip = sv.contentView
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.3
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            ctx.allowsImplicitAnimation = true
+            clip.animator().setBoundsOrigin(NSPoint(x: clip.bounds.minX, y: y))
+        } completionHandler: {
+            MainActor.assumeIsolated {
+                action()
+            }
+        }
+        sv.reflectScrolledClipView(clip)
     }
 
     private func handle(_ e: NSEvent) -> Bool {
