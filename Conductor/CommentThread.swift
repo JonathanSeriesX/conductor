@@ -846,9 +846,17 @@ class CommentTextView: NSTextView {
         return storage.attribute(key, at: lm.characterIndexForGlyph(at: glyph), effectiveRange: nil)
     }
 
-    /// Never scrolls the page: on every resize NSTextView brings its selection into view, unselected or not, and laid
-    /// out as the next issue appeared, a comment pulled the whole page up under the toolbar to its first line.
-    override func scrollToVisible(_ rect: NSRect) -> Bool { false }
+    /// Never scrolls the page while being resized: NSTextView then brings its selection into view, unselected or not,
+    /// and laid out as the next issue appeared, a comment pulled the whole page up under the toolbar to its first
+    /// line. Any other time it does, so a selection extended with ⇧ and the arrows keeps its end in view.
+    private var resizing = false
+    override func setFrameSize(_ newSize: NSSize) {
+        let outer = resizing  // AppKit resizes again from inside a resize
+        resizing = true
+        defer { resizing = outer }
+        super.setFrameSize(newSize)
+    }
+    override func scrollToVisible(_ rect: NSRect) -> Bool { resizing ? false : super.scrollToVisible(rect) }
 
     /// Quick Look asks the first responder first, and a text view answers for its selected attachments: none, so
     /// the panel opened by `.quickLookPreview` read "No items selected" once a comment had been clicked.
