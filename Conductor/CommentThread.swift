@@ -425,7 +425,7 @@ private struct HostedEditor: View {
 // MARK: - A row
 
 /// One comment: the avatar, then the name, when, "· edited", Edit and Delete on a line, and the text under them.
-@MainActor final class CommentRowView: NSView, NSTextViewDelegate, NSDraggingSource {
+@MainActor final class CommentRowView: NSView, InlineImageHost {
     struct Key: Equatable {
         let id: String
         let text: ObjectIdentifier?
@@ -497,7 +497,7 @@ private struct HostedEditor: View {
         edited.textColor = .tertiaryLabelColor
         editButton.action = { [unowned self] in if let comment { thread.onEdit(comment) } }
         deleteButton.action = { [unowned self] in if let comment { thread.onDelete(comment) } }
-        body.delegate = self
+        body.host = self
         for v in [avatar, name, date, edited, editButton, deleteButton, body] { addSubview(v) }
     }
 
@@ -624,32 +624,8 @@ private struct HostedEditor: View {
         if !body.isHidden, let tc = body.textContainer { body.layoutManager?.ensureLayout(for: tc) }
     }
 
-    /// An inline image dragged out of the window goes as its file.
-    func drag(_ a: Attachment, with event: NSEvent, from view: NSView, picture: NSImage?, in frame: NSRect) {
-        guard let client = thread.client else { return }
-        let item = NSDraggingItem(pasteboardWriter: AttachmentPromise(a, client: client))
-        item.setDraggingFrame(frame, contents: picture)
-        view.beginDraggingSession(with: [item], event: event, source: self)
-    }
-
-    nonisolated func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext)
-        -> NSDragOperation
-    {
-        .copy
-    }
-
-    func copy(_ a: Attachment) {
-        guard let client = thread.client else { return }
-        Task { await AttachmentOpener.copy(a, client: client) }
-    }
-
-    /// A click on an inline image opens it in Quick Look, as a click on the SwiftUI image did.
-    func textView(
-        _ textView: NSTextView, clickedOn cell: NSTextAttachmentCellProtocol, in cellFrame: NSRect,
-        at charIndex: Int
-    ) {
-        if let image = cell as? ImageCell { thread.onPreview(image.file) }
-    }
+    var client: JiraClient? { thread.client }
+    func preview(_ a: Attachment) { thread.onPreview(a) }
 }
 
 /// A symbol in the tertiary colour that runs an action on a click, as `.buttonStyle(.plain).foregroundStyle(.tertiary)`
@@ -696,10 +672,26 @@ final class SymbolButton: NSView {
     }
 }
 
-/// A comment's text: selectable, never editable, laid out by TextKit 1 (text blocks draw the code, quote, panel
-/// and table backgrounds). A right-click offers Copy when there is a selection, and nothing otherwise, as the
-/// reader menu on SwiftUI text does.
-final class CommentTextView: NSTextView {
+/// What a text view with inline images asks of its host: the account the images belong to, Quick Look, and what
+/// a click on a task circle or an expand title does (nothing in a comment).
+@MainActor protocol InlineImageHost: AnyObject {
+    var client: JiraClient? { get }
+    func preview(_ a: Attachment)
+    func toggleTask(_ id: String)
+    func toggleExpand(_ path: String)
+}
+
+extension InlineImageHost {
+    func toggleTask(_ id: String) {}
+    func toggleExpand(_ path: String) {}
+}
+
+/// A comment's or the description's text: selectable, never editable, laid out by TextKit 1 (text blocks draw the
+/// code, quote, panel and table backgrounds). A right-click offers Copy when there is a selection, and nothing
+/// otherwise, as the reader menu on SwiftUI text does; on an inline image, the attachment tile's menu.
+class CommentTextView: NSTextView {
+    weak var host: InlineImageHost?
+
     init() {
         let storage = NSTextStorage()
         let manager = NSLayoutManager()
@@ -731,11 +723,17 @@ final class CommentTextView: NSTextView {
 
     override func menu(for event: NSEvent) -> NSMenu? {
         let m = NSMenu()
-        if let (cell, _) = imageCell(at: event) {
-            let item = NSMenuItem(title: String(localized: "Copy"), action: #selector(copyImage(_:)), keyEquivalent: "")
-            item.target = self
-            item.representedObject = cell
-            m.addItem(item)
+        if let cell = cell(at: event)?.cell as? ImageCell {
+            func item(_ title: String, _ action: Selector) {
+                let i = NSMenuItem(title: title, action: action, keyEquivalent: "")
+                i.target = self
+                i.representedObject = cell
+                m.addItem(i)
+            }
+            item(String(localized: "Quick Look"), #selector(quickLookImage(_:)))
+            item(String(localized: "Open"), #selector(openImage(_:)))
+            item(String(localized: "Copy"), #selector(copyImage(_:)))
+            item(String(localized: "Save As…"), #selector(saveImage(_:)))
             return m
         }
         guard selectedRange().length > 0 else { return nil }
@@ -743,24 +741,53 @@ final class CommentTextView: NSTextView {
         return m
     }
 
+    private func file(_ sender: NSMenuItem) -> (Attachment, JiraClient)? {
+        guard let a = (sender.representedObject as? ImageCell)?.file, let c = host?.client else { return nil }
+        return (a, c)
+    }
+    @objc private func quickLookImage(_ sender: NSMenuItem) { if let (a, _) = file(sender) { host?.preview(a) } }
+    @objc private func openImage(_ sender: NSMenuItem) {
+        if let (a, c) = file(sender) { Task { await AttachmentOpener.open(a, client: c) } }
+    }
     @objc private func copyImage(_ sender: NSMenuItem) {
-        if let cell = sender.representedObject as? ImageCell { (delegate as? CommentRowView)?.copy(cell.file) }
+        if let (a, c) = file(sender) { Task { await AttachmentOpener.copy(a, client: c) } }
+    }
+    @objc private func saveImage(_ sender: NSMenuItem) {
+        if let (a, c) = file(sender) { AttachmentOpener.saveAs(a, client: c) }
     }
 
-    /// A press on an inline image: a drag takes the image out as its file, a release is a click (Quick Look).
-    /// Neither goes through the text view's own tracking, which would select the image.
+    /// A press on an inline image, a task circle or an expand title: a release is a click (Quick Look, a flip, a
+    /// fold), a drag on an image takes it out as its file, a drag anywhere else selects. None goes through the text
+    /// view's own click on an attachment, which would select it.
     override func mouseDown(with event: NSEvent) {
-        guard let (cell, frame) = imageCell(at: event), let row = delegate as? CommentRowView,
-            let next = window?.nextEvent(matching: [.leftMouseUp, .leftMouseDragged])
+        let hit = cell(at: event)
+        let expand = attribute(.expand, at: event) as? String
+        guard hit != nil || expand != nil, let next = window?.nextEvent(matching: [.leftMouseUp, .leftMouseDragged])
         else { return super.mouseDown(with: event) }
         if next.type == .leftMouseDragged {
-            row.drag(cell.file, with: event, from: self, picture: cell.picture, in: frame)
-        } else {
-            row.textView(self, clickedOn: cell, in: frame, at: 0)
+            guard let image = hit?.cell as? ImageCell, let frame = hit?.frame, let client = host?.client else {
+                return super.mouseDown(with: event)
+            }
+            let item = NSDraggingItem(pasteboardWriter: AttachmentPromise(image.file, client: client))
+            item.setDraggingFrame(frame, contents: image.picture)
+            beginDraggingSession(with: [item], event: event, source: self)
+        } else if let image = hit?.cell as? ImageCell {
+            host?.preview(image.file)
+        } else if let task = (hit?.cell as? SymbolCell)?.taskID {
+            host?.toggleTask(task)
+        } else if let expand {
+            host?.toggleExpand(expand)
         }
     }
 
-    private func imageCell(at event: NSEvent) -> (ImageCell, NSRect)? {
+    override func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext)
+        -> NSDragOperation
+    {
+        .copy
+    }
+
+    /// The attachment cell under the pointer, with its frame.
+    private func cell(at event: NSEvent) -> (cell: NSTextAttachmentCell, frame: NSRect)? {
         let p = convert(event.locationInWindow, from: nil)
         guard let lm = layoutManager, let tc = textContainer, let storage = textStorage, storage.length > 0 else {
             return nil
@@ -771,14 +798,136 @@ final class CommentTextView: NSTextView {
         let i = lm.characterIndexForGlyph(at: glyph)
         guard
             let cell = (storage.attribute(.attachment, at: i, effectiveRange: nil) as? NSTextAttachment)?.attachmentCell
-                as? ImageCell
+                as? NSTextAttachmentCell
         else { return nil }
         return (cell, frame)
+    }
+
+    /// An attribute of the text under the pointer; nil off the text (to the right of a short line, say).
+    private func attribute(_ key: NSAttributedString.Key, at event: NSEvent) -> Any? {
+        let p = convert(event.locationInWindow, from: nil)
+        guard let lm = layoutManager, let tc = textContainer, let storage = textStorage, storage.length > 0 else {
+            return nil
+        }
+        let glyph = lm.glyphIndex(for: p, in: tc)
+        guard lm.lineFragmentUsedRect(forGlyphAt: glyph, effectiveRange: nil).contains(p) else { return nil }
+        return storage.attribute(key, at: lm.characterIndexForGlyph(at: glyph), effectiveRange: nil)
     }
 
     /// Quick Look asks the first responder first, and a text view answers for its selected attachments: none, so
     /// the panel opened by `.quickLookPreview` read "No items selected" once a comment had been clicked.
     override func acceptsPreviewPanelControl(_ panel: QLPreviewPanel!) -> Bool { false }
+}
+
+// MARK: - The description
+
+/// The description as one TextKit view, so a selection runs across paragraphs, lists, tables and panels (SwiftUI
+/// selects within one Text at a time), laid out to the card's look by `ADFAttributed`.
+struct DescriptionText: NSViewRepresentable {
+    let node: ADFNode
+    let attachments: [Attachment]
+    let loadImage: (URL, Int) async -> NSImage?
+    let onPreview: (Attachment) -> Void
+    let client: JiraClient?
+    /// Nil where the description is read-only: the task circles then only show.
+    let toggleTask: ((String) -> Void)?
+
+    func makeNSView(context: Context) -> DescriptionTextView { DescriptionTextView() }
+
+    func updateNSView(_ v: DescriptionTextView, context: Context) {
+        v.loadImage = loadImage
+        v.onPreview = onPreview
+        v.client = client
+        v.onToggleTask = toggleTask
+        v.show(node, attachments: attachments)
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView v: DescriptionTextView, context: Context) -> CGSize? {
+        guard let w = proposal.width, w.isFinite, w > 0 else { return nil }
+        return CGSize(width: w, height: v.height(at: w))
+    }
+}
+
+@MainActor final class DescriptionTextView: CommentTextView, InlineImageHost {
+    var loadImage: (URL, Int) async -> NSImage? = { _, _ in nil }
+    var onPreview: (Attachment) -> Void = { _ in }
+    var client: JiraClient?
+    var onToggleTask: ((String) -> Void)?
+    private var shown: (node: ADFNode, attachments: [Attachment])?
+    /// Expands opened by a click, by their place in the document; new text starts with every one closed.
+    private var expanded: Set<String> = []
+    private var loading: Set<URL> = []
+    /// Measured apart from the live layout: SwiftUI probes several widths and only sets the frame it settles on.
+    private let measurer = TextMeasurer()
+    private var heights: [CGFloat: CGFloat] = [:]
+
+    override init() {
+        super.init()
+        host = self
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    func show(_ node: ADFNode, attachments: [Attachment]) {
+        guard shown?.node != node || shown?.attachments != attachments else { return }
+        if shown?.node != node { expanded = [] }
+        shown = (node, attachments)
+        render()
+    }
+
+    private func render() {
+        guard let shown else { return }
+        let text = ADFAttributed.render(shown.node, attachments: shown.attachments, expanded: expanded) { [weak self] in
+            self?.image(for: $0)
+        }
+        textStorage?.setAttributedString(text)
+        // TextKit drops the first paragraph's spacing before; the card had it (a heading's 4 points).
+        top =
+            text.length == 0
+            ? 0
+            : (text.attribute(.paragraphStyle, at: 0, effectiveRange: nil) as? NSParagraphStyle)?.paragraphSpacingBefore
+                ?? 0
+        heights = [:]
+        invalidateIntrinsicContentSize()
+    }
+
+    private var top: CGFloat = 0
+    override var textContainerOrigin: NSPoint { NSPoint(x: 0, y: top) }
+
+    /// Symbols are drawn in the appearance of the moment (see `NSImage.symbol`).
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        render()
+    }
+
+    func height(at width: CGFloat) -> CGFloat {
+        if let h = heights[width] { return h }
+        let h = measurer.height(of: textStorage ?? NSTextStorage(), width: width) + top
+        heights[width] = h
+        return h
+    }
+
+    /// A cached inline image, or nil while it loads: the text is rebuilt once it has.
+    private func image(for a: Attachment) -> NSImage? {
+        let url = a.content
+        if let hit = ImageCache.shared.object(forKey: url as NSURL) { return hit }
+        guard !loading.contains(url) else { return nil }
+        loading.insert(url)
+        let load = loadImage
+        Task { [weak self] in
+            let image = await load(url, 1600)
+            guard let self else { return }
+            loading.remove(url)
+            if image != nil { render() }
+        }
+        return nil
+    }
+
+    func preview(_ a: Attachment) { onPreview(a) }
+    func toggleTask(_ id: String) { onToggleTask?(id) }
+    func toggleExpand(_ path: String) {
+        expanded.formSymmetricDifference([path])
+        render()
+    }
 }
 
 // MARK: - ADF → attributed string
@@ -788,12 +937,16 @@ final class CommentTextView: NSTextView {
 @MainActor final class ADFAttributed {
     private let attachments: [Attachment]
     private let image: (Attachment) -> NSImage?
+    /// The expands shown open, by path; nil opens every one.
+    private let expanded: Set<String>?
     private let out = NSMutableAttributedString()
 
     /// A block's font: the size and the weight it starts from, before the runs' own marks.
     private struct Base {
         var size: CGFloat
         var weight: NSFont.Weight = .regular
+        /// What SwiftUI adds under a line of this font beyond TextKit's line height (see `lineExtra`).
+        var extra: CGFloat = 0
         func font(mono: Bool = false, bold: Bool = false, italic: Bool = false) -> NSFont {
             let w: NSFont.Weight = bold ? .semibold : weight
             var f =
@@ -813,17 +966,21 @@ final class CommentTextView: NSTextView {
         var base = Base(size: NSFont.preferredFont(forTextStyle: .body).pointSize)
         /// Between the blocks of this container: 10 at the top, 8 in a quote or panel, 6 in a cell, 4 in a list.
         var spacing: CGFloat = 10
+        /// The block's place in the document ("2/0/1"): an expand is remembered open by it.
+        var path = ""
     }
 
-    private init(attachments: [Attachment], image: @escaping (Attachment) -> NSImage?) {
+    private init(attachments: [Attachment], expanded: Set<String>?, image: @escaping (Attachment) -> NSImage?) {
         self.attachments = attachments
+        self.expanded = expanded
         self.image = image
     }
 
-    static func render(_ doc: ADFNode, attachments: [Attachment], image: @escaping (Attachment) -> NSImage?)
-        -> NSAttributedString
-    {
-        let r = ADFAttributed(attachments: attachments, image: image)
+    static func render(
+        _ doc: ADFNode, attachments: [Attachment], expanded: Set<String>? = nil,
+        image: @escaping (Attachment) -> NSImage?
+    ) -> NSAttributedString {
+        let r = ADFAttributed(attachments: attachments, expanded: expanded, image: image)
         r.blocks(doc.content ?? [], Ctx())
         // Every paragraph ends in a newline; the last one would be an empty line.
         if r.out.length > 0 { r.out.deleteCharacters(in: NSRange(location: r.out.length - 1, length: 1)) }
@@ -837,7 +994,11 @@ final class CommentTextView: NSTextView {
             paragraph(NSAttributedString(), ctx, before: first)  // a text block needs a paragraph to exist
             return
         }
-        for (i, n) in nodes.enumerated() { block(n, ctx, before: i == 0 ? first : ctx.spacing) }
+        for (i, n) in nodes.enumerated() {
+            var c = ctx
+            c.path += "/\(i)"
+            block(n, c, before: i == 0 ? first : ctx.spacing)
+        }
     }
 
     private func block(_ node: ADFNode, _ ctx: Ctx, before: CGFloat) {
@@ -846,7 +1007,8 @@ final class CommentTextView: NSTextView {
             paragraph(inline(node, ctx.base), ctx, before: before)
         case "heading":
             var c = ctx
-            c.base = Base(size: Self.headingSize(Int(node.attrs?["level"]?.number ?? 3)), weight: .semibold)
+            let level = Int(node.attrs?["level"]?.number ?? 3)
+            c.base = Base(size: Self.headingSize(level), weight: .semibold, extra: Self.lineExtra(level))
             paragraph(inline(node, c.base), c, before: before + 4)
         case "bulletList", "orderedList":
             list(node, ctx, before: before, ordered: node.type == "orderedList")
@@ -880,32 +1042,52 @@ final class CommentTextView: NSTextView {
         case "mediaSingle", "mediaGroup":
             media(node, ctx, before: before)
         case "taskList":
+            // The circle, 8 points, then the text; a click on the circle flips the task where the host allows.
             for (i, item) in (node.content ?? []).enumerated() {
                 let done = item.attr("state") == "DONE"
                 let s = NSMutableAttributedString(
                     attachment: SymbolCell.attachment(
                         done ? "checkmark.circle.fill" : "circle", tint: done ? .systemGreen : .secondaryLabelColor,
-                        font: ctx.base.font()))
-                s.append(NSAttributedString(string: "  ", attributes: [.font: ctx.base.font()]))
+                        font: ctx.base.font(), gap: 8, taskID: item.attr("localId")))
                 s.append(inline(item, ctx.base))
                 paragraph(s, ctx, before: i == 0 ? before : 6)
             }
         case "expand", "nestedExpand":
-            // ponytail: always open; the SwiftUI card folded it.
+            // The disclosure chevron, the title 13 points in, and the content under it only while open; a click on
+            // the line toggles it (the whole line carries the path).
+            let open = expanded?.contains(ctx.path) ?? true
             let title = NSMutableAttributedString(
-                attachment: SymbolCell.attachment("chevron.down", tint: .secondaryLabelColor, font: ctx.base.font()))
+                attachment: SymbolCell.attachment(
+                    open ? "chevron.down" : "chevron.right", tint: .secondaryLabelColor,
+                    font: NSFont.systemFont(ofSize: Self.chevronSize), centred: ctx.base.font()))
             title.append(
                 NSAttributedString(
-                    string: "  " + (node.attr("title") ?? String(localized: "Details")),
+                    string: "\t" + (node.attr("title") ?? String(localized: "Details")),
                     attributes: [.font: ctx.base.font(), .foregroundColor: NSColor.labelColor]))
-            paragraph(title, ctx, before: before)
+            title.addAttribute(.expand, value: ctx.path, range: NSRange(location: 0, length: title.length))
             var c = ctx
+            c.tabs = [NSTextTab(textAlignment: .left, location: ctx.indent + 11.5, options: [:])]
+            paragraph(title, c, before: before + 4, after: 4)  // the group's row is 24 points to the text's 16
+            guard open else { return }
+            c.tabs = ctx.tabs
             c.spacing = 8
             blocks(node.content ?? [], c, first: 6)
         case "layoutSection":
-            // ponytail: columns one under another; the SwiftUI card put them side by side.
-            for (i, col) in (node.content ?? []).enumerated() {
-                blocks(col.content ?? [], ctx, first: i == 0 ? before : 8)
+            // Columns side by side, 16 apart, as a table with no borders.
+            let cols = node.content ?? []
+            let table = NSTextTable()
+            table.numberOfColumns = max(1, cols.count)
+            table.setWidth(before, type: .absoluteValueType, for: .margin, edge: .minY)
+            for (i, col) in cols.enumerated() {
+                let b = NSTextTableBlock(table: table, startingRow: 0, rowSpan: 1, startingColumn: i, columnSpan: 1)
+                b.setValue(100 / CGFloat(cols.count), type: .percentageValueType, for: .width)
+                if i > 0 { b.setWidth(8, type: .absoluteValueType, for: .padding, edge: .minX) }
+                if i + 1 < cols.count { b.setWidth(8, type: .absoluteValueType, for: .padding, edge: .maxX) }
+                var c = ctx
+                c.blocks.append(b)
+                c.spacing = 8
+                c.path += "/\(i)"
+                blocks(col.content ?? [], c)
             }
         default:
             if node.content != nil, node.type != "text" {
@@ -919,7 +1101,7 @@ final class CommentTextView: NSTextView {
     }
 
     /// Appends `text` as one paragraph (hard breaks inside it are line separators) in `ctx`'s blocks and indents.
-    private func paragraph(_ text: NSAttributedString, _ ctx: Ctx, before: CGFloat) {
+    private func paragraph(_ text: NSAttributedString, _ ctx: Ctx, before: CGFloat, after: CGFloat = 0) {
         let start = out.length
         out.append(text)
         out.append(
@@ -927,6 +1109,8 @@ final class CommentTextView: NSTextView {
                 string: "\n", attributes: [.font: ctx.base.font(), .foregroundColor: NSColor.labelColor]))
         let style = NSMutableParagraphStyle()
         style.paragraphSpacingBefore = before
+        // SwiftUI lays a title2 or title3 line out a point taller than TextKit, with the point under the text.
+        style.paragraphSpacing = after + ctx.base.extra
         style.firstLineHeadIndent = ctx.firstIndent
         style.headIndent = ctx.indent
         style.tabStops = ctx.tabs
@@ -976,12 +1160,17 @@ final class CommentTextView: NSTextView {
         guard cols > 0 else { return }
         let table = NSTextTable()
         table.numberOfColumns = cols
-        table.setWidth(before, type: .absoluteValueType, for: .margin, edge: .minY)
         for (r, row) in rows.enumerated() {
             for (ci, cell) in (row.content ?? []).enumerated() {
                 let header = cell.type == "tableHeader"
                 let b = CellBlock(table: table, startingRow: r, rowSpan: 1, startingColumn: ci, columnSpan: 1)
                 b.header = header
+                // The gap above the table on its first row's cells: a margin on the table itself took the same
+                // off its width.
+                if r == 0 {
+                    b.top = before
+                    b.setWidth(before, type: .absoluteValueType, for: .margin, edge: .minY)
+                }
                 b.setWidth(8, type: .absoluteValueType, for: .padding)
                 b.setValue(100 / CGFloat(cols), type: .percentageValueType, for: .width)
                 var c = ctx
@@ -1003,26 +1192,24 @@ final class CommentTextView: NSTextView {
             {
                 let att = NSTextAttachment()
                 att.attachmentCell = ImageCell(attachment: a, picture: image(a))
-                s.append(NSAttributedString(attachment: att))
-            } else {
-                // ponytail: a square chip, not a capsule.
-                let callout = NSFont.preferredFont(forTextStyle: .callout)
-                let bg = NSColor.labelColor.withAlphaComponent(0.05)
-                s.append(NSAttributedString(string: " ", attributes: [.font: callout, .backgroundColor: bg]))
                 s.append(
                     NSAttributedString(
-                        attachment: SymbolCell.attachment(
-                            "photo", tint: .secondaryLabelColor, font: callout, background: bg)))
-                s.append(
-                    NSAttributedString(
-                        string: " " + (m.attr("alt") ?? String(localized: "Attached media")) + " ",
+                        attachment: att,
                         attributes: [
-                            .font: callout, .foregroundColor: NSColor.secondaryLabelColor, .backgroundColor: bg,
+                            .cursor: NSCursor.pointingHand,
+                            .toolTip: String(localized: "\(a.filename) — click to preview"),
                         ]))
+            } else {
+                let att = NSTextAttachment()
+                att.attachmentCell = ChipCell(m.attr("alt") ?? String(localized: "Attached media"))
+                s.append(NSAttributedString(attachment: att))
             }
         }
         paragraph(s, ctx, before: before)
     }
+
+    /// The disclosure chevron's size: a caption-sized symbol, as the SwiftUI group draws it.
+    static let chevronSize: CGFloat = NSFont.preferredFont(forTextStyle: .caption1).pointSize
 
     private static func headingSize(_ level: Int) -> CGFloat {
         switch level {
@@ -1031,6 +1218,26 @@ final class CommentTextView: NSTextView {
         case 3: NSFont.preferredFont(forTextStyle: .title3).pointSize
         default: NSFont.preferredFont(forTextStyle: .headline).pointSize
         }
+    }
+
+    /// What a one-line heading is taller in SwiftUI's `Text` than in TextKit, measured once from a hosted Text:
+    /// there is no formula (title2 and title3 come out a point taller, title1 and body the same). The card put the
+    /// extra under the text, so it goes after the paragraph; a heading that wraps runs that much short per line.
+    private static var extras: [Int: CGFloat] = [:]
+    private static func lineExtra(_ level: Int) -> CGFloat {
+        if let e = extras[level] { return e }
+        let font: Font =
+            switch level {
+            case 1: .title.weight(.semibold)
+            case 2: .title2.weight(.semibold)
+            case 3: .title3.weight(.semibold)
+            default: .headline
+            }
+        let one = NSHostingView(rootView: Text(verbatim: "Ag").font(font)).fittingSize.height
+        let natural = NSLayoutManager().defaultLineHeight(for: Base(size: headingSize(level), weight: .semibold).font())
+        let e = max(0, one - natural)
+        extras[level] = e
+        return e
     }
 
     // MARK: Inline
@@ -1128,10 +1335,14 @@ extension NSColor {
 /// cell borders never showed on a table's top and right edges.
 final class CellBlock: NSTextTableBlock {
     var header = false
+    /// The gap above the table, which the frame handed here includes.
+    var top: CGFloat = 0
 
     override func drawBackground(
         withFrame frameRect: NSRect, in controlView: NSView?, characterRange: NSRange, layoutManager: NSLayoutManager
     ) {
+        let frameRect = NSRect(
+            x: frameRect.minX, y: frameRect.minY + top, width: frameRect.width, height: frameRect.height - top)
         if header {
             NSColor.labelColor.withAlphaComponent(0.06).setFill()
             frameRect.fill()
@@ -1143,13 +1354,29 @@ final class CellBlock: NSTextTableBlock {
     }
 }
 
-/// A code block: 10 points of padding on a faint rounded background.
-final class CodeBlock: NSTextBlock {
+/// A block with a gap above it. The frame TextKit hands `drawBackground` includes that margin, so a background
+/// is drawn in `box`, which leaves it out.
+class MarginBlock: NSTextBlock {
+    private let top: CGFloat
+
     init(topMargin: CGFloat) {
+        top = topMargin
         super.init()
-        setWidth(10, type: .absoluteValueType, for: .padding)
         setWidth(topMargin, type: .absoluteValueType, for: .margin, edge: .minY)
         setValue(100, type: .percentageValueType, for: .width)
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    func box(_ frame: NSRect) -> NSRect {
+        NSRect(x: frame.minX, y: frame.minY + top, width: frame.width, height: frame.height - top)
+    }
+}
+
+/// A code block: 10 points of padding on a faint rounded background.
+final class CodeBlock: MarginBlock {
+    override init(topMargin: CGFloat) {
+        super.init(topMargin: topMargin)
+        setWidth(10, type: .absoluteValueType, for: .padding)
     }
     required init?(coder: NSCoder) { fatalError() }
 
@@ -1157,33 +1384,30 @@ final class CodeBlock: NSTextBlock {
         withFrame frameRect: NSRect, in controlView: NSView?, characterRange: NSRange, layoutManager: NSLayoutManager
     ) {
         NSColor.labelColor.withAlphaComponent(0.05).setFill()
-        NSBezierPath(roundedRect: frameRect, xRadius: 8, yRadius: 8).fill()
+        NSBezierPath(roundedRect: box(frameRect), xRadius: 8, yRadius: 8).fill()
     }
 }
 
 /// A quote: a 3-point bar at the leading edge, the text 13 points in.
-final class QuoteBlock: NSTextBlock {
-    init(topMargin: CGFloat) {
-        super.init()
+final class QuoteBlock: MarginBlock {
+    override init(topMargin: CGFloat) {
+        super.init(topMargin: topMargin)
         setWidth(13, type: .absoluteValueType, for: .padding, edge: .minX)
-        setWidth(topMargin, type: .absoluteValueType, for: .margin, edge: .minY)
-        setValue(100, type: .percentageValueType, for: .width)
     }
     required init?(coder: NSCoder) { fatalError() }
 
     override func drawBackground(
         withFrame frameRect: NSRect, in controlView: NSView?, characterRange: NSRange, layoutManager: NSLayoutManager
     ) {
+        let r = box(frameRect)
         NSColor.tertiaryLabelColor.setFill()
-        NSBezierPath(
-            roundedRect: NSRect(x: frameRect.minX, y: frameRect.minY, width: 3, height: frameRect.height), xRadius: 2,
-            yRadius: 2
-        ).fill()
+        NSBezierPath(roundedRect: NSRect(x: r.minX, y: r.minY, width: 3, height: r.height), xRadius: 2, yRadius: 2)
+            .fill()
     }
 }
 
 /// A panel: an icon in its colour, the text beside it, on a tinted rounded background with 12 points of padding.
-final class PanelBlock: NSTextBlock {
+final class PanelBlock: MarginBlock {
     private let tint: NSColor
     private let icon: NSImage
 
@@ -1197,28 +1421,41 @@ final class PanelBlock: NSTextBlock {
             default: (.systemBlue, "info.circle.fill")
             }
         self.tint = tint
-        icon = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)!
-            .withSymbolConfiguration(
-                .init(pointSize: NSFont.preferredFont(forTextStyle: .body).pointSize, weight: .regular)
-                    .applying(.init(paletteColors: [tint])))!
-        super.init()
+        icon = .symbol(symbol, size: NSFont.preferredFont(forTextStyle: .body).pointSize, weight: .regular, tint: tint)
+        super.init(topMargin: topMargin)
         setWidth(12, type: .absoluteValueType, for: .padding)
-        setWidth(12 + 16 + 10, type: .absoluteValueType, for: .padding, edge: .minX)
-        setWidth(topMargin, type: .absoluteValueType, for: .margin, edge: .minY)
-        setValue(100, type: .percentageValueType, for: .width)
+        setWidth(12 + icon.size.width + 10, type: .absoluteValueType, for: .padding, edge: .minX)
     }
     required init?(coder: NSCoder) { fatalError() }
 
     override func drawBackground(
         withFrame frameRect: NSRect, in controlView: NSView?, characterRange: NSRange, layoutManager: NSLayoutManager
     ) {
+        let r = box(frameRect)
         tint.withAlphaComponent(0.1).setFill()
-        NSBezierPath(roundedRect: frameRect, xRadius: 10, yRadius: 10).fill()
+        NSBezierPath(roundedRect: r, xRadius: 10, yRadius: 10).fill()
         let size = icon.size
         icon.draw(
-            in: NSRect(x: frameRect.minX + 12, y: frameRect.minY + 12, width: size.width, height: size.height),
-            from: .zero,
+            in: NSRect(x: r.minX + 12, y: r.minY + 12, width: size.width, height: size.height), from: .zero,
             operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
+    }
+}
+
+extension NSImage {
+    /// An SF Symbol filled with one colour, as `Image(systemName:)` draws under a `foregroundStyle`: the symbol's
+    /// shape is the template's alpha, so a checkmark stays cut out of its filled circle (a palette colour painted
+    /// every layer, which made a solid blob). Resolved in the app's appearance, so rebuild on a change of it.
+    static func symbol(_ name: String, size: CGFloat, weight: NSFont.Weight, tint: NSColor) -> NSImage {
+        let template = NSImage(systemSymbolName: name, accessibilityDescription: nil)!
+            .withSymbolConfiguration(.init(pointSize: size, weight: weight))!
+        let box = NSRect(origin: .zero, size: template.size)
+        let out = NSImage(size: template.size)
+        out.lockFocus()
+        template.draw(in: box)
+        tint.set()
+        box.fill(using: .sourceIn)  // the tint's own alpha too: a secondary-label grey, not black under it
+        out.unlockFocus()
+        return out
     }
 }
 
@@ -1282,37 +1519,94 @@ final class RuleCell: NSTextAttachmentCell {
     }
 }
 
-/// An SF Symbol on the text's baseline, in a colour, as `Image(systemName:)` sits in a line of text.
+/// An SF Symbol on the text's baseline, in a colour, as `Image(systemName:)` sits in a line of text, with a gap
+/// after it; or centred on a line of `centred`'s x-height, as a disclosure chevron sits beside its label.
 final class SymbolCell: NSTextAttachmentCell {
     private let symbol: NSImage
-    private let descent: CGFloat
-    private let background: NSColor?
+    private let gap: CGFloat
+    private let offset: CGFloat
+    /// The task this circle stands for: a click flips it.
+    let taskID: String?
 
-    static func attachment(_ name: String, tint: NSColor, font: NSFont, background: NSColor? = nil) -> NSTextAttachment
-    {
+    static func attachment(
+        _ name: String, tint: NSColor, font: NSFont, gap: CGFloat = 0, taskID: String? = nil, centred: NSFont? = nil
+    ) -> NSTextAttachment {
         let a = NSTextAttachment()
-        a.attachmentCell = SymbolCell(name, tint: tint, font: font, background: background)
+        a.attachmentCell = SymbolCell(name, tint: tint, font: font, gap: gap, taskID: taskID, centred: centred)
         return a
     }
 
-    init(_ name: String, tint: NSColor, font: NSFont, background: NSColor?) {
-        symbol = NSImage(systemSymbolName: name, accessibilityDescription: nil)!
-            .withSymbolConfiguration(
-                .init(pointSize: font.pointSize, weight: .regular).applying(.init(paletteColors: [tint])))!
-        descent = font.descender
-        self.background = background
+    init(_ name: String, tint: NSColor, font: NSFont, gap: CGFloat, taskID: String?, centred: NSFont?) {
+        let image = NSImage.symbol(name, size: font.pointSize, weight: font.weight, tint: tint)
+        symbol = image
+        self.gap = gap
+        self.taskID = taskID
+        // Centred: the symbol's middle on the middle of the line (its height from the baseline is the descent, the
+        // half leading and half the line), as a disclosure chevron sits beside its label.
+        offset =
+            centred.map {
+                $0.descender - $0.leading / 2 + NSLayoutManager().defaultLineHeight(for: $0) / 2 - image.size.height / 2
+            }
+            ?? font.descender
         super.init(imageCell: nil)
     }
     required init(coder: NSCoder) { fatalError() }
 
-    override func cellSize() -> NSSize { symbol.size }
-    override func cellBaselineOffset() -> NSPoint { NSPoint(x: 0, y: descent) }
+    override func cellSize() -> NSSize { NSSize(width: symbol.size.width + gap, height: symbol.size.height) }
+    override func cellBaselineOffset() -> NSPoint { NSPoint(x: 0, y: offset) }
 
     override func draw(withFrame cellFrame: NSRect, in controlView: NSView?) {
-        if let background {
-            background.setFill()
-            cellFrame.fill()
-        }
-        symbol.draw(in: cellFrame, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
+        var box = cellFrame
+        box.size.width = symbol.size.width
+        symbol.draw(in: box, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
+    }
+}
+
+/// A media item that is not a picture (a video, a file): its name after a photo symbol in a grey capsule, as the
+/// SwiftUI card's `Label` chip.
+final class ChipCell: NSTextAttachmentCell {
+    private let text: NSAttributedString
+    private let symbol: NSImage
+    private let size: NSSize
+    private let baseline: CGFloat
+
+    init(_ name: String) {
+        let font = NSFont.preferredFont(forTextStyle: .callout)
+        text = NSAttributedString(
+            string: name, attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor])
+        symbol = NSImage(systemSymbolName: "photo", accessibilityDescription: nil)!
+            .withSymbolConfiguration(
+                .init(pointSize: font.pointSize, weight: .regular).applying(
+                    .init(paletteColors: [.secondaryLabelColor])))!
+        size = NSSize(width: 10 + symbol.size.width + 4 + ceil(text.size().width) + 10, height: 6 + 16 + 6)
+        baseline = font.descender - 6
+        super.init(imageCell: nil)
+    }
+    required init(coder: NSCoder) { fatalError() }
+
+    override func cellSize() -> NSSize { size }
+    override func cellBaselineOffset() -> NSPoint { NSPoint(x: 0, y: baseline) }
+
+    override func draw(withFrame cellFrame: NSRect, in controlView: NSView?) {
+        NSColor.labelColor.withAlphaComponent(0.05).setFill()
+        NSBezierPath(roundedRect: cellFrame, xRadius: cellFrame.height / 2, yRadius: cellFrame.height / 2).fill()
+        let s = symbol.size
+        symbol.draw(
+            in: NSRect(x: cellFrame.minX + 10, y: cellFrame.midY - s.height / 2, width: s.width, height: s.height),
+            from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
+        text.draw(at: NSPoint(x: cellFrame.minX + 10 + s.width + 4, y: cellFrame.minY + 6))
+    }
+}
+
+extension NSAttributedString.Key {
+    /// On an expand's title line: the expand's path, for the click that opens or closes it.
+    static let expand = NSAttributedString.Key("conductor.expand")
+}
+
+extension NSFont {
+    /// The weight the font was made with, for a symbol drawn beside it.
+    var weight: NSFont.Weight {
+        let traits = fontDescriptor.object(forKey: .traits) as? [NSFontDescriptor.TraitKey: Any]
+        return NSFont.Weight(rawValue: traits?[.weight] as? CGFloat ?? 0)
     }
 }

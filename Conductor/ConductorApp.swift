@@ -163,6 +163,11 @@ struct RootView: View {
     /// The list toolbar's title item, measured: the list column is never narrower than its toolbar.
     @State private var listTitleWidth: CGFloat = 0
     @State private var restored = false
+    /// An issue has been previewed in this window, by the user or by the restore: from then on the stored
+    /// selection is only written. SceneStorage echoes a value written seconds earlier as a change of its own, and
+    /// acting on that put an older issue back under the arrows, and SwiftUI then merged the table's next moves
+    /// into it ("2 Issues Selected" after ⌘R and ↓).
+    @State private var previewedOnce = false
 
     private var currentProject: (Project, AccountState)? {
         guard let id = filters.account, let st = session.state(id), let key = filters.project,
@@ -259,10 +264,12 @@ struct RootView: View {
         // The window's stored list can arrive after its first appearance, behind the launch default; the writes
         // above always match `filters`, so a value that differs is the system's and wins.
         .onChange(of: previewed) { _, new in
+            if new != nil { previewedOnce = true }
             storedSelection =
                 new.flatMap { try? JSONEncoder().encode($0) }.flatMap { String(data: $0, encoding: .utf8) } ?? ""
         }
-        .onChange(of: storedSelection) { restoreSelection() }  // the system's value can arrive late, as the list's
+        // The system's value can arrive late, as the list's; only until something has been previewed here.
+        .onChange(of: storedSelection) { if !previewedOnce { restoreSelection() } }
         .onChange(of: storedFilters) { _, new in
             if let data = new.data(using: .utf8), let f = try? JSONDecoder().decode(ListFilters.self, from: data),
                 f != filters, f.account.map({ session.state($0) != nil }) ?? true

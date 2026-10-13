@@ -512,7 +512,6 @@ struct IssueDetailView: View {
         }
         .environment(\.adfAttachments, issue.fields.attachment ?? [])
         .environment(\.previewURL, $store.previewURL)
-        .environment(\.adfToggleTask, store.canEdit("description") ? TaskToggle(flip: toggleTask) : nil)
     }
 
     /// Everything between the description and the comments.
@@ -640,12 +639,12 @@ struct IssueDetailView: View {
                         })
                 }
             } else if let d = issue.fields.description, !(d.content ?? []).isEmpty {
-                ADFView(node: d)
-                    // A new view for new text: the selectable text's accessibility element kept the first text it
-                    // was given, so VoiceOver read the previous issue's description after a switch.
-                    .id(d)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(ReaderMenu())  // a right-click copies a selection and does nothing else
+                let flip: ((String) -> Void)? = store.canEdit("description") ? { toggleTask($0) } : nil
+                DescriptionText(
+                    node: d, attachments: issue.fields.attachment ?? [], loadImage: loadImage, onPreview: preview,
+                    client: jira?.client, toggleTask: flip
+                )
+                .frame(maxWidth: .infinity, alignment: .leading)
             } else if store.isPartial {
                 DelayedSpinner()
             } else if store.canEdit("description") {
@@ -1748,13 +1747,7 @@ struct IssueDetailView: View {
     }
 
     private func saveAs(_ a: Attachment) {
-        guard let c = jira?.client else { return }
-        let panel = NSSavePanel()
-        panel.nameFieldStringValue = a.filename
-        guard panel.runModal() == .OK, let dest = panel.url else { return }
-        Task {
-            do { try await c.data(for: a.content).write(to: dest) } catch { store.error = error.localizedDescription }
-        }
+        if let c = jira?.client { AttachmentOpener.saveAs(a, client: c) }
     }
 
     private func attachFiles() {
@@ -1941,6 +1934,18 @@ enum AttachmentOpener {
 
     static func open(_ attachment: Attachment, client: JiraClient) async {
         if let file = await download(attachment, client: client) { NSWorkspace.shared.open(file) }
+    }
+
+    /// A save panel, then the bytes to where it says; a failed write is said in an alert.
+    @MainActor static func saveAs(_ attachment: Attachment, client: JiraClient) {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = attachment.filename
+        guard panel.runModal() == .OK, let dest = panel.url else { return }
+        Task {
+            do { try await client.data(for: attachment.content).write(to: dest) } catch {
+                NSAlert(error: error).runModal()
+            }
+        }
     }
 
     static func type(_ attachment: Attachment) -> UTType {

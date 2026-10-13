@@ -446,7 +446,8 @@ struct SidebarView: View {
         }
         // Double-click (or ↩) on a project row opens its board. Read here, not with a double-tap recogniser on the
         // row: that made every single click wait out the double-click interval before the list switched.
-        .contextMenu(forSelectionType: ListFilters.self) { _ in } primaryAction: { rows in
+        .contextMenu(forSelectionType: ListFilters.self) { _ in
+        } primaryAction: { rows in
             guard let f = rows.first, let id = f.account, let key = f.project else { return }
             var bare = ListFilters()
             (bare.account, bare.project) = (id, key)
@@ -536,17 +537,14 @@ struct SidebarView: View {
             }
     }
 
-    /// A sidebar label whose icon carries the account colour; unified entries take the accent from the system.
-    /// Every icon goes grey with the window, as the system's own do.
+    /// A sidebar label whose icon carries the account colour; unified entries take the accent. Every icon goes grey
+    /// with the window, as the system's own do. The colour is set here for every icon: one left to the system's
+    /// sidebar tint went missing for a few frames while a reopened window became key.
     private func tinted(_ title: String, symbol: String, color: Color?) -> some View {
         Label {
             Text(title)
         } icon: {
-            if let color {
-                Image(systemName: symbol).foregroundStyle(active ? color : .secondary)
-            } else {
-                Image(systemName: symbol)
-            }
+            Image(systemName: symbol).foregroundStyle(active ? color ?? .accentColor : .secondary)
         }
     }
 

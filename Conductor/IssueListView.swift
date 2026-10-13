@@ -83,6 +83,8 @@ final class IssueListStore {
     var count: Int { query != nil && !hasMore && !isLoading ? rows.count : max(total ?? 0, rows.count) }
     /// True from the start: a new list is always about to load, and must not flash "No issues" first.
     var isLoading = true
+    /// The next page is on its way: the only load that shows a spinner under rows already on screen.
+    var isLoadingMore = false
     var error: String?
     /// The filters restrict nothing, which Jira refuses; the list explains instead of asking.
     var unbounded = false
@@ -346,8 +348,12 @@ final class IssueListStore {
         guard hasMore, !isLoading, let cache = query?.cache else { return }
         let gen = generation
         isLoading = true
+        isLoadingMore = true
         // Not for a superseded page: the load that replaced it is still running under the same flag.
-        defer { if gen == generation { isLoading = false } }
+        defer {
+            isLoadingMore = false
+            if gen == generation { isLoading = false }
+        }
         let before = rows.count
         while gen == generation, rows.count == before, let id = waiting {
             do { try await fetchPage(id, gen: gen) } catch { return fail(error, cacheable: cache) }
@@ -400,6 +406,8 @@ struct IssueListView: View {
     @State private var opened: IssueTarget?
     /// The keyboard is in the preview beside the list: the selection goes grey, as Mail's does.
     @State private var previewFocused = false
+    /// A plain press on one row of a multi-selection, and where: the mouse-up narrows the selection to it.
+    @State private var pressed: (Int, NSPoint)?
     /// Parents whose subtasks are unfolded. Per parent, so opening one never shifts the rows above it.
     @State private var expanded: Set<String> = []
     private var displayRows: [DisplayRow] { DisplayRow.nest(store.rows, expanded: expanded, sort: filters.sort) }
@@ -425,7 +433,20 @@ struct IssueListView: View {
 
     var body: some View {
         let shown = displayRows
-        List(selection: $selection) {
+        // What the table has selected is the truth: SwiftUI builds this set from the table's changes since its
+        // last pass, and when several land between passes (arrows queued behind a refresh) it adds the new row
+        // without dropping the old one ("2 Issues Selected" after ⌘R and ↓).
+        let listSelection = Binding<Set<IssueTarget>>(get: { selection }) { new in
+            if new.count > 1, let t = NSApp.keyWindow?.contentView.flatMap(firstTable),
+                t.selectedRowIndexes.count < new.count
+            {
+                let actual = Set(t.selectedRowIndexes.compactMap { $0 < shown.count ? shown[$0].row.target : nil })
+                selection = actual.isEmpty ? new : actual
+            } else {
+                selection = new
+            }
+        }
+        List(selection: listSelection) {
             ForEach(Array(shown.enumerated()), id: \.element.id) { i, d in
                 let row = d.row
                 // The open issue stays in the accent colour while the window is active, as in Notes and Mail;
@@ -477,8 +498,9 @@ struct IssueListView: View {
                 }
             }
             // Only while there is nothing to show or the next page is coming: a refresh behind rows that are
-            // already on screen must not add and remove a row at the end of the list.
-            if store.isLoading, store.rows.isEmpty || store.hasMore {
+            // already on screen must not add and remove a row at the end of the list (the table then re-applied
+            // a selection a click had just changed, and the arrows were lost).
+            if store.isLoading, store.rows.isEmpty || store.isLoadingMore {
                 HStack {
                     Spacer()
                     ProgressView().controlSize(.small)
@@ -707,9 +729,37 @@ struct IssueListView: View {
             searchFocused = false  // or SwiftUI hands the keyboard straight back to the search field
             NSApp.keyWindow?.focusList()
         }
-        // ↓ in the search field goes on to the results, as in Spotlight, unless completions are showing.
+        // ↓ in the search field goes on to the results, as in Spotlight, unless completions are showing. A click
+        // on the rows takes the keyboard from the search field before the table sees it, so a click on the row
+        // that is already selected takes it too (the selection does not change, so onChange above never fires).
         .background(
-            WindowEventMonitor(mask: .keyDown) { e in
+            WindowEventMonitor(mask: [.keyDown, .leftMouseDown, .leftMouseUp]) { e in
+                if e.type != .keyDown {
+                    guard let w = e.window, let table = w.contentView.flatMap(firstTable),
+                        table.convert(table.bounds, to: nil).contains(e.locationInWindow)
+                    else { return e }
+                    let row = table.row(at: table.convert(e.locationInWindow, from: nil))
+                    if e.type == .leftMouseDown {
+                        if w.firstResponder !== table {
+                            searchFocused = false
+                            w.makeFirstResponder(table)
+                        }
+                        // A plain click on one row of a multi-selection: AppKit narrows the selection to that row
+                        // on the mouse-up (the press may start a drag instead); SwiftUI's list leaves it as it is.
+                        // Done on the table, not the binding: the binding reaches the table a turn later and would
+                        // then undo the arrows pressed in between.
+                        let plain = e.modifierFlags.intersection([.command, .shift]).isEmpty
+                        pressed =
+                            plain && row >= 0 && table.selectedRowIndexes.count > 1 && table.isRowSelected(row)
+                            ? (row, e.locationInWindow) : nil
+                    } else if let (r, at) = pressed {
+                        pressed = nil
+                        if hypot(e.locationInWindow.x - at.x, e.locationInWindow.y - at.y) < 3 {
+                            table.selectRowIndexes(IndexSet(integer: r), byExtendingSelection: false)
+                        }
+                    }
+                    return e
+                }
                 // Arrows carry the function and numeric-pad flags, so only the real modifiers count.
                 guard e.keyCode == 125, e.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty,
                     let tv = e.window?.firstResponder as? NSTextView, tv.isFieldEditor, tv.delegate is NSSearchField,
@@ -1396,7 +1446,11 @@ struct SortMenuItems: View {
 
     var body: some View {
         ForEach(ListFilters.Sort.Field.allCases, id: \.self) { f in
-            Toggle(f.title, isOn: Binding(get: { sort.field == f }, set: { if $0 { sort.field = f } }))
+            // A field starts in its natural direction: due dates soonest first, everything else newest or highest first.
+            Toggle(
+                f.title,
+                isOn: Binding(
+                    get: { sort.field == f }, set: { if $0 { sort = .init(field: f, descending: f != .due) } }))
         }
         Divider()
         Toggle("Ascending", isOn: Binding(get: { !sort.descending }, set: { if $0 { sort.descending = false } }))

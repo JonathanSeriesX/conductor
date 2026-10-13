@@ -230,7 +230,6 @@ struct ADFBlock: View {
     let node: ADFNode
     @Environment(\.adfAttachments) private var attachments
     @Environment(\.adfHeaderCell) private var headerCell
-    @Environment(\.adfToggleTask) private var toggleTask
     @State private var expanded = false
 
     var body: some View {
@@ -308,17 +307,8 @@ struct ADFBlock: View {
                 ForEach(Array((node.content ?? []).enumerated()), id: \.offset) { _, item in
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
                         let done = item.attr("state") == "DONE"
-                        let mark = Image(systemName: done ? "checkmark.circle.fill" : "circle")
+                        Image(systemName: done ? "checkmark.circle.fill" : "circle")
                             .foregroundStyle(done ? .green : .secondary)
-                        if let toggleTask, let id = item.attr("localId") {
-                            Button {
-                                toggleTask.flip(id)
-                            } label: {
-                                mark
-                            }.buttonStyle(.plain)
-                        } else {
-                            mark
-                        }
                         Text(item.inlineAttributed()).fixedSize(horizontal: false, vertical: true)
                     }
                 }
@@ -401,14 +391,6 @@ extension EnvironmentValues {
     @Entry var adfAttachments: [Attachment] = []
     /// Set by the issue view: the Quick Look URL an inline image writes to when clicked.
     @Entry var previewURL: Binding<URL?>? = nil
-    /// Set by the issue view where the description can be edited: flips the task with this localId, in Jira too.
-    @Entry var adfToggleTask: TaskToggle? = nil
-}
-
-/// Equal to any other, so a new closure on each update does not re-render every block that reads it.
-struct TaskToggle: Equatable {
-    let flip: (String) -> Void
-    static func == (a: Self, b: Self) -> Bool { true }
 }
 
 struct InlineImage: View {

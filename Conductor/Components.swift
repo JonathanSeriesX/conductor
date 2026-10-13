@@ -877,7 +877,8 @@ final class PageKeyView: NSView {
         guard let w = window, w.isKeyWindow, let sv = enclosingScrollView else { return false }
         let fr = w.firstResponder
         if fr === self { return true }
-        if fr is NSTextView || fr is NSTableView { return false }
+        // A description or comment being read is the page's; one being written keeps its arrows.
+        if (fr as? NSTextView)?.isEditable == true || fr is NSTableView { return false }
         if let v = fr as? NSView, v.isDescendant(of: sv) { return true }
         return standalone
     }
