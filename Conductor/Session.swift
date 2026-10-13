@@ -779,16 +779,17 @@ final class Session {
         pendingOpen = IssueTarget(accountID: st.id, key: parts[1])
     }
 
-    /// "…/browse/ES-123" or "…?selectedIssue=ES-123" → "ES-123".
+    /// "…/browse/ES-123", "…/jira/software/…/issues/ES-123" (or core) or "…?selectedIssue=ES-123" → "ES-123";
+    /// a project's own page ("…/browse/ES") carries none.
     nonisolated static func issueKey(in url: URL) -> String? {
         let parts = url.pathComponents
-        if let i = parts.firstIndex(of: "browse"), i + 1 < parts.count { return parts[i + 1].uppercased() }
-        if let v = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first(where: {
-            $0.name == "selectedIssue"
-        })?.value {
-            return v.uppercased()
-        }
-        return nil
+        let i = parts.firstIndex(of: "browse") ?? (parts.contains("jira") ? parts.firstIndex(of: "issues") : nil)
+        let query = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems
+        let raw =
+            i.flatMap { $0 + 1 < parts.count ? parts[$0 + 1] : nil }
+            ?? query?.first { $0.name == "selectedIssue" }?.value
+        guard let key = raw?.uppercased(), key.wholeMatch(of: /[A-Z][A-Z0-9_]+-\d+/) != nil else { return nil }
+        return key
     }
 }
 

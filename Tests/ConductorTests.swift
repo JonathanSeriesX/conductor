@@ -564,6 +564,10 @@ final class FilterAndDurationTests: XCTestCase {
             Session.issueKey(
                 in: URL(string: "https://x.atlassian.net/jira/software/projects/ES/boards/62?selectedIssue=ES-9")!),
             "ES-9")
+        XCTAssertEqual(
+            Session.issueKey(in: URL(string: "https://x.atlassian.net/jira/software/c/projects/ES/issues/ES-7?jql=")!),
+            "ES-7")
+        XCTAssertNil(Session.issueKey(in: URL(string: "https://x.atlassian.net/browse/ES")!))
         XCTAssertNil(Session.issueKey(in: URL(string: "https://x.atlassian.net/")!))
     }
 }

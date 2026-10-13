@@ -14,7 +14,7 @@ final class IssueDetailStore {
     var error: String?
     var isWorking = false
     var previewURL: URL?
-    /// Jira answered 404: the issue was deleted or moved since it was cached.
+    /// Jira answered 404, as it does for an issue deleted or moved, a key never used, and one this account can't see.
     var gone = false
 
     var priorities: [Priority] {
@@ -344,8 +344,10 @@ struct IssueDetailView: View {
                 content(issue)
             } else if store.gone {
                 ContentUnavailableView(
-                    "\(key) no longer exists", systemImage: "trash",
-                    description: Text("It was deleted or moved in Jira."))
+                    "Can't find \(key) in Jira", systemImage: "magnifyingglass",
+                    description: Text(
+                        "It may have been deleted or moved, the key may never have been used, or you may not have access to it."
+                    ))
             } else if store.error == nil {
                 DelayedSpinner(size: .regular)
             } else {
@@ -495,7 +497,9 @@ struct IssueDetailView: View {
                     }
                 }
                 .padding(.horizontal, 20).padding(.bottom, 20)
-                .padding(.top, embedded ? 10 : 17)  // the crumb sits on the line of the list's chips
+                // The preview's crumb sits on the line of the list's chips. A window's title sits 20 pt under the
+                // toolbar's buttons, which end 8 pt above the toolbar's edge: as far as the page sits in from the sides.
+                .padding(.top, embedded ? 10 : 12)
                 .coordinateSpace(.named(PageReveal.space))
                 .background(PageKeys(standalone: !embedded, reveal: pageReveal))
                 // The anchor is the padded page, not the header: scrolled to its top, the header kept none of the
@@ -571,45 +575,43 @@ struct IssueDetailView: View {
             if embedded { Crumb(issue: store.issue, key: key, open: open) }  // a window carries it in its toolbar
             if summaryDraft != nil {
                 // The field takes the title's place exactly: the padding inside the background equals the negative
-                // padding outside it, so the text does not move and the page below stays put.
-                TextField("Summary", text: Binding($summaryDraft, or: ""), axis: .vertical)
+                // padding outside it, so the text does not move. The title's text sizes the header, not the field: a
+                // field stands a point taller than its text, and everything below dropped a point while it was open.
+                // Unfocused, the field leaves out its last line when SwiftUI rounds its height a fraction of a point
+                // under the text's, so until it has the keyboard the text shows through; clicks go to the field.
+                Text(summaryDraft ?? "")
                     .font(.system(.largeTitle, design: .rounded, weight: .semibold))
-                    .textFieldStyle(.plain)
-                    .lineLimit(1...)
-                    .focused($summaryFocused)
-                    // Leaving the field for anything else on the page saves it, as a blurred field does on the web:
-                    // left open without the keyboard, it sat there frozen. A popover opening reports the field
-                    // unfocused while it still has the keyboard, so the save waits a turn and looks again; an app
-                    // switch keeps the focus and saves nothing.
-                    .onChange(of: summaryFocused) { _, focused in
-                        guard !focused else { return }
-                        let shown = store.issue?.key
-                        DispatchQueue.main.async {
-                            let fr = NSApp.keyWindow?.firstResponder as? NSTextView
-                            let stillHere = fr?.isFieldEditor == true && !(fr?.delegate is NSSearchField)
-                            guard summaryDraft != nil, !summaryFocused, !stillHere, store.issue?.key == shown,
-                                NSApp.isActive
-                            else { return }
-                            saveSummary(blurred: true)
-                        }
-                    }
-                    .onSubmit { saveSummary() }
-                    .onExitCommand {
-                        summaryDraft = nil
-                        NSApp.keyWindow?.focusList()
-                    }
-                    // Unfocused, the field leaves out its last line when SwiftUI rounds its height a fraction of a
-                    // point under the text's, so it blinked as the editor opened and was gone
-                    // whenever the editor lost the keyboard. Until it has the keyboard the title is drawn as text in
-                    // its place; clicks go through to the field.
-                    .opacity(summaryFocused ? 1 : 0)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .opacity(summaryFocused ? 0 : 1)
                     .overlay(alignment: .topLeading) {
-                        if !summaryFocused {
-                            Text(summaryDraft ?? "")
-                                .font(.system(.largeTitle, design: .rounded, weight: .semibold))
-                                .fixedSize(horizontal: false, vertical: true)
-                                .allowsHitTesting(false)
-                        }
+                        TextField("Summary", text: Binding($summaryDraft, or: ""), axis: .vertical)
+                            .font(.system(.largeTitle, design: .rounded, weight: .semibold))
+                            .textFieldStyle(.plain)
+                            .lineLimit(1...)
+                            .focused($summaryFocused)
+                            // Leaving the field for anything else on the page saves it, as a blurred field does on
+                            // the web: left open without the keyboard, it sat there frozen. A popover opening reports
+                            // the field unfocused while it still has the keyboard, so the save waits a turn and looks
+                            // again; an app switch keeps the focus and saves nothing.
+                            .onChange(of: summaryFocused) { _, focused in
+                                guard !focused else { return }
+                                let shown = store.issue?.key
+                                DispatchQueue.main.async {
+                                    let fr = NSApp.keyWindow?.firstResponder as? NSTextView
+                                    let stillHere = fr?.isFieldEditor == true && !(fr?.delegate is NSSearchField)
+                                    guard summaryDraft != nil, !summaryFocused, !stillHere, store.issue?.key == shown,
+                                        NSApp.isActive
+                                    else { return }
+                                    saveSummary(blurred: true)
+                                }
+                            }
+                            .onSubmit { saveSummary() }
+                            .onExitCommand {
+                                summaryDraft = nil
+                                NSApp.keyWindow?.focusList()
+                            }
+                            .opacity(summaryFocused ? 1 : 0)
                     }
                     .padding(.horizontal, 8).padding(.vertical, 4)
                     .background(.quaternary.opacity(0.4), in: .rect(cornerRadius: 10))

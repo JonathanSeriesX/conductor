@@ -304,6 +304,7 @@ struct Foldable<Header: View, Content: View>: View {
             header
                 .contentShape(.rect)
                 .onTapGesture { fold() }
+                .environment(\.fold) { fold() }
                 .background(ScrollProbe(measured: measured))
                 .onGeometryChange(for: CGFloat.self) {
                     $0.size.height
@@ -792,13 +793,22 @@ struct BackdropBlur: NSViewRepresentable {
 /// The fold chevron at the end of a card's title or a group's row: down while open, sideways while folded.
 struct Disclosure: View {
     let collapsed: Bool
+    @Environment(\.fold) private var fold
     var body: some View {
         Image(systemName: "chevron.down")
             .font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
             .rotationEffect(.degrees(collapsed ? -90 : 0))
             .frame(width: 18, height: 18)
             .accessibilityLabel(collapsed ? Text("Expand") : Text("Collapse"))
+            .accessibilityAddTraits(.isButton)
+            .accessibilityRemoveTraits(.isImage)
+            .accessibilityAction { fold() }
     }
+}
+
+extension EnvironmentValues {
+    /// The nearest `Foldable`'s fold, for its chevron's accessibility press (a click goes to the whole header).
+    @Entry var fold: () -> Void = {}
 }
 
 /// Which cards and groups are folded, per issue ("CON-12|comments"), kept on this Mac across launches.

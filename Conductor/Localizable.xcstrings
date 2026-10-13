@@ -1168,100 +1168,6 @@
         }
       }
     },
-    "%@ no longer exists" : {
-      "localizations" : {
-        "ar" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "المشكلة %@ لم تعد موجودة"
-          }
-        },
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%@ existiert nicht mehr"
-          }
-        },
-        "es" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%@ ya no existe"
-          }
-        },
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%@ n’existe plus"
-          }
-        },
-        "hi" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%@ अब मौजूद नहीं है"
-          }
-        },
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%@ non esiste più"
-          }
-        },
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%@は存在しません"
-          }
-        },
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%@이(가) 더 이상 존재하지 않음"
-          }
-        },
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%@ już nie istnieje"
-          }
-        },
-        "pt-BR" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%@ não existe mais"
-          }
-        },
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%@ больше не существует"
-          }
-        },
-        "tr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%@ artık mevcut değil"
-          }
-        },
-        "uk" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%@ більше не існує"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%@ 已不存在"
-          }
-        },
-        "zh-Hant" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%@ 已不存在"
-          }
-        }
-      }
-    },
     "%@ remaining" : {
       "localizations" : {
         "ar" : {
@@ -8910,6 +8816,100 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "項目符號列表"
+          }
+        }
+      }
+    },
+    "Can't find %@ in Jira" : {
+      "localizations" : {
+        "ar" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "تعذّر العثور على %@ في Jira"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ wurde in Jira nicht gefunden"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No se encuentra %@ en Jira"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Impossible de trouver %@ dans Jira"
+          }
+        },
+        "hi" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Jira में %@ नहीं मिला"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Impossibile trovare %@ in Jira"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Jiraで%@が見つかりません"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Jira에서 %@을(를) 찾을 수 없음"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nie można znaleźć %@ w Jira"
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Não foi possível encontrar %@ no Jira"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удаётся найти %@ в Jira"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ Jira'da bulunamadı"
+          }
+        },
+        "uk" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не вдається знайти %@ у Jira"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在 Jira 中找不到 %@"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在 Jira 中找不到 %@"
           }
         }
       }
@@ -20338,96 +20338,96 @@
         }
       }
     },
-    "It was deleted or moved in Jira." : {
+    "It may have been deleted or moved, the key may never have been used, or you may not have access to it." : {
       "localizations" : {
         "ar" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "حُذفت أو نُقلت في Jira."
+            "value" : "ربما حُذفت أو نُقلت، أو لم يُستخدم هذا المفتاح قط، أو ليس لديك صلاحية الوصول إليها."
           }
         },
         "de" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Er wurde in Jira gelöscht oder verschoben."
+            "value" : "Möglicherweise wurde er gelöscht oder verschoben, der Schlüssel wurde nie vergeben, oder Sie haben keinen Zugriff darauf."
           }
         },
         "es" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Se eliminó o se movió en Jira."
+            "value" : "Puede que se haya eliminado o movido, que la clave nunca se haya usado o que no tengas acceso."
           }
         },
         "fr" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Il a été supprimé ou déplacé dans Jira."
+            "value" : "Il a peut-être été supprimé ou déplacé, la clé n’a peut-être jamais été utilisée, ou vous n’y avez pas accès."
           }
         },
         "hi" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "इसे Jira में डिलीट या मूव कर दिया गया है।"
+            "value" : "हो सकता है इसे डिलीट या मूव कर दिया गया हो, यह कुंजी कभी इस्तेमाल न हुई हो, या आपके पास इसका एक्सेस न हो।"
           }
         },
         "it" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "È stato eliminato o spostato in Jira."
+            "value" : "Potrebbe essere stato eliminato o spostato, la chiave potrebbe non essere mai stata usata, oppure non hai accesso."
           }
         },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Jiraで削除または移動されました。"
+            "value" : "削除または移動されたか、このキーが一度も使われていないか、アクセス権がない可能性があります。"
           }
         },
         "ko" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Jira에서 삭제되었거나 이동되었습니다."
+            "value" : "삭제 또는 이동되었거나, 사용된 적 없는 키이거나, 액세스 권한이 없을 수 있습니다."
           }
         },
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Zgłoszenie zostało usunięte lub przeniesione w Jira."
+            "value" : "Zgłoszenie mogło zostać usunięte lub przeniesione, klucz mógł nigdy nie być użyty albo nie masz do niego dostępu."
           }
         },
         "pt-BR" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Ele foi excluído ou movido no Jira."
+            "value" : "Ele pode ter sido excluído ou movido, a chave pode nunca ter sido usada ou você pode não ter acesso a ele."
           }
         },
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Задача была удалена или перемещена в Jira."
+            "value" : "Возможно, задача удалена или перемещена, такой ключ никогда не использовался или у вас нет к ней доступа."
           }
         },
         "tr" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Jira'da silinmiş veya taşınmış."
+            "value" : "Silinmiş veya taşınmış olabilir, bu anahtar hiç kullanılmamış olabilir ya da erişiminiz olmayabilir."
           }
         },
         "uk" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Її видалено або переміщено в Jira."
+            "value" : "Можливо, задачу видалено або переміщено, такий ключ ніколи не використовувався або у вас немає до неї доступу."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "它已在 Jira 中被删除或移动。"
+            "value" : "它可能已被删除或移动，该关键字可能从未使用过，或者你没有访问权限。"
           }
         },
         "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "它已在 Jira 中被刪除或移動。"
+            "value" : "它可能已被刪除或移動，該索引鍵可能從未使用過，或者你沒有存取權限。"
           }
         }
       }

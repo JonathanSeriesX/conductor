@@ -602,24 +602,17 @@ struct IssueListView: View {
             }
         }
         .onSubmit(of: .search) {
-            if let url = URL(string: filters.text), url.scheme?.hasPrefix("http") == true,
-                Session.issueKey(in: url) != nil
-            {
-                session.open(url: url)
-                filters.text = ""
-                searchFocused = false  // or the recent-searches panel stays under the field
-                return
-            }
-            // A key opens its issue at once: the list shows the row and the preview shows the page.
-            if filters.isKey {
-                let key = filters.text.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-                if let st = filters.account.flatMap(session.state) ?? session.state(forKey: key) {
-                    selection = [IssueTarget(accountID: st.id, key: key)]
-                    searchFocused = false
-                }
-                return
-            }
-            session.recordSearch(filters.text)
+            if filters.isKey { openKey() } else { session.recordSearch(filters.text) }
+        }
+        // A pasted Jira link becomes its key at once, on the account of the link's site when one is signed in.
+        .onChange(of: filters.text) { _, text in
+            guard let url = URL(string: text.trimmingCharacters(in: .whitespacesAndNewlines)),
+                url.scheme?.hasPrefix("http") == true, let key = Session.issueKey(in: url)
+            else { return }
+            if let st = session.state(host: url.host() ?? ""), filters.account != st.id { setAccount(st.id) }
+            filters.text = key
+            // A turn later: the main window drops the selection when the account changes, and this lands after it.
+            DispatchQueue.main.async { openKey() }
         }
         .toolbar(id: "list") {
             ToolbarItem(id: "title") {
@@ -760,6 +753,22 @@ struct IssueListView: View {
                     }
                     return e
                 }
+                // The window's one field editor serves the search and the page's summary editor alike: the search,
+                // where JQL goes, gets no text replacement or autocorrection; the others what the system says.
+                if let tv = e.window?.firstResponder as? NSTextView, tv.isFieldEditor {
+                    let search = tv.delegate is NSSearchField
+                    tv.isAutomaticTextReplacementEnabled = !search && NSSpellChecker.isAutomaticTextReplacementEnabled
+                    tv.isAutomaticSpellingCorrectionEnabled =
+                        !search && NSSpellChecker.isAutomaticSpellingCorrectionEnabled
+                    // Nor ". " for two spaces: the input context adds it, and no switch on the text view turns it
+                    // off, so a space goes in directly.
+                    if search, e.keyCode == 49, e.modifierFlags.intersection([.command, .option, .control]).isEmpty,
+                        !tv.hasMarkedText()
+                    {
+                        tv.insertText(" ", replacementRange: tv.selectedRange())
+                        return nil
+                    }
+                }
                 // Arrows carry the function and numeric-pad flags, so only the real modifiers count.
                 guard e.keyCode == 125, e.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty,
                     let tv = e.window?.firstResponder as? NSTextView, tv.isFieldEditor, tv.delegate is NSSearchField,
@@ -772,6 +781,21 @@ struct IssueListView: View {
             }
         )
         .errorAlert($store.error)
+    }
+
+    /// A key opens its issue at once: the list shows the row and the preview shows the page. The list's account
+    /// decides, else the one account with that project; with several, no guess: the list shows a row per account
+    /// and the keyboard goes to it, so ↓ picks one.
+    private func openKey() {
+        let key = filters.text.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        let project = key.prefix { $0 != "-" }
+        let owners = session.states.filter { $0.projects.contains { $0.key == project } }
+        searchFocused = false
+        if let st = filters.account.flatMap(session.state) ?? (owners.count > 1 ? nil : session.state(forKey: key)) {
+            selection = [IssueTarget(accountID: st.id, key: key)]
+        } else {
+            NSApp.keyWindow?.focusList()
+        }
     }
 
     private var suggestionRows: some View {

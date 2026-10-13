@@ -525,6 +525,7 @@ private struct HostedEditor: View {
             editorView = nil
             body.isHidden = false
             body.textStorage?.setAttributedString(text ?? NSAttributedString())
+            body.dim()
         }
         needsLayout = true
         needsDisplay = true
@@ -582,6 +583,7 @@ private struct HostedEditor: View {
     private func dim() {
         avatar.contentFilters = active ? [] : [Self.desaturate]
         avatar.alphaValue = active ? 1 : 0.6
+        body.active = active
     }
 
     override func layout() {
@@ -630,8 +632,8 @@ private struct HostedEditor: View {
 
 /// A symbol in the tertiary colour that runs an action on a click, as `.buttonStyle(.plain).foregroundStyle(.tertiary)`
 /// draws one. Not an NSButton: its tooltip and baseline asked the button's visual provider for metrics on every
-/// tick of a scroll.
-final class SymbolButton: NSView {
+/// tick of a scroll. The protocol makes it an accessibility element: a plain view is none, whatever its role and label.
+final class SymbolButton: NSView, @MainActor NSAccessibilityButton {
     var action: () -> Void = {}
     private let symbol: NSImage
 
@@ -715,6 +717,27 @@ class CommentTextView: NSTextView {
     }
 
     required init?(coder: NSCoder) { fatalError() }
+
+    /// Inline images and accent-coloured text (mentions) grey while the window is inactive, as the attachment
+    /// tiles do (`inactiveDim`): the images as they draw (see `ImageCell`), the text through a temporary colour.
+    var active = true {
+        didSet { if active != oldValue { dim() } }
+    }
+
+    /// Lays the grey over the accent-coloured runs, or takes it off; again after every new text.
+    func dim() {
+        guard let lm = layoutManager, let storage = textStorage else { return }
+        let all = NSRange(location: 0, length: storage.length)
+        lm.removeTemporaryAttribute(.foregroundColor, forCharacterRange: all)
+        if !active, let grey = NSColor.controlAccentColor.usingColorSpace(.genericGray)?.withAlphaComponent(0.6) {
+            storage.enumerateAttribute(.foregroundColor, in: all) { c, r, _ in
+                if c as? NSColor == .controlAccentColor {
+                    lm.addTemporaryAttribute(.foregroundColor, value: grey, forCharacterRange: r)
+                }
+            }
+        }
+        needsDisplay = true
+    }
 
     /// The whole text on every draw: a block's background (the quote bar, a code box, a table cell) is drawn from
     /// the frame AppKit hands the block, and for a partial redraw that frame is the part alone. Rows have their own
@@ -831,6 +854,7 @@ struct DescriptionText: NSViewRepresentable {
     let client: JiraClient?
     /// Nil where the description is read-only: the task circles then only show.
     let toggleTask: ((String) -> Void)?
+    @Environment(\.appearsActive) private var active
 
     func makeNSView(context: Context) -> DescriptionTextView { DescriptionTextView() }
 
@@ -839,6 +863,7 @@ struct DescriptionText: NSViewRepresentable {
         v.onPreview = onPreview
         v.client = client
         v.onToggleTask = toggleTask
+        v.active = active
         v.show(node, attachments: attachments)
     }
 
@@ -880,6 +905,7 @@ struct DescriptionText: NSViewRepresentable {
             self?.image(for: $0)
         }
         textStorage?.setAttributedString(text)
+        dim()
         // TextKit drops the first paragraph's spacing before; the card had it (a heading's 4 points).
         top =
             text.length == 0
@@ -1481,6 +1507,14 @@ final class ImageCell: NSTextAttachmentCell {
         return NSSize(width: floor(picture.size.width * k), height: floor(picture.size.height * k))
     }
 
+    /// The picture without its colour, for an inactive window: made on the first draw that needs it.
+    private lazy var grey: NSImage? = picture.flatMap { p in
+        guard let cg = p.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
+        let ci = CIImage(cgImage: cg).applyingFilter("CIColorControls", parameters: [kCIInputSaturationKey: 0])
+        return Self.context.createCGImage(ci, from: ci.extent).map { NSImage(cgImage: $0, size: p.size) }
+    }
+    private static let context = CIContext()
+
     override func cellSize() -> NSSize { size(forWidth: 520) }
 
     override func cellFrame(
@@ -1494,8 +1528,10 @@ final class ImageCell: NSTextAttachmentCell {
         NSGraphicsContext.saveGraphicsState()
         NSBezierPath(roundedRect: cellFrame, xRadius: 10, yRadius: 10).addClip()
         if let picture {
-            picture.draw(
-                in: cellFrame, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
+            let dim = (controlView as? CommentTextView)?.active == false
+            (dim ? grey ?? picture : picture).draw(
+                in: cellFrame, from: .zero, operation: .sourceOver, fraction: dim ? 0.6 : 1, respectFlipped: true,
+                hints: nil)
         } else {
             NSColor.quaternaryLabelColor.withAlphaComponent(0.04).setFill()
             cellFrame.fill()
