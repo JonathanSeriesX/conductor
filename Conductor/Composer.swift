@@ -437,7 +437,13 @@ struct PeoplePicker: View {
 
     /// "Assign to me" stands in for my own row, so I am not listed twice.
     private var me: JiraUser? { jira?.me.flatMap { $0.accountId == current?.accountId ? nil : $0 } }
-    private var others: [JiraUser] { users.filter { $0.accountId != me?.accountId } }
+    /// The current assignee leads, as Jira's search for the issue lists them, so the project's list the picker opens
+    /// with reads the same as the issue's own when it lands, and no row moves.
+    private var others: [JiraUser] {
+        let rest = users.filter { $0.accountId != me?.accountId }
+        guard query.isEmpty, let current, current.accountId != me?.accountId else { return rest }
+        return [current] + rest.filter { $0.accountId != current.accountId }
+    }
     /// Rows on offer, as what each picks: me, nobody (Unassigned), and the matches.
     private var picks: [JiraUser?] { (me.map { [$0] } ?? []) + (current != nil ? [nil] : []) + others }
 
@@ -500,7 +506,9 @@ struct PeoplePicker: View {
             let fetch: @Sendable () async throws -> [JiraUser]
             switch scope {
             case .issue(let key):
-                name = "assignable-issue-\(key)"
+                // Kept per project, which the issue page warms: an issue opened for the first time opens full, and its
+                // own list corrects that behind.
+                name = "assignable-\(key.prefix { $0 != "-" })"
                 fetch = { try await c.assignableUsers(key, query: q) }
             case .project(let key):
                 name = "assignable-\(key)"

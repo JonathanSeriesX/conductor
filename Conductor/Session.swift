@@ -352,6 +352,12 @@ final class AccountState: Identifiable {
     }
     @ObservationIgnored private var memos: [String: Any] = [:]
 
+    /// `memo` once a session, in the background, for a picker that should open full the first time.
+    func warm<T: Codable & Sendable>(_ name: String, fetch: @escaping @Sendable () async throws -> T) {
+        guard memos[name] == nil else { return }
+        _ = memo(name, fetch: fetch)
+    }
+
     func linkTypes() async -> [LinkType] {
         if let linkTypesCache { return linkTypesCache }
         if let disk: [LinkType] = await DiskCache.loadAsync(account: account, name: "linkTypes") {

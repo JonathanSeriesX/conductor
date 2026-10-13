@@ -159,6 +159,9 @@ final class IssueDetailStore {
             let list = await state.sprints(project: project)
             if self.key == key { update(\.sprints, list) }
         }
+        if full, let project = issue?.fields.project?.key {
+            state.warm("assignable-\(project)") { try await client.assignableUsers(project: project, query: "") }
+        }
         if full, allLabels.isEmpty, canEdit("labels") {
             let (now, fresh) = state.memo("labels") { try await client.labels() }
             if let now, self.key == key { update(\.allLabels, now) }
@@ -574,6 +577,22 @@ struct IssueDetailView: View {
                     .textFieldStyle(.plain)
                     .lineLimit(1...)
                     .focused($summaryFocused)
+                    // Leaving the field for anything else on the page saves it, as a blurred field does on the web:
+                    // left open without the keyboard, it sat there frozen. A popover opening reports the field
+                    // unfocused while it still has the keyboard, so the save waits a turn and looks again; an app
+                    // switch keeps the focus and saves nothing.
+                    .onChange(of: summaryFocused) { _, focused in
+                        guard !focused else { return }
+                        let shown = store.issue?.key
+                        DispatchQueue.main.async {
+                            let fr = NSApp.keyWindow?.firstResponder as? NSTextView
+                            let stillHere = fr?.isFieldEditor == true && !(fr?.delegate is NSSearchField)
+                            guard summaryDraft != nil, !summaryFocused, !stillHere, store.issue?.key == shown,
+                                NSApp.isActive
+                            else { return }
+                            saveSummary(blurred: true)
+                        }
+                    }
                     .onSubmit { saveSummary() }
                     .onExitCommand {
                         summaryDraft = nil
@@ -1670,14 +1689,19 @@ struct IssueDetailView: View {
         tv.setSelectedRange(NSRange(location: index, length: 0))
     }
 
-    private func saveSummary() {
-        guard let draft = summaryDraft?.trimmingCharacters(in: .whitespacesAndNewlines), !draft.isEmpty else { return }
+    /// ↩ saves and hands the keyboard back. `blurred`: the keyboard went elsewhere on the page and stays there, and an
+    /// emptied field goes back to the title as it was.
+    private func saveSummary(blurred: Bool = false) {
+        guard let draft = summaryDraft?.trimmingCharacters(in: .whitespacesAndNewlines), !draft.isEmpty else {
+            if blurred { summaryDraft = nil }
+            return
+        }
         guard draft.count <= 255 else {
             store.error = String(localized: "A summary can be 255 characters at most; this one is \(draft.count).")
             return
         }
         summaryDraft = nil
-        returnKeyboard()
+        if !blurred { returnKeyboard() }
         guard draft != store.issue?.fields.summary else { return }
         let key = key
         Task {
