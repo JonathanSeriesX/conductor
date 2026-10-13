@@ -318,6 +318,10 @@ struct BoardView: View {
         .background(Backdrop())
         // The arrows walk the cards as laid out: ↑↓ along a column, ←→ across at the same height; ↩ opens.
         .focusable().focusEffectDisabled().focused($focused)
+        .onCopyCommand { keyItems(selected.map(\.key)) }
+        .focusedSceneValue(
+            \.selectedLinks, selected.isEmpty ? nil : selected.compactMap { state?.client.browseURL($0.key) }
+        )
         .onChange(of: selection) { if !selection.isEmpty { focused = true } }
         .onKeyPress(.downArrow) { move(rows: 1) }
         .onKeyPress(.upArrow) { move(rows: -1) }

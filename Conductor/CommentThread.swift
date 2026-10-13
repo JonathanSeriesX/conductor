@@ -725,6 +725,11 @@ class CommentTextView: NSTextView {
 
     required init?(coder: NSCoder) { fatalError() }
 
+    /// With nothing selected, ⌘C passes on to the page, which copies the issue's key.
+    override func responds(to aSelector: Selector!) -> Bool {
+        aSelector == #selector(copy(_:)) && selectedRange().length == 0 ? false : super.responds(to: aSelector)
+    }
+
     /// Inline images and accent-coloured text (mentions) grey while the window is inactive, as the attachment
     /// tiles do (`inactiveDim`): the images as they draw (see `ImageCell`), the text through a temporary colour.
     var active = true {

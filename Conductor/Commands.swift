@@ -4,7 +4,7 @@ import SwiftUI
 /// shortcut is discoverable in the menu bar and works from any issue window.
 struct IssueActions {
     enum Action: Hashable {
-        case openInBrowser, openInWindow, copyLink, copyKey
+        case openInBrowser, openInWindow, copyLink
         case assign, assignToMe, watch, remind
         case transition(String)
         case editSummary, editDescription, comment, attach, link, logWork, subtask, clone, refresh, history
@@ -55,6 +55,9 @@ extension ListActions: Equatable {
 extension FocusedValues {
     @Entry var issueActions: IssueActions?
     @Entry var listActions: ListActions?
+    /// The links of the issues picked in the key window's list or board, for ⇧⌘C; nil when the issue page's own
+    /// key is the one to copy (a single row, whose page the preview shows).
+    @Entry var selectedLinks: [URL]?
 }
 
 /// Jira's single keys on top of the ⌘ ones in the menus. They act while no text field has the focus, so typing
@@ -114,6 +117,7 @@ struct AppCommands: Commands {
     let session: Session
     @FocusedValue(\.issueActions) private var issue
     @FocusedValue(\.listActions) private var list
+    @FocusedValue(\.selectedLinks) private var links
     @Environment(\.openWindow) private var openWindow
 
     var body: some Commands {
@@ -154,8 +158,16 @@ struct AppCommands: Commands {
             // A window group keeps one window per issue, so from an issue's own window there is nothing to open.
             item("Open in New Window", .openInWindow, "o").disabled(issue?.embedded != true)
             Divider()
-            item("Copy Link", .copyLink, "c", [.command, .shift])
-            item("Copy Key", .copyKey, "c", [.command, .control])
+            // ⌘C with no text selected copies the key: see `keyItems`.
+            Button((links?.count ?? 0) > 1 ? "Copy Links" : "Copy Link") {
+                if let links {
+                    copyToPasteboard(links.map(\.absoluteString).joined(separator: " "))
+                } else {
+                    issue?.perform(.copyLink)
+                }
+            }
+            .keyboardShortcut("c", modifiers: [.command, .shift])
+            .disabled(links == nil && issue == nil)
             Divider()
             // AppKit keeps a submenu item enabled whatever .disabled says; with nothing to offer it is a plain item.
             if let transitions = issue?.transitions, !transitions.isEmpty {
@@ -317,6 +329,11 @@ struct IssueKeyMonitor: View {
 func copyToPasteboard(_ string: String) {
     NSPasteboard.general.clearContents()
     NSPasteboard.general.setString(string, forType: .string)
+}
+
+/// What ⌘C copies from issues with no text selected (`onCopyCommand`): their keys, space-separated.
+func keyItems(_ keys: [String]) -> [NSItemProvider] {
+    keys.isEmpty ? [] : [NSItemProvider(object: keys.joined(separator: " ") as NSString)]
 }
 
 /// Offsets a new issue window from the one opened before it, as document windows do. SwiftUI puts every

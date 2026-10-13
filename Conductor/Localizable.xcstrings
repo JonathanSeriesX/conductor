@@ -16220,96 +16220,96 @@
         }
       }
     },
-    "Edit on the web" : {
+    "Edit on the web…" : {
       "localizations" : {
         "ar" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "تحرير على الويب"
+            "value" : "تحرير على الويب…"
           }
         },
         "de" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Im Web bearbeiten"
+            "value" : "Im Web bearbeiten…"
           }
         },
         "es" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Editar en la web"
+            "value" : "Editar en la web…"
           }
         },
         "fr" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Modifier sur le web"
+            "value" : "Modifier sur le web…"
           }
         },
         "hi" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "वेब पर संपादित करें"
+            "value" : "वेब पर संपादित करें…"
           }
         },
         "it" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Modifica sul web"
+            "value" : "Modifica sul web…"
           }
         },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Webで編集"
+            "value" : "Webで編集…"
           }
         },
         "ko" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "웹에서 편집"
+            "value" : "웹에서 편집…"
           }
         },
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Edytuj w przeglądarce"
+            "value" : "Edytuj w przeglądarce…"
           }
         },
         "pt-BR" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Editar na web"
+            "value" : "Editar na web…"
           }
         },
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Изменить на сайте"
+            "value" : "Изменить на сайте…"
           }
         },
         "tr" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Web'de düzenle"
+            "value" : "Web'de düzenle…"
           }
         },
         "uk" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Редагувати у вебі"
+            "value" : "Редагувати у вебі…"
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "在网页上编辑"
+            "value" : "在网页上编辑…"
           }
         },
         "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "在網頁上編輯"
+            "value" : "在網頁上編輯…"
           }
         }
       }

@@ -369,6 +369,7 @@ struct IssueDetailView: View {
         // crashed applying saved customizations while it swapped with the empty column's in one pass.
         .toolbar { toolbar }
         .focusedSceneValue(\.issueActions, actions)
+        .onCopyCommand { keyItems([key]) }
         // SwiftUI keeps a closed issue window with its state and shows that same one for the next open of the issue,
         // with no appear or task; its scene comes back from .background, and the page refreshes itself as Refresh
         // Issue does. (An AppKit observer on the window for this kept about 8 MB per closed window alive.)
@@ -1561,7 +1562,6 @@ struct IssueDetailView: View {
         case .openInBrowser: NSWorkspace.shared.open(jira.client.browseURL(key))
         case .openInWindow: openWindow(id: "issue", value: target)
         case .copyLink: copyToPasteboard(jira.client.browseURL(key).absoluteString)
-        case .copyKey: copyToPasteboard(key)
         case .assign: reveal(.assignee, .middle) { showAssign = true }
         case .assignToMe:
             let me = jira.me?.accountId
@@ -1749,7 +1749,7 @@ struct IssueDetailView: View {
     }
 
     private func editOnWeb(_ url: URL) -> AttributedString {
-        var s = AttributedString(localized: "Edit on the web")
+        var s = AttributedString(localized: "Edit on the web…")
         s.link = url
         return s
     }

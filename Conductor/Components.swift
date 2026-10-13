@@ -938,8 +938,17 @@ final class PageKeyView: NSView {
                 return nil
             } as Any)
         // The list greys its selection while the keyboard is in the preview, as Mail's does.
-        responderWatch = window.observe(\.firstResponder, options: [.new]) { [weak self] w, _ in
+        responderWatch = window.observe(\.firstResponder, options: [.initial, .new]) { [weak self] w, _ in
             MainActor.assumeIsolated {
+                // In a window of its own the page takes a keyboard nothing holds (a new window, after Escape or a
+                // popover): only a responder in the page reaches its ⌘C, which copies the key.
+                if w.firstResponder === w {
+                    DispatchQueue.main.async {
+                        if let self, self.standalone, self.window === w, w.firstResponder === w {
+                            w.makeFirstResponder(self)
+                        }
+                    }
+                }
                 guard let self, !self.standalone, let sv = self.enclosingScrollView else { return }
                 let on = (w.firstResponder as? NSView).map { $0 === self || $0.isDescendant(of: sv) } ?? false
                 guard on != self.hadFocus else { return }

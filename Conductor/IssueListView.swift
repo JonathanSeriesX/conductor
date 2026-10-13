@@ -476,6 +476,7 @@ struct IssueListView: View {
 
     var body: some View {
         let shown = displayRows
+        let picked = shown.map(\.row).filter { selection.contains($0.target) }
         // What the table has selected is the truth: SwiftUI builds this set from the table's changes since its
         // last pass, and when several land between passes (arrows queued behind a refresh) it adds the new row
         // without dropping the old one ("2 Issues Selected" after ⌘R and ↓).
@@ -566,6 +567,7 @@ struct IssueListView: View {
         }
         .listStyle(.inset)
         .background(NativeSelectionOff(previewFocused: $previewFocused))
+        .onCopyCommand { keyItems(picked.map(\.issue.key)) }
         .contextMenu(forSelectionType: IssueTarget.self) { targets in
             // Over a selected row the menu acts on the whole selection, else on the row under the pointer.
             let rows = store.rows.filter { targets.contains($0.target) }
@@ -631,6 +633,9 @@ struct IssueListView: View {
                 openBoard: boardTarget.map { b in { openWindow(id: "board", value: b) } },
                 sort: $filters.sort
             )
+        )
+        .focusedSceneValue(
+            \.selectedLinks, picked.count > 1 ? picked.map { $0.state.client.browseURL($0.issue.key) } : nil
         )
         .navigationTitle(session.title(for: filters))  // the Window menu; the toolbar draws its own, with the sort
         .toolbar(removing: .title)
@@ -1308,10 +1313,10 @@ struct IssueMenu: View {
         }
         Divider()
         Button(many ? "Copy Links" : "Copy Link", systemImage: "link") {
-            copyToPasteboard(urls.map(\.absoluteString).joined(separator: "\n"))
+            copyToPasteboard(urls.map(\.absoluteString).joined(separator: " "))
         }
         Button(many ? "Copy Keys" : "Copy Key", systemImage: "number") {
-            copyToPasteboard(keys.joined(separator: "\n"))
+            copyToPasteboard(keys.joined(separator: " "))
         }
         ShareLink(items: urls)
         Divider()
