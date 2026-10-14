@@ -213,7 +213,7 @@
 					"@executable_path/../Frameworks",
 					"@loader_path/../Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = org.evgenii.conductor.mac.tests;
+				PRODUCT_BUNDLE_IDENTIFIER = org.evgenii.conductor.tests;
 				SDKROOT = macosx;
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Conductor.app/Contents/MacOS/Conductor";
 			};
@@ -310,7 +310,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MARKETING_VERSION = 1.2.1;
-				PRODUCT_BUNDLE_IDENTIFIER = org.evgenii.conductor.mac;
+				PRODUCT_BUNDLE_IDENTIFIER = org.evgenii.conductor;
 				SDKROOT = macosx;
 			};
 			name = Debug;
@@ -333,7 +333,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MARKETING_VERSION = 1.2.1;
-				PRODUCT_BUNDLE_IDENTIFIER = org.evgenii.conductor.mac;
+				PRODUCT_BUNDLE_IDENTIFIER = org.evgenii.conductor;
 				SDKROOT = macosx;
 			};
 			name = Release;
@@ -350,7 +350,7 @@
 					"@executable_path/../Frameworks",
 					"@loader_path/../Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = org.evgenii.conductor.mac.tests;
+				PRODUCT_BUNDLE_IDENTIFIER = org.evgenii.conductor.tests;
 				SDKROOT = macosx;
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Conductor.app/Contents/MacOS/Conductor";
 			};
