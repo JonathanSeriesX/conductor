@@ -145,6 +145,37 @@ final class JQLTests: XCTestCase {
             "the list ends with the fresh rows")
     }
 
+    /// A selected row a reload drops stays where it was, after the row above it; one that only moved is not kept.
+    @MainActor func testASelectedRowTheReloadDropsKeepsItsPlace() throws {
+        let st = AccountState(account: Account(site: URL(string: "https://a.atlassian.net")!, email: "e", token: "t"))
+        func rows(_ keys: String...) throws -> [ListRow] {
+            try keys.map { key in
+                let issue = try st.client.decoder.decode(
+                    Issue.self,
+                    from: Data(
+                        #"{"id":"1","key":"\#(key)","fields":{"summary":"s","status":{"id":"1","name":"To Do","statusCategory":{"key":"new","name":"To Do"}},"issuetype":{"id":"1","name":"Task"}}}"#
+                            .utf8))
+                return ListRow(issue: issue, state: st)
+            }
+        }
+        func kept(_ keys: String...) -> Set<IssueTarget> { Set(keys.map { IssueTarget(accountID: st.id, key: $0) }) }
+        let old = try rows("A-1", "A-2", "A-3", "A-4")
+        func keys(_ r: ([ListRow], Set<String>)) -> [String] { r.0.map(\.issue.key) }
+        XCTAssertEqual(
+            keys(IssueListStore.keeping(kept("A-3"), of: old, in: try rows("A-1", "A-2", "A-4"))),
+            ["A-1", "A-2", "A-3", "A-4"])
+        XCTAssertEqual(
+            keys(IssueListStore.keeping(kept("A-2", "A-3"), of: old, in: try rows("A-1", "A-4"))),
+            ["A-1", "A-2", "A-3", "A-4"], "two in a row keep their order")
+        XCTAssertEqual(
+            keys(IssueListStore.keeping(kept("A-1"), of: old, in: try rows("A-2", "A-3"))),
+            ["A-1", "A-2", "A-3"])
+        let moved = IssueListStore.keeping(kept("A-3"), of: old, in: try rows("A-3", "A-1", "A-2", "A-4"))
+        XCTAssertEqual(keys(moved), ["A-3", "A-1", "A-2", "A-4"])
+        XCTAssertTrue(moved.1.isEmpty, "a row that only moved is not greyed")
+        XCTAssertEqual(keys(IssueListStore.keeping([], of: old, in: try rows("A-1"))), ["A-1"])
+    }
+
     /// Jira puts undated issues first under "duedate DESC"; the list puts them last whichever way it sorts.
     @MainActor func testDueDateOrderPutsUndatedLast() throws {
         func issue(_ key: String, due: String?) throws -> Issue {

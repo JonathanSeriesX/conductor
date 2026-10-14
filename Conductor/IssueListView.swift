@@ -57,6 +57,11 @@ struct DisplayRow: Identifiable {
 @MainActor @Observable
 final class IssueListStore {
     var rows: [ListRow] = []
+    /// Ids of selected rows a reload no longer brings (an edit took them out of the list): they stay where they
+    /// were, greyed, until the selection leaves them, so the preview's issue keeps its place for the arrows.
+    private(set) var stale: Set<String> = []
+    /// The list's selection, as `keep` was last told.
+    private var kept: Set<IssueTarget> = []
     /// Keys with a write on its way to Jira.
     var pending: Set<String> = []
     /// One account's share of the list: its rows so far and where its next page starts.
@@ -82,7 +87,10 @@ final class IssueListStore {
     /// this load's own answers. Nil when no count is known yet.
     var total: Int?
     /// The subtitle's number: the rows once the whole list is loaded, else the server's count.
-    var count: Int { query != nil && !hasMore && !isLoading ? rows.count : max(total ?? 0, rows.count) }
+    var count: Int {
+        let n = rows.count - stale.count
+        return query != nil && !hasMore && !isLoading ? n : max(total ?? 0, n)
+    }
     /// True from the start: a new list is always about to load, and must not flash "No issues" first.
     var isLoading = true
     /// The next page is on its way: the only load that shows a spinner under rows already on screen.
@@ -199,6 +207,7 @@ final class IssueListStore {
         queryError = nil
         if unbounded {
             rows = []
+            stale = []
             pages = [:]
             query = nil
             total = nil
@@ -241,7 +250,7 @@ final class IssueListStore {
             }
             pages = Dictionary(
                 uniqueKeysWithValues: states.map { ($0.id, Page(state: $0, rows: byAccount[$0.id] ?? [])) })
-            show(merged())
+            show(merged(), keep: false)  // another query: a row it lacks was never in it
             // Only now: a load superseded before its rows reached the screen must not let the next one skip them.
             shownKey = queryKey
         }
@@ -321,7 +330,9 @@ final class IssueListStore {
     /// Replaces the rows unless nothing changed: a refresh that brings the same page back must not redraw the list.
     /// `animated` for fresh rows replacing ones on screen: an edited issue glides to its new place, as in Mail,
     /// instead of every row jumping at once.
-    private func show(_ new: [ListRow], animated: Bool = false) {
+    private func show(_ new: [ListRow], animated: Bool = false, keep: Bool = true) {
+        let (new, stale) = Self.keeping(keep ? kept : [], of: rows, in: new)
+        if stale != self.stale { self.stale = stale }  // unchanged, nothing reading it redraws
         guard new.count != rows.count || zip(new, rows).contains(where: { $0.id != $1.id || $0.issue != $1.issue })
         else { return }
         if animated, !rows.isEmpty {
@@ -329,6 +340,21 @@ final class IssueListStore {
         } else {
             rows = new
         }
+    }
+
+    /// `new` with the rows of `old` that `kept` selects and `new` lacks, each after the row above it that `new` still
+    /// has, and their ids.
+    static func keeping(_ kept: Set<IssueTarget>, of old: [ListRow], in new: [ListRow]) -> ([ListRow], Set<String>) {
+        var (new, stale) = (new, Set<String>())
+        guard !kept.isEmpty else { return (new, stale) }
+        var present = Set(new.map(\.id))
+        for (i, r) in old.enumerated() where kept.contains(r.target) && !present.contains(r.id) {
+            let above = old[..<i].last { present.contains($0.id) }
+            new.insert(r, at: above.flatMap { a in new.firstIndex { $0.id == a.id } }.map { $0 + 1 } ?? 0)
+            present.insert(r.id)
+            stale.insert(r.id)
+        }
+        return (new, stale)
     }
 
     /// Every account's rows in the chosen order, up to the last row of the account that is furthest behind: an
@@ -365,6 +391,15 @@ final class IssueListStore {
             guard let b = $1.rows.last else { return false }
             return sort.areInOrder(a.issue, b.issue)
         })?.state.id
+    }
+
+    /// The list's selection changed: a greyed row it left goes.
+    func keep(_ selection: Set<IssueTarget>) {
+        kept = selection
+        let gone = Set(rows.filter { stale.contains($0.id) && !selection.contains($0.target) }.map(\.id))
+        guard !gone.isEmpty else { return }
+        stale.subtract(gone)
+        withAnimation(.smooth(duration: 0.35)) { rows.removeAll { gone.contains($0.id) } }
     }
 
     /// The next page of the account the merge waits on, and the next again while nothing new reaches the screen:
@@ -418,6 +453,7 @@ final class IssueListStore {
         if !cacheable, (error as? JiraError)?.status == 400 {
             queryError = error.localizedDescription
             rows = []
+            stale = []
         } else {
             self.error = error.localizedDescription
         }
@@ -519,6 +555,7 @@ struct IssueListView: View {
                         ? nil : { withAnimation(.snappy(duration: 0.25)) { expanded.formSymmetricDifference([d.id]) } },
                     pending: store.pending.contains(row.issue.key)
                 )
+                .opacity(store.stale.contains(row.id) ? 0.45 : 1)  // out of this list since the last reload
                 // A new view after an edit, so the table measures the row again. The row's own id in it too: this id
                 // is the table row's identity, and two issues with the same summary became one row, drawn twice.
                 .id("\(d.id)|\(row.issue.fields.summary)")
@@ -779,6 +816,7 @@ struct IssueListView: View {
         // as in Mail, the list takes it. A row picked with the arrows already has it.
         .onChange(of: selection) { _, new in
             cursor = new.count == 1 ? new.first : nil
+            store.keep(new)
             guard !new.isEmpty else { return }
             searchFocused = false  // or SwiftUI hands the keyboard straight back to the search field
             NSApp.keyWindow?.focusList()
@@ -881,6 +919,7 @@ struct IssueListView: View {
             let i = shown.firstIndex(where: { $0.row.target == row })
         else { return .ignored }
         let target = shown[max(0, min(shown.count - 1, i + delta))].row.target
+        let from = shown[i].row.target
         selection = [target]
         cursor = target
         opened = nil
@@ -889,10 +928,18 @@ struct IssueListView: View {
         if let table = NSApp.keyWindow?.contentView.flatMap(firstTable), let sv = table.enclosingScrollView {
             sv.reveal(
                 {
-                    guard cursor == target, let j = displayRows.firstIndex(where: { $0.row.target == target }),
+                    let rows = displayRows
+                    guard cursor == target, let j = rows.firstIndex(where: { $0.row.target == target }),
                         j < table.numberOfRows
                     else { return nil }
-                    return sv.contentView.convert(table.rect(ofRow: j), from: table)
+                    // The row it left too, while beside it: after an edit sent that row to the top, ↓ goes to the top.
+                    var r = table.rect(ofRow: j)
+                    if let k = rows.firstIndex(where: { $0.row.target == from }), abs(k - j) == 1,
+                        k < table.numberOfRows
+                    {
+                        r = r.union(table.rect(ofRow: k))
+                    }
+                    return sv.contentView.convert(r, from: table)
                 }, room: 12, animated: press.phase != .repeat)
         }
         return .handled
