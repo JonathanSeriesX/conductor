@@ -207,7 +207,7 @@ final class IssueListStore {
             isLoading = false
             return
         }
-        let states = f.account.map { id in session.states.filter { $0.id == id } } ?? session.states
+        let states = session.states.filter { f.includes($0.id) }
         let queries: [(AccountState, String)] = states.map { ($0, f.jql) }
         // Typed searches are not cached: they change with every keystroke and would litter the disk.
         let cacheable = f.text.isEmpty
@@ -455,7 +455,10 @@ struct IssueListView: View {
 
     private var isUnified: Bool { filters.account == nil }
     /// The account the chips describe; the first one stands in for unified lists (search assist, issue types).
-    private var state: AccountState? { filters.account.flatMap(session.state) ?? session.states.first }
+    private var state: AccountState? {
+        filters.account.flatMap(session.state) ?? session.states.first { filters.includes($0.id) }
+            ?? session.states.first
+    }
     /// Ticks when the app comes to the front or every few minutes, so the list never sits stale for long.
     @State private var refreshTick = 0
     /// The last count shown, kept on screen while a new list has nothing yet.
@@ -666,7 +669,7 @@ struct IssueListView: View {
             guard let url = URL(string: text.trimmingCharacters(in: .whitespacesAndNewlines)),
                 url.scheme?.hasPrefix("http") == true, let key = Session.issueKey(in: url)
             else { return }
-            if let st = session.state(host: url.host() ?? ""), filters.account != st.id { setAccount(st.id) }
+            if let st = session.state(host: url.host() ?? ""), filters.account != st.id { setAccounts([st.id]) }
             filters.text = key
             // A turn later: the main window drops the selection when the account changes, and this lands after it.
             DispatchQueue.main.async { openKey() }
@@ -847,7 +850,9 @@ struct IssueListView: View {
     private func openKey() {
         let key = filters.text.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
         let project = key.prefix { $0 != "-" }
-        let owners = session.states.filter { $0.projects.contains { $0.key == project } }
+        let owners = session.states.filter { filters.includes($0.id) }.filter {
+            $0.projects.contains { $0.key == project }
+        }
         searchFocused = false
         if let st = filters.account.flatMap(session.state) ?? (owners.count > 1 ? nil : session.state(forKey: key)) {
             selection = [IssueTarget(accountID: st.id, key: key)]
@@ -918,7 +923,9 @@ struct IssueListView: View {
         var projectRow = ListFilters()
         projectRow.account = filters.account
         projectRow.project = filters.project
-        return session.preset(matching: filters) == nil && filters != projectRow
+        // A few accounts picked on an All Accounts entry still light it up, but make a list of their own.
+        return (session.preset(matching: filters).map { $0.filters.accounts != filters.accounts } ?? true)
+            && filters != projectRow
     }
 
     private var boardTarget: BoardTarget? {
@@ -948,8 +955,11 @@ struct IssueListView: View {
 
     // MARK: Chips
 
-    private func setAccount(_ id: UUID?) {
-        filters.account = id
+    /// One account is its own sidebar section; a few stay a unified list; all of them is the plain one.
+    private func setAccounts(_ ids: Set<UUID>) {
+        let all = session.states.allSatisfy { ids.contains($0.id) }
+        filters.account = ids.count == 1 ? ids.first : nil
+        filters.accounts = all || ids.count == 1 ? nil : ids
         // Projects, favourite filters and issue types belong to one site.
         filters.project = nil
         filters.jiraFilter = nil
@@ -968,18 +978,29 @@ struct IssueListView: View {
     private var chipList: [Chip] {
         var list: [Chip] = []
         if session.states.count > 1 {
+            // Checkboxes: each account goes in or out of the list, never the last one; All accounts checks them all.
+            let picked = Set(session.states.map(\.id).filter(filters.includes))
             list.append(
                 Chip(
                     id: "account", name: String(localized: "Account"),
-                    title: filters.account.flatMap(session.state)?.title ?? String(localized: "All accounts"),
-                    active: filters.account != nil,
+                    title: picked.count == 1
+                        ? session.states.first { picked.contains($0.id) }?.title ?? ""
+                        : picked.count < session.states.count
+                            ? String(
+                                localized: "\(picked.count) accounts",
+                                comment: "Account filter chip: some of the signed-in accounts")
+                            : String(localized: "All accounts"),
+                    active: picked.count < session.states.count,
                     items: [
-                        ChipItem(String(localized: "All accounts"), selected: filters.account == nil) {
-                            setAccount(nil)
+                        ChipItem(String(localized: "All accounts"), selected: false) {
+                            setAccounts(Set(session.states.map(\.id)))
                         }, .separator,
                     ]
                         + session.states.map { st in
-                            ChipItem(st.title, selected: filters.account == st.id) { setAccount(st.id) }
+                            ChipItem(st.title, selected: picked.contains(st.id)) {
+                                let ids = picked.symmetricDifference([st.id])
+                                if !ids.isEmpty { setAccounts(ids) }
+                            }
                         }))
         }
         if let st = filters.account.flatMap(session.state) {

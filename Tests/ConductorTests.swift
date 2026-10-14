@@ -54,6 +54,20 @@ final class JQLTests: XCTestCase {
         XCTAssertEqual(f.jql, "filter = 7 AND watcher = currentUser() AND issuetype = \"Bug\" ORDER BY priority ASC")
     }
 
+    /// A few accounts of several: the list takes only those, and one account set on its own wins.
+    func testAFewAccountsNarrowTheUnifiedList() throws {
+        let other = UUID()
+        var f = Smart.reported.filters(account: nil)
+        XCTAssertTrue(f.includes(account) && f.includes(other))
+        f.accounts = [account]
+        XCTAssertTrue(f.includes(account))
+        XCTAssertFalse(f.includes(other))
+        XCTAssertEqual(try JSONDecoder().decode(ListFilters.self, from: JSONEncoder().encode(f)), f)
+        f.accounts = nil
+        f.account = other
+        XCTAssertFalse(f.includes(account))
+    }
+
     func testMergeOrderMatchesTheClause() throws {
         let decoder = JiraClient(
             account: Account(site: URL(string: "https://x.atlassian.net")!, email: "e", token: "t")
@@ -1094,7 +1108,6 @@ final class NestAndBoardColumnTests: XCTestCase {
             store.issues(in: column, from: lane, fold: true).map(\.key), ["A-4"], "the parent counts from the board")
     }
 }
-
 
 final class JQLDetectionTests: XCTestCase {
     func testOnlyJQLShapedTextIsRawJQL() {

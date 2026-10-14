@@ -184,6 +184,8 @@ struct ListFilters: Hashable, Codable {
 
     /// nil: every signed-in account, with a site badge on each row.
     var account: UUID?
+    /// With `account` nil, a few of the accounts rather than all: still a unified list, under All Accounts.
+    var accounts: Set<UUID>?
     /// A project key and a Jira favourite filter: both belong to one account, so they clear when the account changes.
     var project: String?
     var jiraFilter: Filter?
@@ -199,6 +201,7 @@ struct ListFilters: Hashable, Codable {
     var text = ""
 
     var isActive: Bool { self != ListFilters() }
+    func includes(_ id: UUID) -> Bool { account.map { $0 == id } ?? accounts?.contains(id) ?? true }
     var isRawJQL: Bool { Self.looksLikeJQL(text) }
 
     /// JQL only when it has JQL's shape: a field and an operator, "in (…)" or "in" a function, "is [not] empty|null",

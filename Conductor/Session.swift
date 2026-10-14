@@ -726,8 +726,14 @@ final class Session {
         let all = presets(account: nil) + states.flatMap { presets(account: $0) }
         var untyped = f
         untyped.text = ""
-        // A saved search carries its text, so the exact list first; else a search typed on a list does not unname it.
-        return all.first { same($0.filters, f) } ?? all.first { same($0.filters, untyped) }
+        var (everywhere, untypedEverywhere) = (f, untyped)
+        (everywhere.accounts, untypedEverywhere.accounts) = (nil, nil)
+        // A saved search carries its text, and a saved filter its accounts, so the exact list first; else a search
+        // typed on a list, or a few accounts picked on an All Accounts one, does not unname it.
+        for g in [f, untyped, everywhere, untypedEverywhere] {
+            if let p = all.first(where: { same($0.filters, g) }) { return p }
+        }
+        return nil
     }
 
     func addPreset(name: String, filters: ListFilters) {
