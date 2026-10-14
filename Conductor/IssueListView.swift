@@ -441,10 +441,15 @@ final class IssueListStore {
     }
 
     /// One account's rows during a load: what it fetched so far, then the last load's rows from where those end,
-    /// less any the fresh pages already hold; none once the list has no more.
+    /// less any the fresh pages already hold; none once the list has no more. Each fresh row the old ones had only
+    /// further down (an edited issue gone to the top) or never had pushes one of them past the page's end: that row
+    /// stays too, or the row above an edited one vanished until the next page brought it back.
     static func refreshed(_ old: [ListRow], fetched: [ListRow], more: Bool) -> [ListRow] {
+        guard more else { return fetched }
         let keys = Set(fetched.map(\.id))
-        return fetched + (more ? old.dropFirst(fetched.count).filter { !keys.contains($0.id) } : [])
+        let covered = Set(old.prefix(fetched.count).map(\.id))
+        let pushed = fetched.count { !covered.contains($0.id) }
+        return fetched + old.dropFirst(fetched.count - pushed).filter { !keys.contains($0.id) }
     }
 
     private func fail(_ error: Error, cacheable: Bool) {
@@ -546,6 +551,7 @@ struct IssueListView: View {
                 let emphasized = selected && active && !previewFocused
                 let above = i > 0 && selection.contains(shown[i - 1].row.target)
                 let below = i + 1 < shown.count && selection.contains(shown[i + 1].row.target)
+                let corner: CGFloat = selected ? 6 : 0
                 IssueRow(
                     issue: row.issue,
                     site: isUnified && session.states.count > 1 ? (row.state.title, row.state.color) : nil,
@@ -565,11 +571,12 @@ struct IssueListView: View {
                 .environment(\.backgroundProminence, emphasized ? .increased : .standard)
                 .listRowBackground(
                     UnevenRoundedRectangle(
-                        topLeadingRadius: above ? 0 : 6, bottomLeadingRadius: below ? 0 : 6,
-                        bottomTrailingRadius: below ? 0 : 6, topTrailingRadius: above ? 0 : 6
+                        topLeadingRadius: above ? 0 : corner, bottomLeadingRadius: below ? 0 : corner,
+                        bottomTrailingRadius: below ? 0 : corner, topTrailingRadius: above ? 0 : corner
                     )
-                    // Unselected rows in the table's own colour, not clear: a row gliding to its new place
-                    // passes over the others, and see-through it drew its text over theirs.
+                    // Unselected rows in the table's own colour over the whole row, not clear or inset: a row gliding
+                    // to its new place passes over the others, or under them for its first frame, and see-through it
+                    // drew its text over theirs, inset its corners showed round theirs.
                     .fill(
                         emphasized
                             ? Color.accentColor
@@ -579,9 +586,9 @@ struct IssueListView: View {
                     )
                     // 10, not 8: the ring AppKit draws around right-clicked rows then runs 1 pt inside this block on
                     // every side, as Mail's does; at 8 it sat 3 pt in at the sides and 1 pt at the top and bottom.
-                    .padding(.horizontal, 10)
+                    .padding(.horizontal, selected ? 10 : 0)
                     // Over the row gap, so two selected rows meet without a seam.
-                    .padding(.top, above ? -3 : 0).padding(.bottom, below ? -3 : 0)
+                    .padding(.top, selected && above ? -3 : 0).padding(.bottom, selected && below ? -3 : 0)
                 )
                 .listRowSeparator(selected && below ? .hidden : .automatic, edges: .bottom)
                 .onAppear { if d.id == shown.last?.id { Task { await store.loadMore() } } }

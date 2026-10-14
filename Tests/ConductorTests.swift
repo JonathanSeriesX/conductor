@@ -143,6 +143,10 @@ final class JQLTests: XCTestCase {
         XCTAssertEqual(
             IssueListStore.refreshed(old, fetched: fresh, more: false).map(\.issue.key), ["B-0", "B-1", "B-3"],
             "the list ends with the fresh rows")
+        // B-4, edited, went to the top: B-3, pushed past the fresh page, stays below it.
+        let edited = [try row("B-4", 9, b), try row("B-1", 7, b), try row("B-2", 5, b)]
+        XCTAssertEqual(
+            IssueListStore.refreshed(old, fetched: edited, more: true).map(\.issue.key), ["B-4", "B-1", "B-2", "B-3"])
     }
 
     /// A selected row a reload drops stays where it was, after the row above it; one that only moved is not kept.
