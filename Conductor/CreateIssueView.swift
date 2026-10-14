@@ -147,6 +147,8 @@ struct CreateIssueView: View {
     @State private var labelDraft = ""
     /// Every label on the site, for suggestions under the field.
     @State private var allLabels: [String] = []
+    /// Server's labels starting with the draft, which `allLabels` may lack there.
+    @State private var fetchedLabels: [String] = []
     @FocusState private var summaryFocused: Bool
     @State private var showClone = false
     private var parentKey: String? { request.parentKey }
@@ -158,7 +160,9 @@ struct CreateIssueView: View {
             summary: m.summary, text: m.text, mentions: m.mentions, assignee: m.assignee, priority: m.priority,
             labels: m.labels, parentKey: m.parentKey)
     }
-    private var labelMatches: [String] { Labels.matches(labelDraft, in: allLabels, excluding: m.labels) }
+    private var labelMatches: [String] {
+        Labels.matches(labelDraft, in: allLabels + fetchedLabels, excluding: m.labels)
+    }
     /// One line in the footer: the summary limit before the request, else what Jira answered. It takes no
     /// room of its own, so the window keeps its height.
     private var footerError: String? {
@@ -312,6 +316,11 @@ struct CreateIssueView: View {
                                 guard labelDraft.isEmpty, !m.labels.isEmpty else { return .ignored }
                                 m.labels.removeLast()
                                 return .handled
+                            }
+                            .task(id: labelDraft) {
+                                if let found = await Labels.fetch(labelDraft, on: m.state?.client) {
+                                    fetchedLabels = found
+                                }
                             }
                     }
                     ForEach(labelMatches, id: \.self) { l in

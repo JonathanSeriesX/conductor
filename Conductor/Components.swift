@@ -974,16 +974,44 @@ extension NSScrollView {
         case (126, .command) where arrows, (115, []): target = top  // ⌘↑, home
         default: return false
         }
+        glide(to: target)
+        return true
+    }
+
+    /// Scrolls to `y`, kept within the document, over 0.2 s or at once; a call while one runs takes it on from where it
+    /// is. `then` runs where it lands.
+    func glide(to y: CGFloat, animated: Bool = true, then: (@MainActor () -> Void)? = nil) {
+        guard let doc = documentView else { return }
+        let clip = contentView
+        let top = -contentInsets.top
         // SwiftUI's scroll views and tables are flipped: y grows downwards.
-        let to = NSPoint(x: clip.bounds.origin.x, y: min(max(target, top), max(top, bottom)))
+        let to = NSPoint(x: clip.bounds.origin.x, y: min(max(y, top), max(top, doc.frame.height - clip.bounds.height)))
         NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = 0.2
+            ctx.duration = animated ? 0.2 : 0
             ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
             ctx.allowsImplicitAnimation = true
             clip.animator().setBoundsOrigin(to)
+        } completionHandler: {
+            MainActor.assumeIsolated { then?() }
         }
         reflectScrolledClipView(clip)
-        return true
+    }
+
+    /// Scrolls the least that shows `rect()`, in the clip view's coordinates, with `room` to spare above and below it;
+    /// nil stops. A table gives rows it has not laid out yet an estimated height, so where the scroll lands it looks
+    /// again: on a list just loaded, rows a few steps past the edge counted 24 points high and the glide fell short.
+    func reveal(_ rect: @escaping @MainActor () -> NSRect?, room: CGFloat, animated: Bool, tries: Int = 3) {
+        guard tries > 0, let r = rect()?.insetBy(dx: 0, dy: -room) else { return }
+        let clip = contentView.bounds
+        let y: CGFloat
+        if r.minY < clip.minY + contentInsets.top {
+            y = r.minY - contentInsets.top
+        } else if r.maxY > clip.maxY - contentInsets.bottom {
+            y = r.maxY - clip.height + contentInsets.bottom
+        } else {
+            return
+        }
+        glide(to: y, animated: animated) { self.reveal(rect, room: room, animated: animated, tries: tries - 1) }
     }
 }
 

@@ -639,16 +639,18 @@ private struct HostedEditor: View {
 /// tick of a scroll. The protocol makes it an accessibility element: a plain view is none, whatever its role and label.
 final class SymbolButton: NSView, @MainActor NSAccessibilityButton {
     var action: () -> Void = {}
-    private let symbol: NSImage
+    private let name: String
+    private var symbol: NSImage
 
+    /// Filled as `Image(systemName:)` fills it: palette colours gave a quarter of the ink of the page's other icons.
     static func image(_ name: String) -> NSImage {
-        NSImage(systemSymbolName: name, accessibilityDescription: nil)!
-            .withSymbolConfiguration(
-                .init(pointSize: NSFont.preferredFont(forTextStyle: .body).pointSize, weight: .regular)
-                    .applying(.init(paletteColors: [.tertiaryLabelColor])))!
+        .symbol(
+            name, size: NSFont.preferredFont(forTextStyle: .body).pointSize, weight: .regular, tint: .tertiaryLabelColor
+        )
     }
 
     init(_ name: String, label: String, help: String) {
+        self.name = name
         symbol = Self.image(name)
         super.init(frame: NSRect(origin: .zero, size: symbol.size))
         wantsLayer = true
@@ -665,6 +667,7 @@ final class SymbolButton: NSView, @MainActor NSAccessibilityButton {
 
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
+        symbol = Self.image(name)  // the tint is resolved as the image is made
         needsDisplay = true
     }
 
@@ -727,7 +730,8 @@ class CommentTextView: NSTextView {
 
     /// With nothing selected, ⌘C passes on to the page, which copies the issue's key.
     override func responds(to aSelector: Selector!) -> Bool {
-        aSelector == #selector(copy(_:)) && selectedRange().length == 0 ? false : super.responds(to: aSelector)
+        aSelector == #selector(copy(_:)) && MainActor.assumeIsolated { selectedRange().length == 0 }
+            ? false : super.responds(to: aSelector)
     }
 
     /// Inline images and accent-coloured text (mentions) grey while the window is inactive, as the attachment

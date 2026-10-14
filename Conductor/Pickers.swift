@@ -105,11 +105,32 @@ struct DueDatePicker: View {
 
 /// The label rules both label editors follow: the issue page's and the New Issue window's.
 enum Labels {
-    /// Up to six of the site's labels holding the draft, leaving out the ones already chosen.
+    /// Up to six of the site's labels holding the draft, leaving out the ones already chosen: first those starting with
+    /// it, then those with a word starting with it (after a "-", "_", "." or space), then the rest, each run in
+    /// alphabetical order. A label listed twice is offered once.
     static func matches(_ draft: String, in all: [String], excluding chosen: [String]) -> [String] {
         let q = draft.trimmingCharacters(in: .whitespaces).lowercased()
         guard !q.isEmpty else { return [] }
-        return all.filter { $0.lowercased().contains(q) && !chosen.contains($0) }.prefix(6).map { $0 }
+        var seen = Set<String>()
+        let ranked = all.compactMap { label -> (Int, String, String)? in
+            let l = label.lowercased()
+            guard l.contains(q), !chosen.contains(label), seen.insert(label).inserted else { return nil }
+            let rank = l.hasPrefix(q) ? 0 : "-_. ".contains { l.contains("\($0)\(q)") } ? 1 : 2
+            return (rank, l, label)
+        }
+        return ranked.sorted { ($0.0, $0.1) < ($1.0, $1.1) }.prefix(6).map { $0.2 }
+    }
+
+    /// Server's labels starting with the draft, after a pause in typing; nil keeps the last answer. Server's `labels()`
+    /// holds only its most used ones, so the rest come from here; Cloud lists them all and is never asked.
+    static func fetch(_ draft: String, on client: JiraClient?) async -> [String]? {
+        guard let client, client.account.isServer else { return nil }
+        let q = draft.trimmingCharacters(in: .whitespaces)
+        guard !q.isEmpty else { return [] }
+        try? await Task.sleep(for: .milliseconds(200))
+        guard !Task.isCancelled else { return nil }
+        let found = try? await client.labelSuggestions(q)
+        return Task.isCancelled ? nil : found ?? []
     }
 
     /// The labels typed in a draft: a comma ends each, and a space becomes a dash, since a label has none.
@@ -134,12 +155,15 @@ struct LabelsEditor: View {
     /// Every label on the site; the ones matching the draft are offered below the field.
     var suggestions: [String] = []
     var onSave: ([String]) -> Void
+    @Environment(\.jira) private var jira
     @State private var draft = ""
+    /// Server's labels starting with the draft, which `suggestions` may lack there.
+    @State private var fetched: [String] = []
     /// The match ↓ and ↑ walked to, which ↩ adds.
     @State private var highlighted: Int?
     @FocusState private var focused: Bool
 
-    private var matches: [String] { Labels.matches(draft, in: suggestions, excluding: labels) }
+    private var matches: [String] { Labels.matches(draft, in: suggestions + fetched, excluding: labels) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -176,6 +200,7 @@ struct LabelsEditor: View {
         .padding(12)
         .frame(width: 280)
         .focusSoon($focused)
+        .task(id: draft) { if let found = await Labels.fetch(draft, on: jira?.client) { fetched = found } }
     }
 
     private func add() {

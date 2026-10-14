@@ -73,13 +73,23 @@ extension ChangeGroup.Item {
     }
 
     /// Jira wiki markup as formatted text: through the page's own parser, then the Markdown the editor would show,
-    /// so the row keeps its font and colours (an attributed string straight from TextKit brings its own). Images come
-    /// out as their name and a table's cells as a line each: enough for a line of history.
+    /// so the row keeps its font and colours (an attributed string straight from TextKit brings its own). The row
+    /// reads inline marks only, so the block marks go first: headings and quotes become plain lines, list and task
+    /// items "• ", a table row its cells; code fences, rules and blank lines go. Images come out as their name.
     static func fromWiki(_ wiki: String) -> AttributedString {
         // Cloud writes a mention here by account id, which no reader knows.
         let text = wiki.replacingOccurrences(of: #"\[~accountid:[^\]]+\]"#, with: "@…", options: .regularExpression)
         var mentions: [String: String] = [:]
-        let markdown = ADFNode.document(wiki: text).markdown(mentions: &mentions)
+        let blockMarks = [
+            (#"^(\s*)(> ?)+"#, "$1"), (#"^(\s*)#{1,6} "#, "$1"), (#"^(\s*)([-*+]|\d+\.) (\[[ xX]\] )?"#, "$1• "),
+            (#"^\s*\| (.*) \|$"#, "$1"),
+        ]
+        let markdown = ADFNode.document(wiki: text).markdown(mentions: &mentions).components(separatedBy: "\n")
+            .map { line in
+                blockMarks.reduce(line) { $0.replacingOccurrences(of: $1.0, with: $1.1, options: .regularExpression) }
+            }
+            .filter { $0.range(of: #"^\s*(```.*|[\s|:-]*---[\s|:-]*)?$"#, options: .regularExpression) == nil }
+            .joined(separator: "\n")
         return
             (try? AttributedString(
                 markdown: markdown, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)))

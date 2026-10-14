@@ -121,17 +121,16 @@ enum AttachmentOpener {
             ?? UTType(filenameExtension: (attachment.filename as NSString).pathExtension) ?? .data
     }
 
-    /// For a drag out of the app: the file, once it is here (downloaded, or shown inline from the image cache).
-    /// SwiftUI turns a provider's file into a promise only when the file exists, so a tile fetches on hover.
+    /// For a drag out of the app: the file, once it is here (downloaded, or shown inline from the image cache), so a
+    /// tile fetches on hover. Its URL alone: for a picture's file SwiftUI also promised one, named with the type's
+    /// extension added to the suggested name (click-test.png.png), and the Finder took the promise.
     static func dragItem(_ attachment: Attachment) -> NSItemProvider? {
         var file = file(for: attachment)
         if !FileManager.default.fileExists(atPath: file.path) {
             guard let data = DiskCache.imageDataNow(for: attachment.content) else { return nil }
             file = store(data, for: attachment)
         }
-        let p = NSItemProvider(contentsOf: file)
-        p?.suggestedName = attachment.filename
-        return p
+        return NSItemProvider(object: file as NSURL)
     }
 
     /// The file onto the pasteboard, and a picture's bytes beside it: Finder pastes the file, an editor the picture.

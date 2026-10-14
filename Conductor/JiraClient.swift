@@ -569,7 +569,8 @@ struct JiraClient: Sendable {
         _ = try await request("issue/\(key)", method: "PUT", body: Body(fields: text(fields)))
     }
 
-    /// Every label on the site, for suggestions while typing one. Server lists only the most used ones.
+    /// Every label on the site, for suggestions while typing one. Server has no full list and answers only its 15 most
+    /// used, so the label editors there also ask `labelSuggestions` for what is typed.
     func labels() async throws -> [String] {
         if server { return try await jqlSuggestions(field: "labels", value: "").map(\.value) }
         struct Page: Decodable {
@@ -582,6 +583,11 @@ struct JiraClient: Sendable {
             all += page.values
             if page.isLast || page.values.isEmpty { return all }
         }
+    }
+
+    /// The labels starting with `prefix`, at most 15; Jira matches the prefix itself.
+    func labelSuggestions(_ prefix: String) async throws -> [String] {
+        try await jqlSuggestions(field: "labels", value: prefix).map(\.value)
     }
 
     func issueTypes() async throws -> [IssueType] { try await get("issuetype") }

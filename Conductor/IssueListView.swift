@@ -442,6 +442,9 @@ struct IssueListView: View {
     @FocusState private var searchFocused: Bool
     /// The row last moved to a window of its own; the arrows carry on from it while nothing is selected.
     @State private var opened: IssueTarget?
+    /// The one selected row, kept live for the arrows: in their handler `selection` reads as of the pass that made
+    /// it, and a held key's repeats all go to the handler that took the first press.
+    @State private var cursor: IssueTarget?
     /// The keyboard is in the preview beside the list: the selection goes grey, as Mail's does.
     @State private var previewFocused = false
     /// A plain press on one row of a multi-selection, and where: the mouse-up narrows the selection to it.
@@ -599,9 +602,7 @@ struct IssueListView: View {
             return .handled
         }
         .modifier(FollowsOtherWindows(store: store, selection: $selection, opened: $opened))
-        // Back from an issue opened in its own window, ↓ and ↑ carry on from it, not from the top of the list.
-        .onKeyPress(.downArrow) { step(from: opened, by: 1, in: shown) }
-        .onKeyPress(.upArrow) { step(from: opened, by: -1, in: shown) }
+        .onKeyPress(keys: [.downArrow, .upArrow]) { step($0, by: $0.key == .downArrow ? 1 : -1) }
         .safeAreaInset(edge: .top, spacing: 0) { chips }
         .overlay {
             if store.unbounded {
@@ -774,6 +775,7 @@ struct IssueListView: View {
         // A click on a row selects it but leaves the keyboard where it was (the search field, or nowhere);
         // as in Mail, the list takes it. A row picked with the arrows already has it.
         .onChange(of: selection) { _, new in
+            cursor = new.count == 1 ? new.first : nil
             guard !new.isEmpty else { return }
             searchFocused = false  // or SwiftUI hands the keyboard straight back to the search field
             NSApp.keyWindow?.focusList()
@@ -862,12 +864,32 @@ struct IssueListView: View {
     /// did) would only throw its answer away.
     private func refresh() { if !store.isLoading { refreshTick += 1 } }
 
-    private func step(from row: IssueTarget?, by delta: Int, in shown: [DisplayRow]) -> KeyPress.Result {
-        guard selection.isEmpty, let row, let i = shown.firstIndex(where: { $0.row.target == row }) else {
-            return .ignored
-        }
-        selection = [shown[max(0, min(shown.count - 1, i + delta))].row.target]
+    /// A plain ↓ or ↑ steps from the one selected row, or, back from an issue opened in its own window, from that
+    /// issue rather than the top of the list. Here, not in the table: SwiftUI writes its selection back into the table
+    /// a pass late, and steps the table took in between were undone. Shift and the other arrows stay the table's, as
+    /// does a multi-selection.
+    private func step(_ press: KeyPress, by delta: Int) -> KeyPress.Result {
+        let shown = displayRows  // not the body's: a held key reaching the end goes on into the next page
+        let plain = press.modifiers.isDisjoint(with: [.shift, .option, .command, .control])
+        let current = cursor.map { [$0] } ?? selection
+        guard let row = current.isEmpty ? opened : (plain && current.count == 1 ? current.first : nil),
+            let i = shown.firstIndex(where: { $0.row.target == row })
+        else { return .ignored }
+        let target = shown[max(0, min(shown.count - 1, i + delta))].row.target
+        selection = [target]
+        cursor = target
         opened = nil
+        // The list glides after the row with room to spare, for as long as the arrows stay on it, finding it again
+        // each time. A held key moves at once: a glide begun again on every repeat lagged rows behind the selection.
+        if let table = NSApp.keyWindow?.contentView.flatMap(firstTable), let sv = table.enclosingScrollView {
+            sv.reveal(
+                {
+                    guard cursor == target, let j = displayRows.firstIndex(where: { $0.row.target == target }),
+                        j < table.numberOfRows
+                    else { return nil }
+                    return sv.contentView.convert(table.rect(ofRow: j), from: table)
+                }, room: 12, animated: press.phase != .repeat)
+        }
         return .handled
     }
 

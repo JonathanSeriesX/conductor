@@ -309,6 +309,10 @@ final class DecodingTests: XCTestCase {
         let text = ChangeGroup.Item.fromWiki("*bold* and _it_ and a [link|https://example.com] in QA-18_x")
         XCTAssertEqual(String(text.characters), "bold and it and a link in QA-18_x")
         XCTAssertTrue(text.runs.contains { $0.link == URL(string: "https://example.com") })
+        // Block marks go too, and blocks sit a line apart, not two.
+        let blocks = ChangeGroup.Item.fromWiki(
+            "h1. Heading one\nh2. Heading two\n* item\n# first\n{code}\nlet a = 1\n{code}")
+        XCTAssertEqual(String(blocks.characters), "Heading one\nHeading two\n• item\n• first\nlet a = 1")
     }
 
     func testSiteNormalization() {
@@ -951,7 +955,8 @@ final class LiveServerTests: XCTestCase {
         if let t = transitions.first(where: { $0.to.statusCategory.key == "indeterminate" }) {
             try await c.transition(created.key, to: t.id)
         }
-        let labels = try await c.labels()
+        // Server's full list stops at its 15 most used labels; the editors ask it for the typed prefix too.
+        let labels = try await c.account.isServer ? c.labelSuggestions("dc-") : c.labels()
         XCTAssertTrue(labels.contains("dc-test"))
         let boards = try await c.boards(project: project)
         let board = try XCTUnwrap(boards.first)
@@ -1117,5 +1122,26 @@ final class JQLDetectionTests: XCTestCase {
         XCTAssertEqual(f.jql, "text ~ \"sign in\" ORDER BY updated DESC")
         f.text = "status = Done"
         XCTAssertEqual(f.jql, "status = Done")
+    }
+}
+
+final class LabelMatchTests: XCTestCase {
+    func testStartsWithThenWordThenContainsEachAlphabetical() {
+        let all = ["boards", "composer", "qa-scratch", "security", "sidebar", "sync", "notifications", "Status"]
+        let expected = ["security", "sidebar", "Status", "sync", "qa-scratch", "boards"]
+        XCTAssertEqual(Labels.matches("s", in: all, excluding: []), expected)
+        XCTAssertEqual(Labels.matches("S", in: all, excluding: []), expected)
+        XCTAssertEqual(Labels.matches("x", in: all, excluding: []), [])
+        XCTAssertEqual(Labels.matches(" ", in: all, excluding: []), [])
+        XCTAssertEqual(
+            Labels.matches("s", in: all, excluding: ["security", "sync"]),
+            ["sidebar", "Status", "qa-scratch", "boards", "composer", "notifications"])
+        // The site's list plus Server's answer for the prefix may name a label twice.
+        XCTAssertEqual(
+            Labels.matches("dc", in: ["dc-test", "old-dc", "dc-test"], excluding: []), ["dc-test", "old-dc"])
+    }
+
+    func testParseSplitsOnCommasAndTurnsSpacesIntoDashes() {
+        XCTAssertEqual(Labels.parse("a, b c,,"), ["a", "b-c"])
     }
 }
