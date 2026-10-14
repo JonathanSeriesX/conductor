@@ -104,10 +104,7 @@ struct Sprint: Codable, Hashable, Sendable, Identifiable {
         // "com.atlassian.greenhopper.service.sprint.Sprint@1f[id=1,rapidViewId=3,state=ACTIVE,name=Sprint 1,…]".
         if let s = try? decoder.singleValueContainer().decode(String.self) {
             func value(_ key: String) -> String? {
-                // A name may hold commas: a value runs to the next ",key=" Jira writes, or to the closing bracket.
-                let keys = Self.serverKeys.joined(separator: "|")
-                guard let r = try? Regex("[\\[,]\(key)=(.*?)(?=,(?:\(keys))=|\\]$)"), let m = s.firstMatch(of: r)
-                else { return nil }
+                guard let r = Self.serverPatterns[key], let m = s.firstMatch(of: r) else { return nil }
                 return m.output[1].substring.map(String.init)
             }
             guard let id = value("id").flatMap(Int.init) else {
@@ -131,6 +128,16 @@ struct Sprint: Codable, Hashable, Sendable, Identifiable {
         "activatedDate", "autoStartStop", "completeDate", "endDate", "goal", "id", "incompleteIssuesDestinationId",
         "name", "rapidViewId", "sequence", "startDate", "state", "synced",
     ]
+    /// Each key's pattern, compiled once rather than for every key of every sprint of every issue decoded.
+    /// `Regex` is not Sendable; these are never changed after they are built.
+    nonisolated(unsafe) private static let serverPatterns: [String: Regex<AnyRegexOutput>] = {
+        // A name may hold commas: a value runs to the next ",key=" Jira writes, or to the closing bracket.
+        let keys = serverKeys.joined(separator: "|")
+        return Dictionary(
+            uniqueKeysWithValues: serverKeys.compactMap { key in
+                (try? Regex("[\\[,]\(key)=(.*?)(?=,(?:\(keys))=|\\]$)")).map { (key, $0) }
+            })
+    }()
 }
 
 struct SprintPage: Codable, Sendable {
@@ -186,6 +193,17 @@ extension Issue {
     var subtaskProgress: (done: Int, total: Int)? {
         guard let subs = fields.subtasks, !subs.isEmpty else { return nil }
         return (subs.filter { $0.fields.status?.statusCategory.key == "done" }.count, subs.count)
+    }
+}
+
+extension Issue {
+    /// A copy without the description, comments and work logs, to keep in memory where only row fields are read.
+    var rowSized: Issue {
+        var i = self
+        i.fields.description = nil
+        i.fields.comment = nil
+        i.fields.worklog = nil
+        return i
     }
 }
 

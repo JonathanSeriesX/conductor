@@ -201,8 +201,13 @@ struct ListFilters: Hashable, Codable {
     var isActive: Bool { self != ListFilters() }
     var isRawJQL: Bool { Self.looksLikeJQL(text) }
 
+    /// JQL only when it has JQL's shape: a field and an operator, "in (…)" or "in" a function, "is [not] empty|null",
+    /// or "order by". A bare "in" or "is" is a plain word, so "sign in" stays a text search instead of a 400.
     static func looksLikeJQL(_ q: String) -> Bool {
-        q.range(of: #"(?i)(=|~|\bin\b|\bis\b|order by)"#, options: .regularExpression) != nil
+        q.range(
+            of:
+                #"(?i)(?:[\w.\[\]]+|"[^"]*"|'[^']*')\s*(?:!?[=~]|[<>]=?)|\bin(?:\s+\w+)?\s*\(|\bis\s+(?:not\s+)?(?:empty|null)\b|\border\s+by\b"#,
+            options: .regularExpression) != nil
     }
 
     private var query: String { text.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -470,19 +475,7 @@ struct SidebarView: View {
         } message: {
             Text("Shown as the section title in the sidebar.")
         }
-        .confirmationDialog(
-            "Sign out of \(signingOut?.title ?? "")?",
-            isPresented: Binding(get: { signingOut != nil }, set: { if !$0 { signingOut = nil } }),
-            titleVisibility: .visible
-        ) {
-            Button("Sign Out", role: .destructive) {
-                if let st = signingOut { session.remove(st.account) }
-                signingOut = nil
-            }
-            Button("Cancel", role: .cancel) { signingOut = nil }
-        } message: {
-            Text("The token is removed from the Keychain. Cached issues stay until the cache is cleared.")
-        }
+        .signOutDialog($signingOut, session: session)
         .alert(
             "Rename Filter",
             isPresented: Binding(get: { renamingPreset != nil }, set: { if !$0 { renamingPreset = nil } })

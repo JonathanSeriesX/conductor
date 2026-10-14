@@ -92,7 +92,10 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
             jql: "\(involved) AND updated >= -\(minutes)m ORDER BY updated DESC", fields: "summary,comment")
         {
             for i in page.issues {
-                for c in i.fields.comment?.comments ?? [] where c.created > since && c.author?.accountId != me {
+                var comments = i.fields.comment?.comments ?? []
+                // A search result carries the oldest 20 comments; a new one on a longer thread comes after them.
+                if !i.hasAllComments, let recent = try? await client.recentComments(i.key) { comments = recent }
+                for c in comments where c.created > since && c.author?.accountId != me {
                     let id = "\(host)|\(c.id)"
                     guard seenComments.insert(id).inserted else { continue }
                     let text = c.body.plainText.replacingOccurrences(of: "\n", with: " ")

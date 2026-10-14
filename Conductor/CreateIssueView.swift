@@ -158,11 +158,7 @@ struct CreateIssueView: View {
             summary: m.summary, text: m.text, mentions: m.mentions, assignee: m.assignee, priority: m.priority,
             labels: m.labels, parentKey: m.parentKey)
     }
-    private var labelMatches: [String] {
-        let q = labelDraft.trimmingCharacters(in: .whitespaces).lowercased()
-        guard !q.isEmpty else { return [] }
-        return allLabels.filter { $0.lowercased().contains(q) && !m.labels.contains($0) }.prefix(6).map { $0 }
-    }
+    private var labelMatches: [String] { Labels.matches(labelDraft, in: allLabels, excluding: m.labels) }
     /// One line in the footer: the summary limit before the request, else what Jira answered. It takes no
     /// room of its own, so the window keeps its height.
     private var footerError: String? {
@@ -484,9 +480,7 @@ struct CreateIssueView: View {
     }
 
     private func addLabel() {
-        let l = labelDraft.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: " ", with: "-")
-        guard !l.isEmpty else { return }
-        if !m.labels.contains(l) { m.labels.append(l) }
+        for l in Labels.parse(labelDraft) where !m.labels.contains(l) { m.labels.append(l) }
         labelDraft = ""
     }
 
@@ -501,7 +495,10 @@ struct CreateIssueView: View {
             do {
                 let created = try await c.createIssue(fields: try m.payload())
                 UserDefaults.standard.set("\(st.id)|\(m.project?.key ?? "")", forKey: "lastCreateProject")
-                session.reloadTick += 1  // the lists, and the parent's subtasks
+                session.listTick += 1
+                // The parent's page lists its new subtask or child.
+                let parent = m.parentKey.trimmingCharacters(in: .whitespaces).uppercased()
+                if !parent.isEmpty { session.touched(parent) }
                 Drafts.shared.removeCreate(request.id)
                 dismiss()
                 openWindow(id: "issue", value: IssueTarget(accountID: st.id, key: created.key))

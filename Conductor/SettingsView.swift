@@ -99,16 +99,23 @@ private struct AccountSettings: View {
             }
         }
         .formStyle(.grouped)
-        .confirmationDialog(
-            "Sign out of \(signingOut?.title ?? "")?",
-            isPresented: Binding(get: { signingOut != nil }, set: { if !$0 { signingOut = nil } }),
+        .signOutDialog($signingOut, session: session)
+    }
+}
+
+extension View {
+    /// Asks before signing out of the account it is given: the sidebar and Settings both offer Sign Out.
+    func signOutDialog(_ account: Binding<AccountState?>, session: Session) -> some View {
+        confirmationDialog(
+            "Sign out of \(account.wrappedValue?.title ?? "")?",
+            isPresented: Binding(get: { account.wrappedValue != nil }, set: { if !$0 { account.wrappedValue = nil } }),
             titleVisibility: .visible
         ) {
             Button("Sign Out", role: .destructive) {
-                if let st = signingOut { session.remove(st.account) }
-                signingOut = nil
+                if let st = account.wrappedValue { session.remove(st.account) }
+                account.wrappedValue = nil
             }
-            Button("Cancel", role: .cancel) { signingOut = nil }
+            Button("Cancel", role: .cancel) { account.wrappedValue = nil }
         } message: {
             Text("The token is removed from the Keychain. Cached issues stay until the cache is cleared.")
         }

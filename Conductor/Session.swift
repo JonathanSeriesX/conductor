@@ -20,7 +20,8 @@ final class AccountState: Identifiable {
     var jqlFields: [JQLAutocomplete.Field] = []
     /// Set when the last network check failed; the cached catalog stays usable.
     var error: String?
-    /// Rows the lists have seen, so an issue page can open with what the row already knows.
+    /// Rows the lists and prefetches have seen, so an issue page can open with what the row already knows. Row-sized:
+    /// descriptions, comments and work logs stay on disk, or every warmed issue would sit here whole.
     @ObservationIgnored var peek: [String: Issue] = [:]
     /// First pages of lists by cache name ("list-<hash of JQL>"): the recent ones from disk at launch, then every
     /// one fetched, so a list opens with rows in its first frame instead of after a disk read.
@@ -28,8 +29,9 @@ final class AccountState: Identifiable {
     /// How many issues each cached list's query matched when it was last counted, by the same cache name, so a
     /// list opens with its count in its first frame rather than "50+ issues".
     @ObservationIgnored var listCounts: [String: Int] = [:]
-    /// Every issue in memory, for search suggestions: the rows the lists have seen and the cached first pages.
-    var knownIssues: [Issue] { Array(peek.values) + lists.values.flatMap { $0 } }
+    /// Every issue in memory, for search suggestions: the lists put every row they fetch, and launch every cached
+    /// first page, in `peek`.
+    var knownIssues: [Issue] { Array(peek.values) }
     /// Each board as it was last drawn, by project key, so a board window reopens without a disk read and decode.
     @ObservationIgnored var boardSnapshots: [String: BoardStore.Snapshot] = [:]
     @ObservationIgnored private var linkTypesCache: [LinkType]?
@@ -75,6 +77,15 @@ final class AccountState: Identifiable {
         guard transitionsByWorkflow[k] != transitions else { return }
         transitionsByWorkflow[k] = transitions
         DiskCache.saveAsync(transitionsByWorkflow, account: account, name: "workflows-transitions")
+    }
+
+    /// The edit screen an issue page just fetched, kept for every issue sharing its workflow: the next one opens
+    /// with it, and a field added to the screen today reaches them all.
+    func learnEditMeta(_ meta: EditMeta, of i: Issue) {
+        let k = Self.workflowKey(i)
+        guard editMetaByWorkflow[k] != meta else { return }
+        editMetaByWorkflow[k] = meta
+        DiskCache.saveAsync(editMetaByWorkflow, account: account, name: "workflows-editmeta")
     }
 
     // MARK: Warm pass
@@ -164,8 +175,8 @@ final class AccountState: Identifiable {
         warmProgress = 1
     }
 
-    /// Full records of `keys` in one request, each saved as `issue-KEY` for the issue page and kept as a peek;
-    /// `prefetched` remembers the revision so the next pass skips it. Empty when the request fails.
+    /// Full records of `keys` in one request, each saved as `issue-KEY` for the issue page and kept row-sized as a
+    /// peek; `prefetched` remembers the revision so the next pass skips it. Empty when the request fails.
     /// A search carries only an issue's first 20 comments and work logs: the rest are fetched too, so a page opens
     /// whole.
     @discardableResult
@@ -175,14 +186,18 @@ final class AccountState: Identifiable {
         guard let page = try? await client.search(jql: jql, fields: client.detailFields) else { return [] }
         let client = client
         let issues = await withTaskGroup(of: Issue.self) { group in
-            for i in page.issues { group.addTask { (try? await client.completing(i)) ?? i } }
             var done: [String: Issue] = [:]
+            // Eight at a time: a page holds up to 50 issues, and each may fetch every page of its comments at once.
+            for (n, i) in page.issues.enumerated() {
+                if n >= 8, let d = await group.next() { done[d.key] = d }
+                group.addTask { (try? await client.completing(i)) ?? i }
+            }
             for await i in group { done[i.key] = i }
             return page.issues.map { done[$0.key] ?? $0 }
         }
         for i in issues {
             DiskCache.saveAsync(i, account: account, name: "issue-\(i.key)")
-            peek[i.key] = i
+            peek[i.key] = i.rowSized
             // A thread that could not be completed is fetched again on the next pass.
             if i.isComplete || i.fields.comment == nil { prefetched[i.key] = i.fields.updated }
         }
@@ -448,6 +463,11 @@ final class Session {
     var listTick = 0
     /// Per issue key, so a page of the same issue in another window follows a write made here.
     var writeTicks: [String: Int] = [:]
+    /// Pages and list rows showing `key` follow a write made to it.
+    func touched(_ key: String) {
+        writeTicks[key, default: 0] += 1
+        listTick += 1
+    }
     var addAccountRequested = false
     /// What the list window showed last, so one opened afresh (⌘0) continues there. In memory only: a fresh
     /// launch follows the "Open at launch" setting instead.
@@ -491,7 +511,7 @@ final class Session {
         // With accounts but no cache (a first launch, or after Clear Cache), or with the keychain still locked, the
         // window keeps its spinner until the first one answers, rather than showing the sign-in form to someone
         // who is signed in.
-        isRestoring = Keychain.isUnavailable || (states.isEmpty && !stored.isEmpty)
+        isRestoring = Keychain.isLocked || (states.isEmpty && !stored.isEmpty)
     }
 
     /// Makes a state per account from what is on disk and queues each for its network check.
@@ -518,8 +538,9 @@ final class Session {
         didRestore = true
         watchConnectivity()
         defer { isRestoring = false }
-        // Launched before the session's first unlock (a login item): the keychain answers -25308 until then.
-        while Keychain.isUnavailable {
+        // Launched before the session's first unlock (a login item): the keychain answers -25308 until then. Any
+        // other failure (a denied prompt on the legacy keychain) never clears by waiting: the sign-in card says why.
+        while Keychain.isLocked {
             try? await Task.sleep(for: .seconds(3))
             let accounts = Keychain.load()
             if !Keychain.isUnavailable {
@@ -611,11 +632,18 @@ final class Session {
         for t in tasks { await t.value }
     }
 
-    /// Tries the network again; when it answers, every list and open issue reloads.
+    /// Tries again what failed: an account whose check failed runs it again whole (only a check that passes clears
+    /// the sidebar's error mark) and an unreachable one signs in again. Healthy accounts are left alone, or one dead
+    /// site would re-sync every other one every 20 s. When something comes back, every list and open issue reloads.
     func reconnect() async {
         let offline = Connectivity.shared.isOffline
         let failed = Set(states.filter { $0.error != nil }.map(\.id))
-        await refreshAll()
+        let tasks = states.filter { failed.contains($0.id) }.map { st in
+            Task { @MainActor in
+                do { try await st.load() } catch { if !error.isCancelled { st.error = error.localizedDescription } }
+            }
+        }
+        for t in tasks { await t.value }
         for account in accounts where unreachable[account.id] != nil { await retry(account) }
         // Only once something came back: a site that keeps failing must not reload every page every 20 s.
         if !Connectivity.shared.isOffline,

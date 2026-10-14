@@ -172,16 +172,16 @@ final class JQLTests: XCTestCase {
 
 final class ADFTests: XCTestCase {
     func testPlainTextDocumentHasOneParagraphPerLine() throws {
-        let doc = ADFNode.document(text: "first\n\nthird")
+        let doc = ADFNode.document(markdown: "first\n\nthird")
         XCTAssertEqual(doc.type, "doc")
         XCTAssertEqual(doc.version, 1)
-        XCTAssertEqual(doc.content?.count, 3)
+        XCTAssertEqual(doc.content?.count, 2, "a blank line ends a paragraph and makes none of its own")
         XCTAssertEqual(doc.content?[0].content?.first?.text, "first")
-        XCTAssertEqual(doc.content?[1].content?.count, 0)
-        XCTAssertEqual(doc.plainText, "first\n\nthird")
+        XCTAssertEqual(doc.content?[1].content?.first?.text, "third")
+        XCTAssertEqual(doc.plainText, "first\nthird")
     }
 
-    func testRealWorldNodesDecodeAndRender() throws {
+    @MainActor func testRealWorldNodesDecodeAndRender() throws {
         let json = """
             {"type":"doc","version":1,"content":[
               {"type":"heading","attrs":{"level":2},"content":[{"type":"text","text":"Контекст"}]},
@@ -197,9 +197,15 @@ final class ADFTests: XCTestCase {
             """
         let doc = try JSONDecoder().decode(ADFNode.self, from: Data(json.utf8))
         XCTAssertEqual(doc.content?.count, 4)
-        let paragraph = try XCTUnwrap(doc.content?[1])
-        let rendered = String(paragraph.inlineAttributed().characters)
-        XCTAssertEqual(rendered, "Карточка View all\n@Vitalyexample.com/x")
+        let rendered = ADFAttributed.render(doc, attachments: []) { _ in nil }
+        for part in ["Контекст", "Карточка View all", "@Vitaly", "example.com/x"] {
+            XCTAssertTrue(rendered.string.contains(part), part)
+        }
+        var linked = false
+        rendered.enumerateAttribute(.link, in: NSRange(location: 0, length: rendered.length)) { value, _, _ in
+            linked = linked || value as? URL == URL(string: "https://example.com/x")
+        }
+        XCTAssertTrue(linked, "the inline card links to its page")
         // Round-trips through Codable without losing attrs.
         let again = try JSONDecoder().decode(ADFNode.self, from: JSONEncoder().encode(doc))
         XCTAssertEqual(again, doc)
@@ -373,12 +379,12 @@ final class LiveWriteTests: XCTestCase {
         let before = try await c.issue(key)
 
         // Comment, then remove it so the issue is left as found.
-        try await c.addComment(key, body: .document(text: "Conductor self-test, safe to ignore.\nSecond line."))
+        try await c.addComment(key, body: .document(markdown: "Conductor self-test, safe to ignore.\nSecond line."))
         let withComment = try await c.issue(key)
         XCTAssertEqual(withComment.fields.comment?.total, (before.fields.comment?.total ?? 0) + 1)
         let mine = try XCTUnwrap(withComment.fields.comment?.comments.last)
         XCTAssertEqual(mine.author?.accountId, me.accountId)
-        XCTAssertEqual(mine.body.content?.count, 2)
+        XCTAssertEqual(mine.body.content?.count, 1, "one paragraph: text, hard break, text")
         try await c.deleteComment(key, id: mine.id)
         let afterDelete = try await c.issue(key)
         XCTAssertEqual(afterDelete.fields.comment?.total, before.fields.comment?.total)
@@ -1009,5 +1015,107 @@ final class PageRevealTests: XCTestCase {
 
     func testScrollStopsAtThePageEnd() {
         XCTAssertEqual(y(CGRect(x: 0, y: 2980, width: 600, height: 20), .middle, from: -52), 3000 - 700)
+    }
+}
+
+final class TimeoutTests: XCTestCase {
+    func testASlowTaskGivesWayAtTheLimit() async {
+        let slow = Task<Int, Error> {
+            try await Task.sleep(for: .seconds(10))
+            return 1
+        }
+        let start = ContinuousClock.now
+        let value = await IssueDetailStore.first(of: slow, within: .milliseconds(100))
+        XCTAssertNil(value)
+        XCTAssertLessThan(ContinuousClock.now - start, .seconds(1))
+        slow.cancel()
+    }
+
+    func testAQuickTaskGivesItsValue() async {
+        let value = await IssueDetailStore.first(of: Task<Int, Error> { 7 }, within: .seconds(5))
+        XCTAssertEqual(value, 7)
+    }
+}
+
+/// A list folds a subtask under its parent when it holds both; a board column folds it into the parent's card.
+final class NestAndBoardColumnTests: XCTestCase {
+    /// A Task in `status`, or a subtask of `parent`, updated `minute` minutes past nine.
+    func issue(_ key: String, status: String = "1", parent: String? = nil, minute: Int = 0) throws -> Issue {
+        let up = parent.map { #","parent":{"id":"\#($0)","key":"\#($0)","fields":{"summary":"p"}}"# } ?? ""
+        let d = JSONDecoder()
+        d.dateDecodingStrategy = .iso8601
+        return try d.decode(
+            Issue.self,
+            from: Data(
+                #"{"id":"\#(key)","key":"\#(key)","fields":{"summary":"s","updated":"2026-10-05T09:\#(String(format: "%02d", minute)):00Z","status":{"id":"\#(status)","name":"S","statusCategory":{"key":"new","name":"To Do"}},"issuetype":{"id":"1","name":"Task","subtask":\#(parent != nil)}\#(up)}}"#
+                    .utf8))
+    }
+
+    @MainActor func testSubtasksFoldUnderAParentInTheListAndCarryItUpTheUpdatedOrder() throws {
+        let state = AccountState(
+            account: Account(site: URL(string: "https://a.atlassian.net")!, email: "e", token: "t"))
+        // A-3 is A-2's subtask and was touched last; A-4's parent A-9 is not in the list.
+        let rows = try [
+            issue("A-1", minute: 30), issue("A-2", minute: 10), issue("A-3", parent: "A-2", minute: 50),
+            issue("A-4", parent: "A-9", minute: 20),
+        ].map { ListRow(issue: $0, state: state) }
+        let byUpdate = ListFilters.Sort(field: .updated, descending: true)
+        let folded = DisplayRow.nest(rows, expanded: [], sort: byUpdate)
+        XCTAssertEqual(folded.map(\.row.issue.key), ["A-2", "A-1", "A-4"], "A-2 moves up with its subtask")
+        XCTAssertEqual(folded.map(\.depth), [0, 0, 0])
+        XCTAssertEqual(folded.first?.children.map(\.issue.key), ["A-3"])
+        let open = DisplayRow.nest(rows, expanded: ["\(state.id)|A-2"], sort: byUpdate)
+        XCTAssertEqual(open.map(\.row.issue.key), ["A-2", "A-3", "A-1", "A-4"])
+        XCTAssertEqual(open.map(\.depth), [0, 1, 0, 0])
+        let byCreated = ListFilters.Sort(field: .created, descending: true)
+        XCTAssertEqual(
+            DisplayRow.nest(rows, expanded: [], sort: byCreated).map(\.row.issue.key), ["A-1", "A-2", "A-4"],
+            "any other order is the server's")
+    }
+
+    @MainActor func testAColumnHoldsItsStatusesAndFoldsOnlySubtasksWhoseParentIsOnTheBoard() throws {
+        let store = BoardStore()
+        // A-3's parent A-2 sits in another column; A-4's parent A-9 is not on the board.
+        store.issues = try [
+            issue("A-1"), issue("A-2", status: "2"), issue("A-3", parent: "A-2"), issue("A-4", parent: "A-9"),
+        ]
+        let column = BoardConfiguration.Column(
+            name: "To Do", statuses: [.init(id: "1"), .init(id: "3")], min: nil, max: nil)
+        XCTAssertEqual(store.issues(in: column).map(\.key), ["A-1", "A-3", "A-4"])
+        XCTAssertEqual(store.issues(in: column, fold: true).map(\.key), ["A-1", "A-4"])
+        let lane = [store.issues[2], store.issues[3]]
+        XCTAssertEqual(store.issues(in: column, from: lane).map(\.key), ["A-3", "A-4"])
+        XCTAssertEqual(
+            store.issues(in: column, from: lane, fold: true).map(\.key), ["A-4"], "the parent counts from the board")
+    }
+}
+
+
+final class JQLDetectionTests: XCTestCase {
+    func testOnlyJQLShapedTextIsRawJQL() {
+        for q in [
+            "status = Done", "status=Done", "project = \"IN\" ORDER BY updated DESC", "assignee in (a,b)",
+            "issuekey IN issueHistory()", "sprint in openSprints()", "labels is EMPTY", "resolution is not empty",
+            "text ~ \"login\"", "summary !~ x", "created >= -1d", "order by created", "(a = 1 or b = 2)",
+            "cf[10100] in (x)", "status = Done order by created",
+        ] {
+            XCTAssertTrue(ListFilters.looksLikeJQL(q), q)
+        }
+        // "in" and "is" are plain words too; an issue key is isKey's.
+        for q in [
+            "sign in", "login is broken", "check in with team", "what is this", "in progress", "is it done",
+            "billing engine", "ES-12",
+        ] {
+            XCTAssertFalse(ListFilters.looksLikeJQL(q), q)
+        }
+    }
+
+    func testPlainWordsSearchTextAndJQLPassesThrough() {
+        var f = ListFilters()
+        f.status = .any
+        f.text = "sign in"
+        XCTAssertEqual(f.jql, "text ~ \"sign in\" ORDER BY updated DESC")
+        f.text = "status = Done"
+        XCTAssertEqual(f.jql, "status = Done")
     }
 }

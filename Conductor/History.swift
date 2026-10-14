@@ -72,26 +72,17 @@ extension ChangeGroup.Item {
         return text.map { AttributedString($0) }
     }
 
-    /// Jira wiki markup as formatted text: *bold*, _italic_, -struck-, {{code}}, [label|url], headings, lists,
-    /// panels and images. ponytail: tables and colours come out as their text; enough for a line of history.
+    /// Jira wiki markup as formatted text: through the page's own parser, then the Markdown the editor would show,
+    /// so the row keeps its font and colours (an attributed string straight from TextKit brings its own). Images come
+    /// out as their name and a table's cells as a line each: enough for a line of history.
     static func fromWiki(_ wiki: String) -> AttributedString {
-        var s = wiki
-        let rules: [(String, String)] = [
-            (#"\{(code|noformat|quote|panel|color)[^}]*\}"#, ""),
-            (#"(?m)^h[1-6]\.\s*"#, ""),
-            (#"(?m)^[*#-]+\s+"#, "• "),
-            (#"!([^|!\n]+)(\|[^!\n]*)?!"#, "$1"),
-            (#"\[~accountid:[^\]]+\]"#, "@…"),
-            (#"\[([^|\]\n]+)\|([^\]\n]+)\]"#, "[$1]($2)"),
-            (#"\{\{(.+?)\}\}"#, "`$1`"),
-            (#"(?<![\w*])\*(\S(?:[^*\n]*\S)?)\*(?![\w*])"#, "**$1**"),
-            (#"(?<![\w_])_(\S(?:[^_\n]*\S)?)_(?![\w_])"#, "*$1*"),
-            (#"(?<![\w-])-(\S(?:[^-\n]*\S)?)-(?![\w-])"#, "~~$1~~"),
-        ]
-        for (pattern, template) in rules {
-            s = s.replacingOccurrences(of: pattern, with: template, options: .regularExpression)
-        }
-        return (try? AttributedString(markdown: s, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)))
+        // Cloud writes a mention here by account id, which no reader knows.
+        let text = wiki.replacingOccurrences(of: #"\[~accountid:[^\]]+\]"#, with: "@…", options: .regularExpression)
+        var mentions: [String: String] = [:]
+        let markdown = ADFNode.document(wiki: text).markdown(mentions: &mentions)
+        return
+            (try? AttributedString(
+                markdown: markdown, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)))
             ?? AttributedString(wiki)
     }
 }

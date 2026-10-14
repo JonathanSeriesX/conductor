@@ -57,6 +57,10 @@ struct LoginView: View {
 
             if let error {
                 Text(error).font(.callout).foregroundStyle(.red).multilineTextAlignment(.center)
+            } else if !isSheet, Keychain.isUnavailable {
+                // Accounts may be stored but unreadable (a denied prompt): say so rather than look signed out.
+                Text("Couldn't read the Keychain (error \(Int(Keychain.lastStatus))).")
+                    .font(.callout).foregroundStyle(.red).multilineTextAlignment(.center)
             }
 
             HStack {

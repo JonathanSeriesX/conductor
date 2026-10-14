@@ -179,8 +179,8 @@ final class BoardStore {
         await loadIssues(client)
     }
 
-    /// Moves a card by firing the first transition that lands in the column. The issue as Jira has it afterwards,
-    /// or nil when it did not move.
+    /// Moves a card by firing the first transition that lands in the column. The issue as Jira has it afterwards
+    /// (only its new status, when the refetch fails), or nil when it did not move.
     @discardableResult
     func move(_ key: String, to column: BoardConfiguration.Column, client: JiraClient) async -> Issue? {
         let targets = Set(column.statuses.map(\.id))
@@ -191,25 +191,30 @@ final class BoardStore {
         // fetched afterwards, so the rest of the board stays exactly where it was instead of reloading page by page.
         moving[key] = column.statuses.first?.id
         defer { moving[key] = nil }
+        let t: Transition
         do {
             let transitions = try await client.transitions(key)
-            guard let t = transitions.first(where: { targets.contains($0.to.id) }) else {
+            guard let found = transitions.first(where: { targets.contains($0.to.id) }) else {
                 error = String(
                     localized: "No transition from \(issue.fields.status.name) to \(column.name) is allowed for \(key)."
                 )
                 return nil
             }
+            t = found
             moving[key] = t.to.id
             try await client.transition(key, to: t.id)
-            Bin.shared.put(.status(issue.fields.status), account: state?.id, key: key)
-            let fresh = try await client.issue(key)
-            if let i = issues.firstIndex(where: { $0.key == key }) { issues[i] = fresh }
-            saveSnapshot()
-            return fresh
         } catch {
             self.error = error.localizedDescription
             return nil
         }
+        Bin.shared.put(.status(issue.fields.status), account: state?.id, key: key)
+        // Jira has moved it: a failed refetch keeps the card in its new column, and the next reload brings the rest.
+        var fresh = issue
+        fresh.fields.status = t.to
+        if let got = try? await client.issue(key) { fresh = got }
+        if let i = issues.firstIndex(where: { $0.key == key }) { issues[i] = fresh }
+        saveSnapshot()
+        return fresh
     }
 }
 
@@ -526,15 +531,9 @@ struct BoardView: View {
         guard let c = state?.client else { return }
         Task {
             do { try await op() } catch { store.error = error.localizedDescription }
-            keys.forEach(touched)
+            keys.forEach(session.touched)
             await store.refresh(keys, client: c)
         }
-    }
-
-    /// The pages, windows and list rows showing `key` follow a write made from the board.
-    private func touched(_ key: String) {
-        session.writeTicks[key, default: 0] += 1
-        session.listTick += 1
     }
 
     /// The keys per column, top to bottom as drawn: lanes stack, so with lanes a column runs through all of them.
@@ -584,7 +583,7 @@ struct BoardView: View {
             Task {
                 let fresh = await store.move(key, to: column, client: st.client)
                 session.announce([target], issue: fresh ?? issue)
-                touched(key)
+                session.touched(key)
             }
         }
     }

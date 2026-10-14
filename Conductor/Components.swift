@@ -467,13 +467,14 @@ struct WindowEventMonitor: NSViewRepresentable {
     final class MonitorView: NSView {
         let mask: NSEvent.EventTypeMask
         var handler: (NSEvent) -> NSEvent? = { $0 }
-        private var monitor: Any?
+        nonisolated(unsafe) private var monitor: Any?
 
         init(mask: NSEvent.EventTypeMask) {
             self.mask = mask
             super.init(frame: .zero)
         }
         required init?(coder: NSCoder) { fatalError() }
+        deinit { if let monitor { NSEvent.removeMonitor(monitor) } }
 
         override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
@@ -663,75 +664,6 @@ extension Binding where Value: Sendable {
         self.init(
             get: { source.wrappedValue ?? fallback },
             set: { if source.wrappedValue != nil { source.wrappedValue = $0 } })
-    }
-}
-
-/// A reader's right-click on selectable text: with a selection, a menu with Copy alone; without one, nothing.
-/// SwiftUI's selectable text would otherwise hand the click to the system's text menu (Cut, Paste, Font,
-/// Spelling…, drawn out of process), which an app can neither trim nor replace with `.contextMenu`. So the click
-/// is taken first: this view sits under the text and marks its area for the monitor `ReaderMenus.install`.
-struct ReaderMenu: NSViewRepresentable {
-    func makeNSView(context: Context) -> ReaderMenuArea { ReaderMenuArea() }
-    func updateNSView(_ view: ReaderMenuArea, context: Context) {}
-}
-
-final class ReaderMenuArea: NSView {
-    override func hitTest(_ point: NSPoint) -> NSView? { nil }  // the text above takes every click
-}
-
-/// A spot inside a reader area whose right-click is the view's own (an inline image's menu), not the reader's.
-struct ReaderMenuPass: NSViewRepresentable {
-    func makeNSView(context: Context) -> ReaderMenuHole { ReaderMenuHole() }
-    func updateNSView(_ view: ReaderMenuHole, context: Context) {}
-}
-
-final class ReaderMenuHole: NSView {
-    override func hitTest(_ point: NSPoint) -> NSView? { nil }
-}
-
-@MainActor enum ReaderMenus {
-    static func install() {
-        NSEvent.addLocalMonitorForEvents(matching: .rightMouseDown) { e in
-            guard let w = e.window, let root = w.contentView else { return e }
-            let at = root.convert(e.locationInWindow, from: nil)
-            // Only marked text: editors (the composer, a summary or comment being edited) are never marked, so
-            // they keep their own menu. SwiftUI's selectable text is a text view that calls itself editable too,
-            // so that cannot tell them apart.
-            guard
-                let area = views(ReaderMenuArea.self, in: root).last(where: {
-                    $0.convert($0.bounds, to: root).contains(at)
-                })
-            else { return e }
-            if views(ReaderMenuHole.self, in: root).contains(where: { $0.convert($0.bounds, to: root).contains(at) }) {
-                return e
-            }
-            // A selection in this text: SwiftUI's text interaction view holds it and has the keyboard, and says
-            // whether Copy has anything to copy, as it does for the Edit menu. Anything else: no menu.
-            let rect = area.convert(area.bounds, to: root)
-            let copy = NSMenuItem(
-                title: String(localized: "Copy"), action: #selector(NSText.copy(_:)), keyEquivalent: "")
-            if let holder = w.firstResponder as? NSView, holder.convert(holder.bounds, to: root).intersects(rect),
-                holder.responds(to: #selector(NSText.copy(_:))),
-                (holder as? NSMenuItemValidation)?.validateMenuItem(copy)
-                    ?? (holder as? NSUserInterfaceValidations)?.validateUserInterfaceItem(copy) ?? true
-            {
-                copy.target = holder
-                let menu = NSMenu()
-                menu.autoenablesItems = false  // validation would look for a target from the area, and grey it
-                menu.addItem(copy)
-                NSMenu.popUpContextMenu(menu, with: e, for: area)
-            }
-            return nil
-        }
-    }
-
-    /// Every marked view in the window, outermost first, so the innermost one under the pointer wins.
-    private static func views<T: NSView>(_ type: T.Type, in view: NSView) -> [T] {
-        guard !view.isHidden else { return [] }
-        var out: [T] = []
-        if let a = view as? T { out.append(a) }
-        for sub in view.subviews { out += views(type, in: sub) }
-        return out
     }
 }
 

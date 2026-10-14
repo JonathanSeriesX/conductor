@@ -27,7 +27,7 @@ struct Account: Codable, Sendable, Equatable, Identifiable {
     /// has ADF, usernames where Cloud has account ids) and signs in with a personal access token as a bearer.
     var isServer: Bool {
         let host = site.host() ?? ""
-        return !["atlassian.net", "jira.com", "jira-dev.com"].contains { host.hasSuffix($0) }
+        return !["atlassian.net", "jira.com", "jira-dev.com"].contains { host == $0 || host.hasSuffix("." + $0) }
     }
 
     /// Accepts "team", "team.atlassian.net", or a full URL; a Server URL keeps its context path ("/jira").
@@ -168,16 +168,26 @@ struct JiraClient: Sendable {
             req.setValue("application/json", forHTTPHeaderField: "Content-Type")
             req.httpBody = try JSONEncoder().encode(body)
         }
-        let (data, resp): (Data, URLResponse)
         let host = account.site.host() ?? ""
-        do { (data, resp) = try await URLSession.shared.data(for: req) } catch {
-            await Connectivity.shared.report(error, host: host)
-            throw error
+        var retried = false
+        while true {
+            let (data, resp): (Data, URLResponse)
+            do { (data, resp) = try await URLSession.shared.data(for: req) } catch {
+                await Connectivity.shared.report(error, host: host)
+                throw error
+            }
+            await Connectivity.shared.reportSuccess(host: host)
+            let http = resp as? HTTPURLResponse
+            let status = http?.statusCode ?? 0
+            if (200..<300).contains(status) { return data }
+            // Rate limited or busy: wait as long as Jira asks (2 s when it doesn't say, 30 s at most), then once more.
+            guard !retried, status == 429 || status == 503 else {
+                throw JiraError(status: status, data: data, server: server)
+            }
+            retried = true
+            let after = http?.value(forHTTPHeaderField: "Retry-After").flatMap { Int($0) } ?? 2
+            try await Task.sleep(for: .seconds(min(max(after, 0), 30)))
         }
-        await Connectivity.shared.reportSuccess(host: host)
-        let status = (resp as? HTTPURLResponse)?.statusCode ?? 0
-        guard (200..<300).contains(status) else { throw JiraError(status: status, data: data, server: server) }
-        return data
     }
 
     private func get<T: Decodable>(_ path: String, query: [String: String] = [:], base: URL? = nil) async throws -> T {
@@ -444,6 +454,14 @@ struct JiraClient: Sendable {
         return copy
     }
 
+    /// The newest comments, newest first. A search result carries the oldest 20, so a new one on a longer thread
+    /// shows up only here.
+    func recentComments(_ key: String, limit: Int = 20) async throws -> [Comment] {
+        let p: CommentPage = try await get(
+            "issue/\(key)/comment", query: ["orderBy": "-created", "maxResults": "\(limit)"])
+        return p.comments
+    }
+
     func transitions(_ key: String) async throws -> [Transition] {
         let list: TransitionList = try await get("issue/\(key)/transitions")
         return list.transitions
@@ -644,12 +662,10 @@ struct JiraClient: Sendable {
             let comment: JSONValue?
             let started: String
         }
-        let f = DateFormatter()
-        f.locale = Locale(identifier: "en_US_POSIX")
-        f.dateFormat = "yyyy-MM-dd'T'HH:mm:ss.SSSZ"
         _ = try await request(
             "issue/\(key)/worklog", query: ["adjustEstimate": adjustsEstimate ? "auto" : "leave"], method: "POST",
-            body: Body(timeSpentSeconds: seconds, comment: comment.map(text), started: f.string(from: started)))
+            body: Body(
+                timeSpentSeconds: seconds, comment: comment.map(text), started: Self.jiraDate.string(from: started)))
     }
 
     func deleteWorklog(_ key: String, id: String) async throws {
@@ -756,9 +772,14 @@ struct EpicFields: Codable, Hashable, Sendable {
 // MARK: - Keychain
 
 @MainActor enum Keychain {
-    /// The last read failed for a reason other than "no item": the data protection keychain is locked (-25308 until
-    /// the session's first unlock). The accounts are still in there; nothing may write until a read succeeds.
+    /// The last read failed for a reason other than "no item" (locked, a denied prompt). The accounts are still in
+    /// there; nothing may write until a read succeeds.
     private(set) static var isUnavailable = false
+    /// The last read found the data protection keychain locked (-25308 until the session's first unlock): it answers
+    /// once the user logs in, so launch waits on its spinner rather than show the sign-in card.
+    private(set) static var isLocked = false
+    /// The last read's status, for the sign-in card to say why no accounts came back.
+    private(set) static var lastStatus: OSStatus = errSecSuccess
 
     /// The data protection keychain grants access by entitlement (team + bundle id), so a rebuilt binary never
     /// raises the "wants to use your confidential information" dialog that the legacy keychain's per-binary ACL
@@ -784,6 +805,8 @@ struct EpicFields: Codable, Hashable, Sendable {
         var out: CFTypeRef?
         let status = SecItemCopyMatching(q as CFDictionary, &out)
         isUnavailable = status != errSecSuccess && status != errSecItemNotFound
+        isLocked = status == errSecInteractionNotAllowed
+        lastStatus = status
         guard status == errSecSuccess, let data = out as? Data else {
             if isUnavailable { NSLog("Keychain read failed: %d", status) }
             return []

@@ -1,6 +1,7 @@
 import Quartz
 import QuickLook
 import SwiftUI
+import Synchronization
 import UniformTypeIdentifiers
 
 @MainActor @Observable
@@ -74,11 +75,9 @@ final class IssueDetailStore {
             account = state.id
             let account = state.account
             async let diskIssue: Issue? = DiskCache.loadAsync(account: account, name: "issue-\(key)")
-            async let diskMeta: EditMeta? = DiskCache.loadAsync(account: account, name: "editmeta-\(key)")
-            async let diskTransitions: [Transition]? = DiskCache.loadAsync(account: account, name: "transitions-\(key)")
             async let diskChildren: [Issue]? =
                 full ? DiskCache.loadAsync(account: account, name: "children-\(key)") : nil
-            let (cached, meta, trans, kids) = await (diskIssue, diskMeta, diskTransitions, diskChildren)
+            let (cached, kids) = await (diskIssue, diskChildren)
             guard holds(state, key) else { return }
             // Memory's copy when it is full, no less complete than the disk's and at least as new.
             var next = cached
@@ -105,6 +104,8 @@ final class IssueDetailStore {
             // Assignees of subtasks, children and links from memory and disk, before any request.
             let seeds = await Self.known(Self.relatedKeys(of: shown, children: kids ?? []), state: state)
             guard holds(state, key) else { return }
+            // Its workflow's edit screen and transitions, not a copy per issue: edit screens run to hundreds of KB.
+            let meta = shown.flatMap { state.editMetaByWorkflow[AccountState.workflowKey($0)] }
             var list: [Sprint] = []
             if full, let project = shown?.fields.project?.key,
                 meta.map({ m in client.sprintField.map { m.fields[$0] != nil } ?? false }) ?? false
@@ -113,8 +114,8 @@ final class IssueDetailStore {
                 guard holds(state, key) else { return }
             }
             issue = shown
-            editMeta = meta ?? shown.flatMap { state.editMetaByWorkflow[AccountState.workflowKey($0)] }
-            transitions = trans ?? shown.flatMap { state.transitionsByWorkflow[AccountState.workflowKey($0)] } ?? []
+            editMeta = meta
+            transitions = shown.flatMap { state.transitionsByWorkflow[AccountState.workflowKey($0)] } ?? []
             children = kids ?? []
             sprints = list
             error = nil
@@ -135,12 +136,11 @@ final class IssueDetailStore {
             Spotlight.index([fresh], host: state.host)
             if let fresh = try? await t, holds(state, key) {
                 update(\.transitions, fresh)
-                DiskCache.saveAsync(fresh, account: state.account, name: "transitions-\(key)")
                 if let i = issue { state.learnTransitions(fresh, of: i) }
             }
             if let fresh = try? await m, holds(state, key) {
                 update(\.editMeta, fresh)
-                DiskCache.saveAsync(fresh, account: state.account, name: "editmeta-\(key)")
+                if let i = issue { state.learnEditMeta(fresh, of: i) }
             }
             if full {
                 if let page = try? await kids, holds(state, key) {
@@ -185,17 +185,20 @@ final class IssueDetailStore {
         }
     }
 
-    /// The task's value if it lands within `limit`, else nil (the task keeps running).
-    private static func first<T: Sendable>(of task: Task<T, Error>, within limit: Duration) async -> T? {
-        await withTaskGroup(of: T?.self) { group in
-            group.addTask { try? await task.value }
-            group.addTask {
+    /// The task's value if it lands within `limit`, else nil (the task keeps running). Not a task group, which returns
+    /// only once every child has: awaiting a task's value ignores cancellation, so the group waited for the task.
+    nonisolated static func first<T: Sendable>(of task: Task<T, Error>, within limit: Duration) async -> T? {
+        await withCheckedContinuation { c in
+            let once = Mutex<CheckedContinuation<T?, Never>?>(c)
+            let timer = Task {
                 try? await Task.sleep(for: limit)
-                return nil
+                once.withLock { $0.take() }?.resume(returning: nil)
             }
-            let first = await group.next() ?? nil
-            group.cancelAll()
-            return first
+            Task {
+                let value = try? await task.value
+                once.withLock { $0.take() }?.resume(returning: value)
+                timer.cancel()
+            }
         }
     }
 
@@ -525,8 +528,6 @@ struct IssueDetailView: View {
                 }
             #endif
         }
-        .environment(\.adfAttachments, issue.fields.attachment ?? [])
-        .environment(\.previewURL, $store.previewURL)
     }
 
     /// Everything between the description and the comments.
@@ -1360,11 +1361,9 @@ struct IssueDetailView: View {
         )
         .environment(session)
         .environment(\.jira, jira)
-        .environment(\.adfAttachments, store.issue?.fields.attachment ?? [])
-        .environment(\.previewURL, $store.previewURL)
     }
 
-    /// An image from memory, disk or the site for the thread's rows, as `RemoteImage` and `InlineImage` load theirs.
+    /// An image from memory, disk or the site for the thread's rows, as `RemoteImage` loads its.
     private func loadImage(_ url: URL, maxPixels: Int) async -> NSImage? {
         if let hit = ImageCache.shared.object(forKey: url as NSURL) { return hit }
         if let data = await DiskCache.imageData(for: url),
@@ -1629,8 +1628,7 @@ struct IssueDetailView: View {
             let ok = await store.perform(jira, key: key, op)
             if ok {
                 ownLoad = "\(target.accountID)|\(key)|\(session.reloadTick)|\((session.writeTicks[key] ?? 0) + 1)"
-                session.writeTicks[key, default: 0] += 1
-                session.listTick += 1
+                session.touched(key)
             }
             return ok
         }
@@ -1740,8 +1738,7 @@ struct IssueDetailView: View {
         Task {
             do {
                 try await client.editIssue(key, fields: ["summary": .string(draft)])
-                session.writeTicks[key, default: 0] += 1
-                session.listTick += 1
+                session.touched(key)
             } catch {
                 if !error.isCancelled { store.error = error.localizedDescription }
             }
@@ -1904,65 +1901,6 @@ struct IssueDetailView: View {
 
 // MARK: - Pieces
 
-struct AttachmentTile: View {
-    let attachment: Attachment
-    var onPreview: (URL) -> Void
-    @Environment(Session.self) private var session
-    @State private var busy = false
-    private var client: JiraClient? { session.client(for: attachment.content) }
-
-    var body: some View {
-        Button(action: preview) {
-            VStack(alignment: .leading, spacing: 6) {
-                ZStack {
-                    if attachment.thumbnail != nil {
-                        // Behind a clear colour, so a wide thumbnail cannot widen the tile into its neighbour.
-                        Color.clear.overlay { RemoteImage(url: attachment.thumbnail, fit: true) }.clipped()
-                    } else {
-                        Image(systemName: icon).font(.title).foregroundStyle(.secondary)
-                    }
-                    if busy { ProgressView().controlSize(.small) }
-                }
-                .frame(height: 90)
-                .frame(maxWidth: .infinity)
-                .background(.quaternary.opacity(0.4))
-                .clipShape(.rect(cornerRadius: 10))
-                Text(attachment.filename).font(.caption).lineLimit(1).truncationMode(.middle)
-                Text(ByteCountFormatter.string(fromByteCount: Int64(attachment.size), countStyle: .file))
-                    .font(.caption2).foregroundStyle(.tertiary)
-            }
-            .contentShape(.rect)
-        }
-        .buttonStyle(.plain)
-        .help("\(attachment.filename) — click to preview")
-        // ponytail: a hover fetches files under 25 MB so a drag out has the file; a bigger one only drags once
-        // it was previewed, opened or copied.
-        .onHover { inside in
-            guard inside, attachment.size < 25_000_000, let client else { return }
-            Task { _ = await AttachmentOpener.download(attachment, client: client) }
-        }
-        .onDrag { AttachmentOpener.dragItem(attachment) ?? NSItemProvider() }
-    }
-
-    private var icon: String {
-        let mime = attachment.mimeType ?? ""
-        if mime.hasPrefix("image/") { return "photo" }
-        if mime.hasPrefix("video/") { return "film" }
-        if mime.contains("zip") { return "doc.zipper" }
-        if mime.contains("pdf") { return "doc.richtext" }
-        return "doc"
-    }
-
-    private func preview() {
-        guard let client, !busy else { return }
-        busy = true
-        Task {
-            defer { busy = false }
-            if let url = await AttachmentOpener.download(attachment, client: client) { onPreview(url) }
-        }
-    }
-}
-
 /// Owns the comment draft, so each keystroke re-evaluates this small view and not the whole issue page.
 struct CommentComposer: View {
     let target: IssueTarget
@@ -2019,594 +1957,11 @@ struct CommentComposer: View {
     }
 }
 
-enum AttachmentOpener {
-    private static func file(for attachment: Attachment) -> URL {
-        FileManager.default.temporaryDirectory.appending(path: "attachments/\(attachment.id)/\(attachment.filename)")
-    }
-
-    private static func store(_ data: Data, for attachment: Attachment) -> URL {
-        let file = file(for: attachment)
-        try? FileManager.default.createDirectory(
-            at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try? data.write(to: file)
-        return file
-    }
-
-    /// Downloads with auth into the app's temp folder; the same file is reused on later calls.
-    static func download(_ attachment: Attachment, client: JiraClient) async -> URL? {
-        let file = file(for: attachment)
-        if FileManager.default.fileExists(atPath: file.path) { return file }
-        // An inline image already has its bytes in the image cache; reuse them instead of fetching again.
-        var data = await DiskCache.imageData(for: attachment.content)
-        if data == nil { data = try? await client.data(for: attachment.content) }
-        guard let data else { return nil }
-        return store(data, for: attachment)
-    }
-
-    static func open(_ attachment: Attachment, client: JiraClient) async {
-        if let file = await download(attachment, client: client) { NSWorkspace.shared.open(file) }
-    }
-
-    /// A save panel, then the bytes to where it says; a failed write is said in an alert.
-    @MainActor static func saveAs(_ attachment: Attachment, client: JiraClient) {
-        let panel = NSSavePanel()
-        panel.nameFieldStringValue = attachment.filename
-        guard panel.runModal() == .OK, let dest = panel.url else { return }
-        Task {
-            do { try await client.data(for: attachment.content).write(to: dest) } catch {
-                NSAlert(error: error).runModal()
-            }
-        }
-    }
-
-    static func type(_ attachment: Attachment) -> UTType {
-        UTType(mimeType: attachment.mimeType ?? "")
-            ?? UTType(filenameExtension: (attachment.filename as NSString).pathExtension) ?? .data
-    }
-
-    /// For a drag out of the app: the file, once it is here (downloaded, or shown inline from the image cache).
-    /// SwiftUI turns a provider's file into a promise only when the file exists, so a tile fetches on hover.
-    static func dragItem(_ attachment: Attachment) -> NSItemProvider? {
-        var file = file(for: attachment)
-        if !FileManager.default.fileExists(atPath: file.path) {
-            guard let data = DiskCache.imageDataNow(for: attachment.content) else { return nil }
-            file = store(data, for: attachment)
-        }
-        let p = NSItemProvider(contentsOf: file)
-        p?.suggestedName = attachment.filename
-        return p
-    }
-
-    /// The file onto the pasteboard, and a picture's bytes beside it: Finder pastes the file, an editor the picture.
-    @MainActor static func copy(file: URL) {
-        let item = NSPasteboardItem()
-        item.setString(file.absoluteString, forType: .fileURL)
-        if let type = UTType(filenameExtension: file.pathExtension), type.conforms(to: .image),
-            let data = try? Data(contentsOf: file)
-        {
-            item.setData(data, forType: NSPasteboard.PasteboardType(type.identifier))
-        }
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.writeObjects([item])
-    }
-
-    static func copy(_ attachment: Attachment, client: JiraClient) async {
-        if let file = await download(attachment, client: client) { await copy(file: file) }
-    }
-
-    /// ⌘C while a Quick Look panel is up copies what it shows: the panel takes the keys, and nothing behind it
-    /// knows what is on view.
-    static func installQuickLookCopy() {
-        NSEvent.addLocalMonitorForEvents(matching: .keyDown) { e in
-            guard e.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
-                e.charactersIgnoringModifiers == "c"
-            else { return e }
-            let copied = MainActor.assumeIsolated {  // delivered on the main thread
-                guard QLPreviewPanel.sharedPreviewPanelExists(), let panel = QLPreviewPanel.shared(),
-                    panel.isKeyWindow, let url = panel.currentPreviewItem?.previewItemURL
-                else { return false }
-                copy(file: url)
-                return true
-            }
-            return copied ? nil : e
-        }
-    }
-}
-
-/// A file promised to the drop target: the attachment downloads as it lands. Its own delegate, so the session
-/// keeps it alive.
-final class AttachmentPromise: NSFilePromiseProvider, NSFilePromiseProviderDelegate {
-    private let attachment: Attachment
-    private let client: JiraClient
-
-    init(_ attachment: Attachment, client: JiraClient) {
-        self.attachment = attachment
-        self.client = client
-        super.init()
-        fileType = AttachmentOpener.type(attachment).identifier
-        delegate = self
-    }
-
-    func filePromiseProvider(_ p: NSFilePromiseProvider, fileNameForType fileType: String) -> String {
-        attachment.filename
-    }
-
-    func filePromiseProvider(
-        _ p: NSFilePromiseProvider, writePromiseTo url: URL, completionHandler: @escaping (Error?) -> Void
-    ) {
-        nonisolated(unsafe) let done = completionHandler
-        let attachment = attachment
-        let client = client
-        Task {
-            guard let file = await AttachmentOpener.download(attachment, client: client) else {
-                return done(CocoaError(.fileNoSuchFile))
-            }
-            do {
-                try FileManager.default.copyItem(at: file, to: url)
-                done(nil)
-            } catch {
-                done(error)
-            }
-        }
-    }
-}
-
-struct ReminderView: View {
-    let url: URL
-    let key: String
-    let summary: String
-    var done: () -> Void
-    @State private var date = Calendar.current.date(byAdding: .hour, value: 1, to: .now)!
-    @State private var existing: Date?
-    @State private var error: String?
-
-    private var presets: [(String, Date)] {
-        let cal = Calendar.current
-        let tomorrow9 = cal.date(
-            bySettingHour: 9, minute: 0, second: 0, of: cal.date(byAdding: .day, value: 1, to: .now)!)!
-        let monday9 = cal.nextDate(
-            after: .now, matching: DateComponents(hour: 9, minute: 0, weekday: 2), matchingPolicy: .nextTime)!
-        let at = { (d: Date) in d.formatted(date: .omitted, time: .shortened) }
-        return [
-            (String(localized: "In 1 Hour"), .now.addingTimeInterval(3600)),
-            (String(localized: "Tomorrow at \(at(tomorrow9))"), tomorrow9),
-            (String(localized: "Next Monday at \(at(monday9))"), monday9),
-        ]
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Remind Me").font(.headline)
-            if let existing {
-                HStack {
-                    Label(existing.formatted(date: .abbreviated, time: .shortened), systemImage: "bell.fill").font(
-                        .callout)
-                    Spacer()
-                    Button("Remove") {
-                        Notifier.cancelReminder(for: url)
-                        done()
-                    }
-                }
-            }
-            ForEach(presets, id: \.0) { title, at in
-                Button(title) { set(at) }.buttonStyle(.plain).foregroundStyle(Color.accentColor)
-            }
-            Divider()
-            HStack {
-                DatePicker("At", selection: $date, in: Date.now..., displayedComponents: [.date, .hourAndMinute])
-                    .labelsHidden()
-                Button("Set") { set(date) }.glassButton(prominent: true).keyboardShortcut(.defaultAction)
-            }
-            if let error {
-                Text(error).font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
-            }
-        }
-        .padding(12)
-        .frame(width: 280)
-        .task { existing = await Notifier.reminder(for: url) }
-    }
-
-    private func set(_ at: Date) {
-        Task {
-            do {
-                try await Notifier.remind(url, key: key, summary: summary, at: at)
-                done()
-            } catch { self.error = error.localizedDescription }
-        }
-    }
-}
-
-/// Jira due dates are plain calendar days, read and written in the local calendar.
-enum DueDate {
-    private static let format: DateFormatter = {
-        let f = DateFormatter()
-        f.locale = Locale(identifier: "en_US_POSIX")
-        f.dateFormat = "yyyy-MM-dd"
-        return f
-    }()
-    static func parse(_ s: String) -> Date? { format.date(from: s) }
-    static func string(_ d: Date) -> String { format.string(from: d) }
-}
-
-struct DueDatePicker: View {
-    @State private var date: Date
-    private let hadDate: Bool
-    var onSave: (Date?) -> Void
-
-    init(date: Date?, onSave: @escaping (Date?) -> Void) {
-        _date = State(initialValue: date ?? .now)
-        hadDate = date != nil
-        self.onSave = onSave
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            DatePicker("Due date", selection: $date, displayedComponents: .date)
-                .datePickerStyle(.graphical).labelsHidden()
-                .focusEffectDisabled()  // the thick square ring around the whole calendar
-            HStack {
-                Button("Clear") { onSave(nil) }.glassButton().disabled(!hadDate)
-                Spacer()
-                Button("Save") { onSave(date) }.glassButton(prominent: true).keyboardShortcut(.defaultAction)
-            }
-        }
-        .padding(12)
-    }
-}
-
-struct LabelsEditor: View {
-    @State var labels: [String]
-    /// Every label on the site; the ones matching the draft are offered below the field.
-    var suggestions: [String] = []
-    var onSave: ([String]) -> Void
-    @State private var draft = ""
-    /// The match ↓ and ↑ walked to, which ↩ adds.
-    @State private var highlighted: Int?
-    @FocusState private var focused: Bool
-
-    private var matches: [String] {
-        let q = draft.trimmingCharacters(in: .whitespaces).lowercased()
-        guard !q.isEmpty else { return [] }
-        return suggestions.filter { $0.lowercased().contains(q) && !labels.contains($0) }.prefix(6).map { $0 }
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Labels").font(.headline)
-            if labels.isEmpty { Text("No labels").foregroundStyle(.tertiary).font(.callout) }
-            Wrap { ForEach(labels, id: \.self) { l in Chip(text: l) { labels.removeAll { $0 == l } } } }
-            TextField("New label · ↩ to add · ⌘↩ to save", text: $draft).textFieldStyle(.roundedBorder)
-                .onSubmit(add).focused($focused)
-                .onKeyPress(.downArrow) { step(1) }
-                .onKeyPress(.upArrow) { step(-1) }
-                // A comma ends a label, so several can be typed or pasted in one go.
-                .onChange(of: draft) {
-                    highlighted = nil
-                    if draft.contains(",") { add() }
-                }
-            ForEach(Array(matches.enumerated()), id: \.element) { i, m in
-                Button {
-                    labels.append(m)
-                    draft = ""
-                } label: {
-                    Text(m).frame(maxWidth: .infinity, alignment: .leading).contentShape(.rect)
-                }
-                .buttonStyle(.plain).padding(.horizontal, 6).padding(.vertical, 3)
-                .background(i == highlighted ? Color.accentColor.opacity(0.18) : .clear, in: .rect(cornerRadius: 6))
-            }
-            HStack {
-                Spacer()
-                Button("Save") {
-                    add()
-                    onSave(labels)
-                }.glassButton(prominent: true).keyboardShortcut(.return, modifiers: .command)
-            }
-        }
-        .padding(12)
-        .frame(width: 280)
-        .focusSoon($focused)
-    }
-
-    private func step(_ by: Int) -> KeyPress.Result {
-        guard !matches.isEmpty else { return .ignored }
-        highlighted = max(0, min(matches.count - 1, (highlighted ?? -1) + by))
-        return .handled
-    }
-
-    private func add() {
-        if let h = highlighted, matches.indices.contains(h) {
-            labels.append(matches[h])
-        } else {
-            for l in draft.split(separator: ",") {
-                let l = l.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: " ", with: "-")
-                if !l.isEmpty, !labels.contains(l) { labels.append(l) }
-            }
-        }
-        draft = ""
-    }
-}
-
 /// What a key acts on, on the issue page.
 private enum PageTarget: Hashable {
     case summary, description, status, priority, assignee, labels, composer
     /// The preview column's card of status, assignee, priority and reporter, a lazy grid.
     case fields
-}
-
-/// A bin icon that deletes at once and asks nothing: what it deletes lands in the Bin (Window menu) to be put back.
-struct DeleteButton: View {
-    let help: LocalizedStringKey
-    let perform: () -> Void
-
-    var body: some View {
-        Button(action: perform) { Label("Delete", systemImage: "trash").labelStyle(.iconOnly) }
-            .buttonStyle(.plain).foregroundStyle(.tertiary).help(help)
-    }
-}
-
-/// A popover of choices with the current one ticked, for what a key opens.
-/// ponytail: Tab moves between rows; arrow keys and a type-to-find would be the next step.
-struct PickList: View {
-    let items: [(id: String, title: String, selected: Bool)]
-    let pick: (String) -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            ForEach(items, id: \.id) { item in
-                Button {
-                    pick(item.id)
-                } label: {
-                    HStack(spacing: 8) {
-                        Text(item.title)
-                        Spacer()
-                        if item.selected { Image(systemName: "checkmark").foregroundStyle(.secondary) }
-                    }
-                    .padding(.horizontal, 8).padding(.vertical, 6)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentShape(.rect)
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .padding(6)
-        .frame(minWidth: 200)
-    }
-}
-
-/// Who watches the issue, with the watch toggle under the list.
-struct WatchersView<Toggle: View>: View {
-    let key: String
-    @ViewBuilder var toggle: Toggle
-    @Environment(\.jira) private var jira
-    @State private var users: [JiraUser]?
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Watchers").font(.headline)
-            if let users {
-                ForEach(users) { u in
-                    HStack(spacing: 6) {
-                        Avatar(user: u, size: 20)
-                        Text(u.displayName)
-                    }
-                }
-            } else {
-                ProgressView().controlSize(.small)
-            }
-            toggle.glassButton()
-        }
-        .padding(12)
-        .frame(minWidth: 220, alignment: .leading)
-        .task { users = (try? await jira?.client.watchers(key)) ?? [] }
-    }
-}
-
-/// Sets or clears the parent: a key typed or picked from the search.
-struct ParentPicker: View {
-    /// The issue being re-parented, left out of the results; nil while creating one.
-    var key: String?
-    let current: String?
-    /// Scope of the search: the same project, one hierarchy level up.
-    var jql: String
-    /// "Clone" when the New Issue window borrows the picker to copy an issue.
-    var title: LocalizedStringKey = "Parent"
-    var verb: LocalizedStringKey = "Set"
-    var onSave: (String?) -> Void
-    @Environment(\.jira) private var jira
-    @State private var query = ""
-    @State private var results: [IssuePickerResult.Item] = []
-    @FocusState private var focused: Bool
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(title).font(.headline)
-            TextField("Key or search", text: $query).textFieldStyle(.roundedBorder).focused($focused)
-                // ↩ takes the typed key when the search found it, else the first result; an ineligible key stays put.
-                .onSubmit {
-                    let k = query.trimmingCharacters(in: .whitespaces).uppercased()
-                    if let r = results.first(where: { $0.key == k }) ?? results.first { onSave(r.key) }
-                }
-            List(results) { r in
-                Button {
-                    onSave(r.key)
-                } label: {
-                    HStack(spacing: 8) {
-                        Text(r.key).font(.callout.monospaced()).foregroundStyle(.secondary)
-                        Text(r.summaryText ?? "").lineLimit(1)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading).contentShape(.rect)
-                }
-                .buttonStyle(.plain)
-            }
-            .listStyle(.plain).scrollContentBackground(.hidden).frame(height: 160)
-            HStack {
-                if current != nil { Button("Clear") { onSave(nil) }.glassButton() }
-                Spacer()
-                Button(verb) { if let r = results.first { onSave(r.key) } }.glassButton(prominent: true)
-                    .disabled(results.isEmpty)
-            }
-        }
-        .padding(12)
-        .frame(width: 320)
-        .focusSoon($focused)
-        .task(id: query) {
-            guard let c = jira?.client else { return }
-            if query.isEmpty {
-                // The picker answers nothing to an empty query; the scope's own search lists the candidates.
-                let page = try? await c.search(jql: jql)
-                results = (page?.issues ?? []).filter { $0.key != key }
-                    .map { IssuePickerResult.Item(key: $0.key, summaryText: $0.fields.summary) }
-                return
-            }
-            try? await Task.sleep(for: .milliseconds(250))
-            guard !Task.isCancelled else { return }
-            results = ((try? await c.pickIssues(query: query, excluding: key, jql: jql)) ?? []).filter { $0.key != key }
-        }
-    }
-}
-
-struct LinkIssueView: View {
-    let key: String
-    let types: [LinkType]
-    var onLink: (_ type: String, _ outward: String, _ inward: String) -> Void
-    @Environment(\.jira) private var jira
-    @State private var relation: String = ""
-    @State private var query = ""
-    @State private var results: [IssuePickerResult.Item] = []
-    @State private var picked: IssuePickerResult.Item?
-    @FocusState private var linkFocused: Bool
-
-    /// Every link type offers both directions, worded from this issue's side; once when both wordings are identical.
-    var relations: [(id: String, label: String, type: LinkType, outward: Bool)] {
-        types.flatMap { t in [(t.id + ">", t.outward, t, true), (t.id + "<", t.inward, t, false)] }
-            .filter { $0.outward || $0.type.inward != $0.type.outward }
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Link \(key)").font(.headline)
-            Picker("This issue", selection: $relation) {
-                ForEach(relations, id: \.id) { Text($0.label).tag($0.id) }
-            }
-            TextField("Search issues by key or text", text: $query).textFieldStyle(.roundedBorder).focused($linkFocused)
-                .onSubmit {
-                    if picked == nil { picked = results.first }
-                    link()
-                }
-                // ↓ and ↑ walk the results from the field, so ↩ links the one that is highlighted.
-                .onKeyPress(.downArrow) { step(1) }
-                .onKeyPress(.upArrow) { step(-1) }
-            // Buttons rather than list selection: a click in a popover's List does not reliably select its row.
-            List(results) { r in
-                Button {
-                    picked = r
-                } label: {
-                    HStack(spacing: 8) {
-                        Text(r.key).font(.callout.monospaced()).foregroundStyle(.secondary)
-                        Text(r.summaryText ?? "").lineLimit(1)
-                        Spacer()
-                        if picked == r { Image(systemName: "checkmark").foregroundStyle(.secondary) }
-                    }
-                    .contentShape(.rect)
-                }
-                .buttonStyle(.plain)
-                .listRowBackground(picked == r ? Color.accentColor.opacity(0.15) : .clear)
-            }
-            .listStyle(.plain).scrollContentBackground(.hidden)
-            .frame(height: 180)
-            HStack {
-                Spacer()
-                Button("Link") { link() }
-                    .glassButton(prominent: true)
-                    .disabled(picked == nil || relation.isEmpty)
-            }
-        }
-        .padding(12)
-        .frame(width: 360)
-        .onAppear { if relation.isEmpty { relation = relations.first?.id ?? "" } }
-        .focusSoon($linkFocused)
-        .task(id: query) {
-            try? await Task.sleep(for: .milliseconds(250))
-            guard !Task.isCancelled, let c = jira?.client else { return }
-            results = ((try? await c.pickIssues(query: query, excluding: key)) ?? []).filter { $0.key != key }
-        }
-    }
-
-    private func step(_ by: Int) -> KeyPress.Result {
-        guard !results.isEmpty else { return .ignored }
-        let i = picked.flatMap(results.firstIndex) ?? -1
-        picked = results[max(0, min(results.count - 1, i + by))]
-        return .handled
-    }
-
-    /// "This issue blocks X": the link runs from this issue to X.
-    private func link() {
-        guard let r = relations.first(where: { $0.id == relation }), let p = picked else { return }
-        onLink(r.type.name, r.outward ? key : p.key, r.outward ? p.key : key)
-    }
-}
-
-struct LogWorkView: View {
-    var onSubmit: (_ seconds: Int, _ comment: String, _ started: Date) -> Void
-    @State private var duration = ""
-    @State private var started = Date()
-    @State private var comment = ""
-
-    private var seconds: Int? { Self.parseDuration(duration) }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Log Work").font(.headline)
-            TextField("Time spent, e.g. 1h 30m", text: $duration).textFieldStyle(.roundedBorder).onSubmit(log)
-            DatePicker("Started", selection: $started)
-            TextField("Comment (optional)", text: $comment).textFieldStyle(.roundedBorder).onSubmit(log)
-            HStack {
-                if !duration.isEmpty, seconds == nil { Text("Use w, d, h, m").font(.caption).foregroundStyle(.red) }
-                Spacer()
-                Button("Log", action: log)
-                    .glassButton(prominent: true).keyboardShortcut(.defaultAction).disabled(seconds == nil)
-            }
-        }
-        .padding(12)
-        .frame(width: 300)
-    }
-
-    /// Return in either field logs too: a field's own Return never reaches the default button.
-    private func log() {
-        if let s = seconds { onSubmit(s, comment, started) }
-    }
-
-    /// "1w 2d 3h 30m" → seconds (Jira's 8h day, 5d week). Bare numbers mean minutes.
-    /// Seconds → "1d 7h", as Jira writes time: 8-hour days, 5-day weeks.
-    nonisolated static func format(_ seconds: Int) -> String {
-        var m = seconds / 60
-        var parts: [String] = []
-        for (unit, size) in [("w", 5 * 8 * 60), ("d", 8 * 60), ("h", 60), ("m", 1)] where m >= size {
-            parts.append("\(m / size)\(unit)")
-            m %= size
-        }
-        return parts.isEmpty ? "0m" : parts.joined(separator: " ")
-    }
-
-    nonisolated static func parseDuration(_ text: String) -> Int? {
-        let t = text.trimmingCharacters(in: .whitespaces).lowercased()
-        guard !t.isEmpty else { return nil }
-        if let n = Double(t) { return n > 0 ? Int(n * 60) : nil }
-        var total = 0.0
-        var matched = false
-        for m in t.matches(of: /(\d+(?:\.\d+)?)\s*([wdhm])/) {
-            matched = true
-            let n = Double(m.1) ?? 0
-            switch m.2 {
-            case "w": total += n * 5 * 8 * 3600
-            case "d": total += n * 8 * 3600
-            case "h": total += n * 3600
-            default: total += n * 60
-            }
-        }
-        let leftovers = t.replacing(/(\d+(?:\.\d+)?)\s*[wdhm]/, with: "").trimmingCharacters(in: .whitespaces)
-        return matched && leftovers.isEmpty && total > 0 ? Int(total) : nil
-    }
 }
 
 /// Whether content has scrolled under the toolbar, for the preview column's band. A window does without: watched,

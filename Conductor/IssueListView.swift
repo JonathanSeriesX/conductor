@@ -104,13 +104,7 @@ final class IssueListStore {
         -> SearchPage
     {
         let page = try await state.client.search(jql: jql, nextPageToken: nextPageToken)
-        for issue in page.issues
-        where
-            !(state.peek[issue.key].map { $0.fields.updated == issue.fields.updated && $0.fields.comment != nil }
-            ?? false)
-        {
-            state.peek[issue.key] = issue  // keep a full copy of the same revision; a row has fewer fields
-        }
+        for issue in page.issues { state.peek[issue.key] = issue }
         state.warmTransitions(page.issues)
         if cache {
             if nextPageToken == nil { remember(page.issues, jql: jql, state: state) }
@@ -318,6 +312,7 @@ final class IssueListStore {
         for (st, name, read) in reads {
             guard let issues = await read.value else { continue }
             st.lists[name] = issues
+            for i in issues where st.peek[i.key] == nil { st.peek[i.key] = i }
             out[st.id] = issues.map { ListRow(issue: $0, state: st) }
         }
         return out
@@ -462,7 +457,16 @@ struct IssueListView: View {
     @State private var refreshTick = 0
     /// The last count shown, kept on screen while a new list has nothing yet.
     @State private var shownSubtitle = ""
-    private var loadKey: String { "\(filters)|\(session.reloadTick)|\(session.listTick)|\(refreshTick)" }
+    private var loadKey: LoadKey {
+        LoadKey(filters: filters, reload: session.reloadTick, list: session.listTick, refresh: refreshTick)
+    }
+    /// Compared field by field: a string of the filters cost a reflection pass on every render.
+    private struct LoadKey: Hashable {
+        let filters: ListFilters
+        let reload: Int
+        let list: Int
+        let refresh: Int
+    }
     /// What the clear button goes back to: the sidebar entry the list came from, or the bare project; the search
     /// and the sort order stay. It shows only once the chips differ from that.
     private var cleared: ListFilters {
@@ -916,7 +920,7 @@ struct IssueListView: View {
         Task {
             do { try await op() } catch { store.error = error.localizedDescription }
             store.pending.subtract(keys)
-            session.reloadTick += 1
+            keys.forEach(session.touched)
         }
     }
 

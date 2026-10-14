@@ -173,8 +173,7 @@ final class Bin {
         case .preset: break
         }
         remove(item)
-        session.writeTicks[item.key, default: 0] += 1
-        session.listTick += 1
+        session.touched(item.key)
     }
 
     private func discard(_ item: BinItem) {

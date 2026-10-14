@@ -9,7 +9,7 @@ Jira's own Mac app was discontinued. Conductor is what it should have become: ev
 - macOS 15 Sequoia or later
 - A Jira Cloud account and an API token from <https://id.atlassian.com/manage-profile/security/api-tokens>
 
-Jira Server and Data Center are not supported (yet!).
+Jira Server and Data Center work too: sign in with a personal access token.
 
 ## License
 

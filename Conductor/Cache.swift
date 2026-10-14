@@ -70,8 +70,11 @@ enum DiskCache {
 
     /// Encodes and writes in the background; a cache never needs to wait for the disk.
     static func saveAsync(_ value: some Encodable & Sendable, account: Account, name: String) {
-        Task.detached(priority: .utility) { save(value, account: account, name: name) }
+        queue.async { save(value, account: account, name: name) }
     }
+
+    /// Every background write in order, so a quick second save of a file never lands before the first.
+    private static let queue = DispatchQueue(label: "org.evgenii.conductor.cache", qos: .utility)
 
     static func clear() {
         try? FileManager.default.removeItem(at: root)
@@ -119,7 +122,7 @@ enum DiskCache {
 
     static func saveImage(_ data: Data, for url: URL) {
         let file = imageRoot.appending(path: hash(url.absoluteString))
-        Task.detached(priority: .utility) { try? data.write(to: file, options: .atomic) }
+        queue.async { try? data.write(to: file, options: .atomic) }
     }
 
     /// Decodes off the main thread; big attachments are shrunk so scrolling a description stays smooth.

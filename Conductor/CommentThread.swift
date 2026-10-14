@@ -984,7 +984,7 @@ struct DescriptionText: NSViewRepresentable {
 
 // MARK: - ADF → attributed string
 
-/// `ADFView`'s look as one attributed string for TextKit 1: the same fonts, colours and gaps; code, quotes, panels
+/// The card's look as one attributed string for TextKit 1: the same fonts, colours and gaps; code, quotes, panels
 /// and tables as text blocks that draw their own backgrounds; images and rules as attachment cells.
 @MainActor final class ADFAttributed {
     private let attachments: [Attachment]

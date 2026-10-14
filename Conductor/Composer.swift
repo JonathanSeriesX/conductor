@@ -29,11 +29,14 @@ struct Composer: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             if preview {
-                ADFView(node: .document(markdown: text, mentions: mentions))
-                    .background(ReaderMenu())
-                    .frame(maxWidth: .infinity, minHeight: minHeight, alignment: .topLeading)
-                    .padding(10)
-                    .background(.quaternary.opacity(0.2), in: .rect(cornerRadius: 10))
+                DescriptionText(
+                    node: .document(markdown: text, mentions: mentions), attachments: [], loadImage: { _, _ in nil },
+                    onPreview: { _ in }, client: jira?.client, toggleTask: nil
+                )
+                .padding(.horizontal, -TextLayout.pad)  // the view's gutter for code pills, outside the box's text
+                .frame(maxWidth: .infinity, minHeight: minHeight, alignment: .topLeading)
+                .padding(10)
+                .background(.quaternary.opacity(0.2), in: .rect(cornerRadius: 10))
             } else {
                 editor
                     // The suggestions float above the box, as Slack's do, and take no room: nothing below moves.
@@ -450,8 +453,8 @@ struct PeoplePicker: View {
     var body: some View {
         VStack(spacing: 8) {
             TextField("Search people", text: $query).textFieldStyle(.roundedBorder)
-                .onKeyPress(.downArrow) { step(1) }
-                .onKeyPress(.upArrow) { step(-1) }
+                .onKeyPress(.downArrow) { highlighted.step(1, count: picks.count) }
+                .onKeyPress(.upArrow) { highlighted.step(-1, count: picks.count) }
                 .onSubmit {
                     if let h = highlighted, picks.indices.contains(h) {
                         onPick(picks[h])
@@ -526,12 +529,6 @@ struct PeoplePicker: View {
             users = (try? await fetch()) ?? []
         }
         .onChange(of: users) { highlighted = nil }  // the rows under it changed
-    }
-
-    private func step(_ by: Int) -> KeyPress.Result {
-        guard !picks.isEmpty else { return .ignored }
-        highlighted = max(0, min(picks.count - 1, (highlighted ?? -1) + by))
-        return .handled
     }
 
     /// One pick, the full width of the popover, with no list box around it.
