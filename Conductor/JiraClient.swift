@@ -367,9 +367,9 @@ struct JiraClient: Sendable {
             if let page = i.fields.comment {
                 i.fields.comment = CommentPage(
                     comments: page.comments.map {
-                        Comment(
-                            id: $0.id, author: $0.author, body: $0.body.namingMentions(names), created: $0.created,
-                            updated: $0.updated)
+                        var c = $0
+                        c.body = c.body.namingMentions(names)
+                        return c
                     }, total: page.total)
             }
             if let page = i.fields.worklog {
@@ -416,8 +416,51 @@ struct JiraClient: Sendable {
         async let worklogs = allWorklogs(issue)
         var copy = try await comments
         if let w = try await worklogs { copy.fields.worklog = w }
-        return server ? await namingMentions([copy])[0] : copy
+        return server ? await namingMentions([copy])[0] : await namingFiles(copy)
     }
+
+    /// Cloud names a file in a document by its Media Services id alone (a picture's node has its name too, as `alt`),
+    /// and that id shows only where the attachment's content URL redirects. Each such file gets its attachment's name,
+    /// so the page finds it among the issue's attachments as it finds a picture.
+    private func namingFiles(_ issue: Issue) async -> Issue {
+        let f = issue.fields
+        let docs = [f.description].compactMap { $0 } + (f.comment?.comments.map(\.body) ?? [])
+        guard let atts = f.attachment, !atts.isEmpty, docs.contains(where: \.hasUnnamedFiles) else {
+            return issue
+        }
+        var names: [String: String] = [:]
+        await withTaskGroup(of: (String, String)?.self) { group in
+            for a in atts { group.addTask { await mediaID(of: a).map { ($0, a.filename) } } }
+            for await p in group { if let p { names[p.0] = p.1 } }
+        }
+        var i = issue
+        i.fields.description = f.description?.namingFiles(names)
+        i.fields.comment = f.comment.map { page in
+            CommentPage(
+                comments: page.comments.map {
+                    var c = $0
+                    c.body = c.body.namingFiles(names)
+                    return c
+                }, total: page.total)
+        }
+        return i
+    }
+
+    /// An attachment's Media Services id, read off its content URL's redirect (…/file/<id>/binary); once per run.
+    private func mediaID(of a: Attachment) async -> String? {
+        if let hit = Self.mediaIDs.withLock({ $0[a.content] }) { return hit }
+        var req = URLRequest(url: a.content)
+        req.httpMethod = "HEAD"
+        req.setValue(authHeader, forHTTPHeaderField: "Authorization")
+        guard let got = try? await URLSession.shared.data(for: req, delegate: StopAtRedirect()),
+            let to = (got.1 as? HTTPURLResponse)?.value(forHTTPHeaderField: "Location"),
+            let m = to.firstMatch(of: /\/file\/([0-9a-fA-F-]+)\//)
+        else { return nil }
+        let id = String(m.1)
+        Self.mediaIDs.withLock { $0[a.content] = id }
+        return id
+    }
+    private static let mediaIDs = Mutex<[URL: String]>([:])
 
     /// Every work log, in Jira's order. A search result and an issue of its own both carry the oldest 20; the
     /// work-log endpoint gives up to 5,000 a page. Nil when the copy has them all already.
@@ -433,9 +476,12 @@ struct JiraClient: Sendable {
     }
 
     /// `issue` with all its comments, oldest first. Jira embeds the first 20 in a search result and the newest 100
-    /// in an issue; the comment endpoint pages 100 at a time, so every page is asked for at once.
+    /// in an issue; the comment endpoint pages 100 at a time, so every page is asked for at once. On Cloud always:
+    /// only the endpoint's copy of a reply names its parent.
     private func completingComments(_ issue: Issue) async throws -> Issue {
-        guard let page = issue.fields.comment, page.comments.count < page.total else { return issue }
+        guard let page = issue.fields.comment, page.comments.count < page.total || (!server && page.total > 0) else {
+            return issue
+        }
         let key = issue.key
         let all = try await withThrowingTaskGroup(of: [Comment].self) { group in
             for start in stride(from: 0, to: page.total, by: 100) {
@@ -500,9 +546,15 @@ struct JiraClient: Sendable {
         )
     }
 
-    func addComment(_ key: String, body: ADFNode) async throws {
-        struct Body: Encodable { let body: JSONValue }
-        _ = try await request("issue/\(key)/comment", method: "POST", body: Body(body: text(body)))
+    /// `parentId` (Cloud only) makes it a reply: Jira takes a top-level comment there, or one deleted with replies
+    /// left, and refuses a reply.
+    func addComment(_ key: String, body: ADFNode, parentId: String? = nil) async throws {
+        struct Body: Encodable {
+            let body: JSONValue
+            let parentId: String?
+        }
+        _ = try await request(
+            "issue/\(key)/comment", method: "POST", body: Body(body: text(body), parentId: parentId))
     }
 
     func updateComment(_ key: String, id: String, body: ADFNode) async throws {
@@ -840,4 +892,12 @@ struct EpicFields: Codable, Hashable, Sendable {
         }
         if status != errSecSuccess { NSLog("Keychain write failed: %d", status) }
     }
+}
+
+/// Ends a request at its redirect, to read where it points.
+private final class StopAtRedirect: NSObject, URLSessionTaskDelegate {
+    func urlSession(
+        _ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest
+    ) async -> URLRequest? { nil }
 }

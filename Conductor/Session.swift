@@ -205,8 +205,9 @@ final class AccountState: Identifiable {
         return issues
     }
 
-    /// v3: copies saved before comments and work logs were completed carry 20 of each; a new name fetches them again.
-    nonisolated static let prefetchedFile = "prefetched-v3"
+    /// v3: copies saved before comments and work logs were completed carry 20 of each; v4: before replies named
+    /// their parent and files their name. A new name fetches them again.
+    nonisolated static let prefetchedFile = "prefetched-v4"
 
     private var customTitle: String
     /// Name of a `Palette` colour; chosen by the user or dealt from the palette by sidebar position.

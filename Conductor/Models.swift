@@ -159,9 +159,50 @@ struct Attachment: Codable, Hashable, Sendable, Identifiable {
 struct Comment: Codable, Hashable, Sendable, Identifiable {
     let id: String
     let author: JiraUser?
-    let body: ADFNode
+    var body: ADFNode
     let created: Date
     let updated: Date
+    /// Cloud: the comment this one replies to. Only the comment endpoint sends it (a number there); Server has none.
+    let parentId: String?
+}
+
+extension Comment {
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        author = try c.decodeIfPresent(JiraUser.self, forKey: .author)
+        body = try c.decode(ADFNode.self, forKey: .body)
+        created = try c.decode(Date.self, forKey: .created)
+        updated = try c.decode(Date.self, forKey: .updated)
+        // A number from Jira, text from a copy on disk.
+        parentId =
+            try (try? c.decodeIfPresent(Int.self, forKey: .parentId)).map { String($0) }
+            ?? c.decodeIfPresent(String.self, forKey: .parentId)
+    }
+
+    /// The thread as the issue page shows it: each top-level comment, then its replies oldest first; `newestFirst`
+    /// orders the threads alone. Jira nests one level, so a reply to a reply joins its top-level thread, and replies
+    /// whose parent is gone stay together under the first of them. Each comes with its thread's root: the parent a
+    /// reply to it is posted under. `comments` oldest first, as Jira gives them.
+    static func threads(_ comments: [Comment], newestFirst: Bool) -> [(comment: Comment, root: String)] {
+        let parents = Dictionary(comments.map { ($0.id, $0.parentId) }, uniquingKeysWith: { a, _ in a })
+        var roots: [String] = []
+        var members: [String: [Comment]] = [:]
+        for c in comments {
+            var root = c.parentId ?? c.id
+            for _ in 0..<8 {  // bounded, so a cycle in bad data cannot hang the page
+                guard let up = parents[root] ?? nil else { break }
+                root = up
+            }
+            if members[root] == nil { roots.append(root) }
+            if c.id == root {
+                members[root, default: []].insert(c, at: 0)
+            } else {
+                members[root, default: []].append(c)
+            }
+        }
+        return (newestFirst ? roots.reversed() : roots).flatMap { r in members[r, default: []].map { ($0, r) } }
+    }
 }
 
 struct CommentPage: Codable, Hashable, Sendable {

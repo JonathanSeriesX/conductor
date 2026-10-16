@@ -10,21 +10,29 @@ import SwiftUI
 // MARK: - SwiftUI bridge
 
 struct CommentThread: NSViewRepresentable {
-    /// In display order.
+    /// Oldest first, as Jira gives them; shown as threads (see `Comment.threads`).
     let comments: [Comment]
-    /// The issue's, so inline media resolves to images.
+    /// The order of the threads; replies stay oldest first under theirs.
+    let newestFirst: Bool
+    /// The issue's, so inline media resolves to images and files.
     let attachments: [Attachment]
     /// The signed-in user: their comments carry Edit and Delete.
     let meID: String?
     /// The comment whose editor is open, shown in its row in place of the text.
     let editingID: String?
+    /// The thread whose reply composer is open, by its root: the composer sits under the thread's last reply.
+    let replyingTo: String?
     let editor: (Comment, FocusState<Bool>.Binding) -> AnyView
+    /// The reply composer for a thread, by its root.
+    let replier: (String, FocusState<Bool>.Binding) -> AnyView
     let onEdit: (Comment) -> Void
     let onDelete: (Comment) -> Void
+    /// Opens the reply composer on a thread, by its root.
+    let onReply: (String) -> Void
     let onPreview: (Attachment) -> Void
     /// An image from memory, disk or the site, shrunk to `maxPixels`; it lands in `ImageCache`.
     let loadImage: (URL, Int) async -> NSImage?
-    /// Downloads an inline image dragged or copied out.
+    /// Downloads an inline image or file dragged or copied out; Server's has no replies.
     let client: JiraClient?
 
     func makeNSView(context: Context) -> CommentThreadView { CommentThreadView() }
@@ -32,10 +40,13 @@ struct CommentThread: NSViewRepresentable {
     func updateNSView(_ v: CommentThreadView, context: Context) {
         v.onEdit = onEdit
         v.onDelete = onDelete
+        v.onReply = onReply
         v.onPreview = onPreview
         v.loadImage = loadImage
         v.client = client
-        v.update(comments: comments, attachments: attachments, meID: meID, editingID: editingID, editor: editor)
+        v.update(
+            comments: comments, newestFirst: newestFirst, attachments: attachments, meID: meID, editingID: editingID,
+            replyingTo: replyingTo, editor: editor, replier: replier)
     }
 
     func sizeThatFits(_ proposal: ProposedViewSize, nsView v: CommentThreadView, context: Context) -> CGSize? {
@@ -72,15 +83,24 @@ private struct HostedEditor: View {
 
     var onEdit: (Comment) -> Void = { _ in }
     var onDelete: (Comment) -> Void = { _ in }
+    var onReply: (String) -> Void = { _ in }
     var onPreview: (Attachment) -> Void = { _ in }
     var client: JiraClient?
     var loadImage: (URL, Int) async -> NSImage? = { _, _ in nil }
 
+    /// In display order, threaded; `roots` holds each one's thread root, and a row whose root is its predecessor's
+    /// is a reply, set one avatar in.
     private(set) var comments: [Comment] = []
+    private var roots: [String] = []
+    /// What `comments` was threaded from, oldest first, and in which order.
+    private var source: [Comment] = []
+    private var newestFirst = true
     private var attachments: [Attachment] = []
     private var meID: String?
     private var editingID: String?
-    private var editor: ((Comment, FocusState<Bool>.Binding) -> AnyView)?
+    private var replyingTo: String?
+    /// The row the reply composer sits under: the last of its thread.
+    private var replyIndex: Int?
     /// Each comment's text, built once; rebuilt when the comment or an image in it changes.
     private var strings: [String: (comment: Comment, text: NSAttributedString)] = [:]
     /// Body heights by comment id and the width they were measured at. A height measured at another width
@@ -105,24 +125,38 @@ private struct HostedEditor: View {
     override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: total) }
 
     func update(
-        comments: [Comment], attachments: [Attachment], meID: String?, editingID: String?,
-        editor: @escaping (Comment, FocusState<Bool>.Binding) -> AnyView
+        comments: [Comment], newestFirst: Bool, attachments: [Attachment], meID: String?, editingID: String?,
+        replyingTo: String?, editor: @escaping (Comment, FocusState<Bool>.Binding) -> AnyView,
+        replier: @escaping (String, FocusState<Bool>.Binding) -> AnyView
     ) {
-        self.editor = editor
         self.meID = meID
         if attachments != self.attachments {
             self.attachments = attachments
             strings = [:]
             heights = heights.mapValues { (-1, $0.height) }
         }
-        if comments != self.comments { self.comments = comments }
-        if editingID != self.editingID {
+        if comments != source || newestFirst != self.newestFirst {
+            source = comments
+            self.newestFirst = newestFirst
+            let threads = Comment.threads(comments, newestFirst: newestFirst)
+            self.comments = threads.map(\.comment)
+            roots = threads.map(\.root)
+        }
+        if editingID != self.editingID || replyingTo != self.replyingTo {
             self.editingID = editingID
+            self.replyingTo = replyingTo
             editorHost?.view.removeFromSuperview()
             editorHost = nil
             editorHeight = 0
         }
-        if let editingID, let c = comments.first(where: { $0.id == editingID }) { updateEditor(c) }
+        replyIndex = replyingTo.flatMap { roots.lastIndex(of: $0) }
+        if let editingID, let i = self.comments.firstIndex(where: { $0.id == editingID }) {
+            let c = self.comments[i]
+            updateEditor(width: textWidth(i)) { editor(c, $0) }
+        } else if let replyingTo, replyIndex != nil {
+            updateEditor(width: width - Self.textInset) { replier(replyingTo, $0) }
+            if let v = editorHost?.view, v.superview !== self { addSubview(v) }
+        }
         recomputeTops()
         invalidateIntrinsicContentSize()
         needsLayout = true
@@ -134,10 +168,9 @@ private struct HostedEditor: View {
 
     // MARK: Editor
 
-    private func updateEditor(_ c: Comment) {
-        guard let editor else { return }
-        let root = AnyView(
-            HostedEditor(build: { editor(c, $0) }, onHeight: { [weak self] in self?.editorHeightChanged($0) }))
+    /// The comment editor or the reply composer, whichever is open, sized at the width it gets.
+    private func updateEditor(width w: CGFloat, _ build: @escaping (FocusState<Bool>.Binding) -> AnyView) {
+        let root = AnyView(HostedEditor(build: build, onHeight: { [weak self] in self?.editorHeightChanged($0) }))
         let host: NSHostingController<AnyView>
         if let editorHost {
             host = editorHost
@@ -147,7 +180,6 @@ private struct HostedEditor: View {
             host.sizingOptions = []
             editorHost = host
         }
-        let w = width - Self.textInset
         if w > 0 {
             let h = host.sizeThatFits(in: NSSize(width: w, height: CGFloat.greatestFiniteMagnitude)).height
             if h.isFinite, h > 0 { editorHeight = h }
@@ -168,12 +200,21 @@ private struct HostedEditor: View {
     private var estimate: CGFloat = 44
 
     private func buttons(on c: Comment) -> Bool { meID != nil && c.author?.accountId == meID && editingID == nil }
+    /// Reply on every comment while no editor is open; Server has no replies.
+    private var replies: Bool { client?.account.isServer == false && editingID == nil }
 
     private func rowHeight(_ c: Comment, estimate: CGFloat) -> CGFloat {
         let body = c.id == editingID ? max(editorHeight, 100) : heights[c.id]?.height ?? estimate
-        let header = buttons(on: c) ? CommentRowView.buttonHeaderHeight : CommentRowView.headerHeight
+        let header = buttons(on: c) || replies ? CommentRowView.buttonHeaderHeight : CommentRowView.headerHeight
         return max(26, header + 6 + body)
     }
+
+    private var replyHeight: CGFloat { editorHeight > 0 ? editorHeight : 80 }
+
+    private func nested(_ i: Int) -> Bool { i > 0 && roots[i - 1] == roots[i] }
+
+    /// Row `i`'s text width: a reply's row starts one avatar further in.
+    private func textWidth(_ i: Int) -> CGFloat { width - Self.textInset * (nested(i) ? 2 : 1) }
 
     private func recomputeTops() {
         var sum: CGFloat = 0
@@ -187,9 +228,10 @@ private struct HostedEditor: View {
         var y: CGFloat = 0
         tops = []
         tops.reserveCapacity(comments.count)
-        for c in comments {
+        for (i, c) in comments.enumerated() {
             tops.append(y)
             y += rowHeight(c, estimate: est) + Self.spacing
+            if i == replyIndex { y += replyHeight + Self.spacing }
         }
         total = max(0, y - Self.spacing)
     }
@@ -198,7 +240,7 @@ private struct HostedEditor: View {
     private func measure(_ i: Int) -> Bool {
         let c = comments[i]
         guard c.id != editingID else { return false }
-        let w = width - Self.textInset
+        let w = textWidth(i)
         if let h = heights[c.id], h.width == w { return false }
         let h = measurer.height(of: string(for: c), width: w)
         let old = heights[c.id]?.height
@@ -317,6 +359,7 @@ private struct HostedEditor: View {
 
     /// Puts rows on the part of the thread in and around the window, measuring them first, and takes the rest back.
     private func placeRows() {
+        defer { placeReply() }
         guard width > 0, !comments.isEmpty, superview != nil else {
             for (_, row) in shown { recycle(row) }
             shown = [:]
@@ -344,11 +387,15 @@ private struct HostedEditor: View {
             invalidateIntrinsicContentSize()
         }
         let est = estimate
+        let rtl = userInterfaceLayoutDirection == .rightToLeft
         var keep = Set<Int>()
         var ahead = 0
         i = index(at: top)
         while i < comments.count, tops[i] < bottom {
-            let frame = NSRect(x: 0, y: tops[i], width: width, height: rowHeight(comments[i], estimate: est))
+            // A reply's whole row one avatar in, so its avatar sits under its parent's text.
+            let x = nested(i) ? Self.textInset : 0
+            let frame = NSRect(
+                x: rtl ? 0 : x, y: tops[i], width: width - x, height: rowHeight(comments[i], estimate: est))
             // A row still outside the window waits its turn: one per tick, since setting a row up lays out and
             // draws its text, and two heavy ones in one tick cost a frame.
             if shown[i] == nil, !frame.intersects(vis) {
@@ -371,15 +418,31 @@ private struct HostedEditor: View {
         }
     }
 
+    /// The reply composer, under its thread's last row, one avatar in as a reply is.
+    private func placeReply() {
+        guard editingID == nil, let i = replyIndex, i < tops.count, let v = editorHost?.view else { return }
+        let x = Self.textInset
+        v.frame = NSRect(
+            x: userInterfaceLayoutDirection == .rightToLeft ? 0 : x,
+            y: tops[i] + rowHeight(comments[i], estimate: estimate) + Self.spacing, width: max(0, width - x),
+            height: replyHeight)
+    }
+
+    /// Opens the reply composer on `c`'s thread.
+    func reply(to c: Comment) {
+        if let i = comments.firstIndex(where: { $0.id == c.id }) { onReply(roots[i]) }
+    }
+
     private func configure(_ row: CommentRowView, _ c: Comment) {
         let editing = c.id == editingID
         let text = editing ? nil : string(for: c)
         let own = buttons(on: c)
         let key = CommentRowView.Key(
-            id: c.id, text: text.map(ObjectIdentifier.init), buttons: own, editing: editing, updated: c.updated)
+            id: c.id, text: text.map(ObjectIdentifier.init), buttons: own, reply: replies, editing: editing,
+            updated: c.updated)
         guard row.key != key else { return }
         row.key = key
-        row.show(c, text: text, buttons: own, editor: editing ? editorHost?.view : nil)
+        row.show(c, text: text, buttons: own, reply: replies, editor: editing ? editorHost?.view : nil)
         row.active = window?.isKeyWindow ?? true
     }
 
@@ -424,12 +487,14 @@ private struct HostedEditor: View {
 
 // MARK: - A row
 
-/// One comment: the avatar, then the name, when, "· edited", Edit and Delete on a line, and the text under them.
+/// One comment: the avatar, then the name, when, "· edited", Reply, Edit and Delete on a line, and the text under
+/// them.
 @MainActor final class CommentRowView: NSView, InlineImageHost {
     struct Key: Equatable {
         let id: String
         let text: ObjectIdentifier?
         let buttons: Bool
+        let reply: Bool
         let editing: Bool
         let updated: Date
     }
@@ -445,6 +510,7 @@ private struct HostedEditor: View {
     private let name = NSTextField(labelWithString: "")
     private let date = NSTextField(labelWithString: "")
     private let edited = NSTextField(labelWithString: String(localized: "· edited"))
+    private let replyButton: SymbolButton
     private let editButton: SymbolButton
     private let deleteButton: SymbolButton
     private let body = CommentTextView()
@@ -477,6 +543,8 @@ private struct HostedEditor: View {
 
     init(thread: CommentThreadView) {
         self.thread = thread
+        replyButton = SymbolButton(
+            "arrowshape.turn.up.left", label: String(localized: "Reply"), help: String(localized: "Reply"))
         editButton = SymbolButton("pencil", label: String(localized: "Edit"), help: String(localized: "Edit comment"))
         deleteButton = SymbolButton(
             "trash", label: String(localized: "Delete"), help: String(localized: "Delete comment"))
@@ -495,15 +563,16 @@ private struct HostedEditor: View {
         date.textColor = .secondaryLabelColor
         edited.font = Self.captionFont
         edited.textColor = .tertiaryLabelColor
+        replyButton.action = { [unowned self] in if let comment { thread.reply(to: comment) } }
         editButton.action = { [unowned self] in if let comment { thread.onEdit(comment) } }
         deleteButton.action = { [unowned self] in if let comment { thread.onDelete(comment) } }
         body.host = self
-        for v in [avatar, name, date, edited, editButton, deleteButton, body] { addSubview(v) }
+        for v in [avatar, name, date, edited, replyButton, editButton, deleteButton, body] { addSubview(v) }
     }
 
     required init?(coder: NSCoder) { fatalError() }
 
-    func show(_ c: Comment, text: NSAttributedString?, buttons: Bool, editor: NSView?) {
+    func show(_ c: Comment, text: NSAttributedString?, buttons: Bool, reply: Bool, editor: NSView?) {
         comment = c
         name.stringValue = c.author?.displayName ?? String(localized: "Unknown")
         date.stringValue = c.created.formatted(.relative(presentation: .named))
@@ -511,6 +580,7 @@ private struct HostedEditor: View {
         edited.isHidden = !(c.updated.timeIntervalSince(c.created) > 60)
         editButton.isHidden = !buttons
         deleteButton.isHidden = !buttons
+        replyButton.isHidden = !reply
         setAvatar(c.author)
         if let editor {
             body.isHidden = true
@@ -596,16 +666,13 @@ private struct HostedEditor: View {
         place(avatar, 0, 0, 26, 26)
         let cx = CommentThreadView.textInset
         let cw = max(0, w - cx)
-        let hh = editButton.isHidden ? Self.headerHeight : Self.buttonHeaderHeight
+        let hh = editButton.isHidden && replyButton.isHidden ? Self.headerHeight : Self.buttonHeaderHeight
         // The buttons at the trailing end; the name gives way to them and the date.
         var right = cx + cw
-        if !editButton.isHidden {
-            let bs = deleteButton.frame.size
-            place(deleteButton, right - bs.width, (hh - bs.height) / 2, bs.width, bs.height)
-            right -= bs.width + 6
-            let es = editButton.frame.size
-            place(editButton, right - es.width, (hh - es.height) / 2, es.width, es.height)
-            right -= es.width + 6
+        for b in [deleteButton, editButton, replyButton] where !b.isHidden {
+            let s = b.frame.size
+            place(b, right - s.width, (hh - s.height) / 2, s.width, s.height)
+            right -= s.width + 6
         }
         // The cell's size, not the intrinsic one: a label draws its text two points in from each side.
         let ds = date.cell!.cellSize
@@ -697,7 +764,7 @@ extension InlineImageHost {
 
 /// A comment's or the description's text: selectable, never editable, laid out by TextKit 1 (text blocks draw the
 /// code, quote, panel and table backgrounds). A right-click offers Copy when there is a selection, and nothing
-/// otherwise, as the reader menu on SwiftUI text does; on an inline image, the attachment tile's menu.
+/// otherwise, as the reader menu on SwiftUI text does; on an inline image or file, the attachment tile's menu.
 class CommentTextView: NSTextView {
     weak var host: InlineImageHost?
 
@@ -762,17 +829,17 @@ class CommentTextView: NSTextView {
 
     override func menu(for event: NSEvent) -> NSMenu? {
         let m = NSMenu()
-        if let cell = cell(at: event)?.cell as? ImageCell {
+        if let file = (cell(at: event)?.cell as? FileCell)?.file {
             func item(_ title: String, _ action: Selector) {
                 let i = NSMenuItem(title: title, action: action, keyEquivalent: "")
                 i.target = self
-                i.representedObject = cell
+                i.representedObject = file
                 m.addItem(i)
             }
-            item(String(localized: "Quick Look"), #selector(quickLookImage(_:)))
-            item(String(localized: "Open"), #selector(openImage(_:)))
-            item(String(localized: "Copy"), #selector(copyImage(_:)))
-            item(String(localized: "Save As…"), #selector(saveImage(_:)))
+            item(String(localized: "Quick Look"), #selector(quickLookFile(_:)))
+            item(String(localized: "Open"), #selector(openFile(_:)))
+            item(String(localized: "Copy"), #selector(copyFile(_:)))
+            item(String(localized: "Save As…"), #selector(saveFile(_:)))
             return m
         }
         guard selectedRange().length > 0 else { return nil }
@@ -781,37 +848,41 @@ class CommentTextView: NSTextView {
     }
 
     private func file(_ sender: NSMenuItem) -> (Attachment, JiraClient)? {
-        guard let a = (sender.representedObject as? ImageCell)?.file, let c = host?.client else { return nil }
+        guard let a = sender.representedObject as? Attachment, let c = host?.client else { return nil }
         return (a, c)
     }
-    @objc private func quickLookImage(_ sender: NSMenuItem) { if let (a, _) = file(sender) { host?.preview(a) } }
-    @objc private func openImage(_ sender: NSMenuItem) {
+    @objc private func quickLookFile(_ sender: NSMenuItem) { if let (a, _) = file(sender) { host?.preview(a) } }
+    @objc private func openFile(_ sender: NSMenuItem) {
         if let (a, c) = file(sender) { Task { await AttachmentOpener.open(a, client: c) } }
     }
-    @objc private func copyImage(_ sender: NSMenuItem) {
+    @objc private func copyFile(_ sender: NSMenuItem) {
         if let (a, c) = file(sender) { Task { await AttachmentOpener.copy(a, client: c) } }
     }
-    @objc private func saveImage(_ sender: NSMenuItem) {
+    @objc private func saveFile(_ sender: NSMenuItem) {
         if let (a, c) = file(sender) { AttachmentOpener.saveAs(a, client: c) }
     }
 
-    /// A press on an inline image, a task circle or an expand title: a release is a click (Quick Look, a flip, a
-    /// fold), a drag on an image takes it out as its file, a drag anywhere else selects. None goes through the text
-    /// view's own click on an attachment, which would select it.
+    /// A press on an inline image or file, a task circle or an expand title: a release is a click (Quick Look, a
+    /// flip, a fold), a drag on an image or file takes it out as its file, a drag anywhere else selects. None goes
+    /// through the text view's own click on an attachment, which would select it.
     override func mouseDown(with event: NSEvent) {
         let hit = cell(at: event)
         let expand = attribute(.expand, at: event) as? String
         guard hit != nil || expand != nil, let next = window?.nextEvent(matching: [.leftMouseUp, .leftMouseDragged])
         else { return super.mouseDown(with: event) }
         if next.type == .leftMouseDragged {
-            guard let image = hit?.cell as? ImageCell, let frame = hit?.frame, let client = host?.client else {
-                return super.mouseDown(with: event)
-            }
-            let item = NSDraggingItem(pasteboardWriter: AttachmentPromise(image.file, client: client))
-            item.setDraggingFrame(frame, contents: image.picture)
+            guard let cell = hit?.cell as? FileCell, let frame = hit?.frame, let client = host?.client,
+                let rep = bitmapImageRepForCachingDisplay(in: frame)
+            else { return super.mouseDown(with: event) }
+            // The cell as drawn goes with the pointer.
+            cacheDisplay(in: frame, to: rep)
+            let picture = NSImage(size: frame.size)
+            picture.addRepresentation(rep)
+            let item = NSDraggingItem(pasteboardWriter: AttachmentPromise(cell.file, client: client))
+            item.setDraggingFrame(frame, contents: picture)
             beginDraggingSession(with: [item], event: event, source: self)
-        } else if let image = hit?.cell as? ImageCell {
-            host?.preview(image.file)
+        } else if let cell = hit?.cell as? FileCell {
+            host?.preview(cell.file)
         } else if let task = (hit?.cell as? SymbolCell)?.taskID {
             host?.toggleTask(task)
         } else if let expand {
@@ -1243,18 +1314,11 @@ struct DescriptionText: NSViewRepresentable {
         let font = ctx.base.font()
         for (i, m) in (node.content ?? []).enumerated() {
             if i > 0 { s.append(NSAttributedString(string: " ", attributes: [.font: font, .kern: 4])) }
-            if let a = attachments.first(where: { $0.filename == m.attr("alt") }),
-                (a.mimeType ?? "").hasPrefix("image/")
-            {
-                let att = NSTextAttachment()
-                att.attachmentCell = ImageCell(attachment: a, picture: image(a))
+            if let a = attachments.first(where: { $0.filename == m.attr("alt") }) {
                 s.append(
-                    NSAttributedString(
-                        attachment: att,
-                        attributes: [
-                            .cursor: NSCursor.pointingHand,
-                            .toolTip: String(localized: "\(a.filename) — click to preview"),
-                        ]))
+                    Self.clickable(
+                        (a.mimeType ?? "").hasPrefix("image/")
+                            ? ImageCell(attachment: a, picture: image(a)) as FileCell : FileChipCell(a)))
             } else {
                 let att = NSTextAttachment()
                 att.attachmentCell = ChipCell(m.attr("alt") ?? String(localized: "Attached media"))
@@ -1262,6 +1326,17 @@ struct DescriptionText: NSViewRepresentable {
             }
         }
         paragraph(s, ctx, before: before)
+    }
+
+    /// One of the issue's files as a cell, with the pointing hand and the tooltip of a click that previews it.
+    private static func clickable(_ cell: FileCell) -> NSAttributedString {
+        let att = NSTextAttachment()
+        att.attachmentCell = cell
+        return NSAttributedString(
+            attachment: att,
+            attributes: [
+                .cursor: NSCursor.pointingHand, .toolTip: String(localized: "\(cell.file.filename) — click to preview"),
+            ])
     }
 
     /// The disclosure chevron's size: a caption-sized symbol, as the SwiftUI group draws it.
@@ -1387,6 +1462,9 @@ struct DescriptionText: NSViewRepresentable {
                 string: Date(timeIntervalSince1970: ms / 1000).formatted(date: .abbreviated, time: .omitted),
                 attributes: [.font: base.font(), .foregroundColor: NSColor.labelColor])
         case "mediaInline":
+            if let a = attachments.first(where: { $0.filename == node.attr("alt") }) {
+                return Self.clickable(FileChipCell(a))
+            }
             return NSAttributedString(string: "📎", attributes: [.font: base.font()])
         default:
             return inline(node, base)
@@ -1537,8 +1615,14 @@ extension NSImage {
 
 // MARK: Attachment cells
 
+/// A cell standing for one of the issue's files: a click previews it, a drag takes the file out, and a right-click
+/// offers the attachment tile's menu (see `CommentTextView`).
+@MainActor protocol FileCell: NSTextAttachmentCell {
+    var file: Attachment { get }
+}
+
 /// An inline image: fitted into 520 by 360 points (or the line's width), rounded; a grey box until it has loaded.
-final class ImageCell: NSTextAttachmentCell {
+final class ImageCell: NSTextAttachmentCell, FileCell {
     let file: Attachment
     let picture: NSImage?
 
@@ -1648,23 +1732,33 @@ final class SymbolCell: NSTextAttachmentCell {
     }
 }
 
-/// A media item that is not a picture (a video, a file): its name after a photo symbol in a grey capsule, as the
-/// SwiftUI card's `Label` chip.
-final class ChipCell: NSTextAttachmentCell {
+/// A media item that is not one of the issue's files: its name after a photo symbol in a grey capsule, as the
+/// SwiftUI card's `Label` chip. Never wider than the line: a long name gives way in the middle.
+class ChipCell: NSTextAttachmentCell {
     private let text: NSAttributedString
     private let symbol: NSImage
     private let size: NSSize
     private let baseline: CGFloat
 
-    init(_ name: String) {
+    init(_ name: String, symbol: String = "photo", detail: String? = nil) {
         let font = NSFont.preferredFont(forTextStyle: .callout)
-        text = NSAttributedString(
-            string: name, attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor])
-        symbol = NSImage(systemSymbolName: "photo", accessibilityDescription: nil)!
+        let middle = NSMutableParagraphStyle()
+        middle.lineBreakMode = .byTruncatingMiddle
+        let t = NSMutableAttributedString(
+            string: name,
+            attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor, .paragraphStyle: middle])
+        if let detail {
+            t.append(
+                NSAttributedString(
+                    string: "  " + detail,
+                    attributes: [.font: font, .foregroundColor: NSColor.tertiaryLabelColor, .paragraphStyle: middle]))
+        }
+        text = t
+        self.symbol = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)!
             .withSymbolConfiguration(
                 .init(pointSize: font.pointSize, weight: .regular).applying(
                     .init(paletteColors: [.secondaryLabelColor])))!
-        size = NSSize(width: 10 + symbol.size.width + 4 + ceil(text.size().width) + 10, height: 6 + 16 + 6)
+        size = NSSize(width: 10 + self.symbol.size.width + 4 + ceil(text.size().width) + 10, height: 6 + 16 + 6)
         baseline = font.descender - 6
         super.init(imageCell: nil)
     }
@@ -1673,6 +1767,15 @@ final class ChipCell: NSTextAttachmentCell {
     override func cellSize() -> NSSize { size }
     override func cellBaselineOffset() -> NSPoint { NSPoint(x: 0, y: baseline) }
 
+    override func cellFrame(
+        for textContainer: NSTextContainer, proposedLineFragment lineFrag: NSRect, glyphPosition position: NSPoint,
+        characterIndex: Int
+    ) -> NSRect {
+        // The whole line's width, not what is left of it: a chip that does not fit moves to the next line whole.
+        NSRect(
+            x: 0, y: baseline, width: max(1, min(size.width, lineFrag.width - 2 * TextLayout.pad)), height: size.height)
+    }
+
     override func draw(withFrame cellFrame: NSRect, in controlView: NSView?) {
         NSColor.labelColor.withAlphaComponent(0.05).setFill()
         NSBezierPath(roundedRect: cellFrame, xRadius: cellFrame.height / 2, yRadius: cellFrame.height / 2).fill()
@@ -1680,8 +1783,24 @@ final class ChipCell: NSTextAttachmentCell {
         symbol.draw(
             in: NSRect(x: cellFrame.minX + 10, y: cellFrame.midY - s.height / 2, width: s.width, height: s.height),
             from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
-        text.draw(at: NSPoint(x: cellFrame.minX + 10 + s.width + 4, y: cellFrame.minY + 6))
+        let x = cellFrame.minX + 10 + s.width + 4
+        text.draw(
+            in: NSRect(
+                x: x, y: cellFrame.minY + 6, width: max(0, cellFrame.maxX - 10 - x), height: cellFrame.height - 6))
     }
+}
+
+/// One of the issue's files that is not a picture: its type's symbol, its name and its size.
+final class FileChipCell: ChipCell, FileCell {
+    let file: Attachment
+
+    init(_ file: Attachment) {
+        self.file = file
+        super.init(
+            file.filename, symbol: AttachmentOpener.symbol(for: file),
+            detail: ByteCountFormatter.string(fromByteCount: Int64(file.size), countStyle: .file))
+    }
+    required init(coder: NSCoder) { fatalError() }
 }
 
 extension NSAttributedString.Key {

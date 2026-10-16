@@ -303,6 +303,12 @@ struct IssueDetailView: View {
     @State private var editingCommentID: String?
     @State private var editDraft = ""
     @State private var editMentions: [String: String] = [:]
+    /// The thread whose reply composer is open, by its root: the parent the reply is posted under.
+    @State private var replyingTo: String?
+    // ponytail: the reply draft lives in memory only, unlike the comment box's (`Drafts`); a relaunch or another
+    // issue drops it. Move it into `Drafts` if replies get lost that way.
+    @State private var replyDraft = ""
+    @State private var replyMentions: [String: String] = [:]
     @State private var showAssign = false
     @State private var showLabels = false
     /// Too near the bottom of the window for the labels editor to open below its row.
@@ -393,6 +399,7 @@ struct IssueDetailView: View {
             commitSummary(of: old)
             summaryDraft = nil
             caretPending = false
+            replyingTo = nil
             for show in [
                 $showAssign, $showLabels, $showLink, $showLogWork, $showDueDate, $showRemind, $showParent,
                 $showWatchers, $showStatus, $showPriority,
@@ -1333,11 +1340,12 @@ struct IssueDetailView: View {
             // the display's rate (see CommentThread.swift).
             if !list.isEmpty {
                 CommentThread(
-                    comments: newestFirst ? list.reversed() : list, attachments: issue.fields.attachment ?? [],
-                    meID: jira?.me?.accountId, editingID: editingCommentID,
+                    comments: list, newestFirst: newestFirst, attachments: issue.fields.attachment ?? [],
+                    meID: jira?.me?.accountId, editingID: editingCommentID, replyingTo: replyingTo,
                     editor: { c, focus in AnyView(commentEditor(c, focus: focus)) },
-                    onEdit: beginCommentEdit, onDelete: deleteComment, onPreview: preview, loadImage: loadImage,
-                    client: jira?.client)
+                    replier: { root, focus in AnyView(replyComposer(root, focus: focus)) },
+                    onEdit: beginCommentEdit, onDelete: deleteComment, onReply: beginReply, onPreview: preview,
+                    loadImage: loadImage, client: jira?.client)
             }
             if !newestFirst {
                 Divider()
@@ -1357,6 +1365,23 @@ struct IssueDetailView: View {
                     Button("Save") { saveCommentEdit(c) }.glassButton(prominent: true)
                         .keyboardShortcut(focus.wrappedValue ? KeyboardShortcut(.return, modifiers: .command) : nil)
                         .disabled(editDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                })
+        )
+        .environment(session)
+        .environment(\.jira, jira)
+    }
+
+    /// The reply composer under a thread, hosted in the AppKit thread as the comment editor is.
+    private func replyComposer(_ root: String, focus: FocusState<Bool>.Binding) -> some View {
+        Composer(
+            text: $replyDraft, mentions: $replyMentions, placeholder: "Reply…  ⌘↩ to send", minHeight: 44,
+            uploadImage: uploadPasted, focus: focus,
+            actions: AnyView(
+                HStack(spacing: 10) {
+                    Button("Cancel") { cancelReply() }.glassButton().keyboardShortcut(.cancelAction)
+                    Button("Reply") { postReply(root) }.glassButton(prominent: true)
+                        .keyboardShortcut(focus.wrappedValue ? KeyboardShortcut(.return, modifiers: .command) : nil)
+                        .disabled(replyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.isWorking)
                 })
         )
         .environment(session)
@@ -1546,7 +1571,7 @@ struct IssueDetailView: View {
             transitions: store.transitions,
             canEditSummary: store.canEdit("summary"),
             canEditDescription: store.canEdit("description"),
-            isEditing: summaryDraft != nil || descriptionDraft != nil || editingCommentID != nil,
+            isEditing: summaryDraft != nil || descriptionDraft != nil || editingCommentID != nil || replyingTo != nil,
             back: back,
             embedded: embedded,
             perform: perform
@@ -1822,6 +1847,7 @@ struct IssueDetailView: View {
         editDraft = c.body.markdown(mentions: &mentions)
         editOriginal = editDraft
         editMentions = mentions
+        replyingTo = nil
         editingCommentID = c.id
     }
 
@@ -1830,8 +1856,34 @@ struct IssueDetailView: View {
         returnKeyboard()
     }
 
+    /// Opens the reply composer under a thread, closing the comment editor; another thread starts a new draft.
+    private func beginReply(_ root: String) {
+        editingCommentID = nil
+        if replyingTo != root { (replyDraft, replyMentions) = ("", [:]) }
+        replyingTo = root
+    }
+
+    private func cancelReply() {
+        replyingTo = nil
+        returnKeyboard()
+    }
+
+    /// Closes once Jira has the reply; a failed post keeps the text.
+    private func postReply(_ root: String) {
+        let body = replyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !body.isEmpty else { return }
+        let doc = ADFNode.document(markdown: body, mentions: replyMentions)
+        Task {
+            guard await run({ try await $0.addComment(key, body: doc, parentId: root) }).value, replyingTo == root
+            else { return }
+            (replyDraft, replyMentions) = ("", [:])
+            cancelReply()
+        }
+    }
+
     /// Deletes at once; the comment lands in the Bin.
     private func deleteComment(_ c: Comment) {
+        if c.id == replyingTo { replyingTo = nil }  // its thread may go with it
         let account = target.accountID
         run {
             try await $0.deleteComment(key, id: c.id)

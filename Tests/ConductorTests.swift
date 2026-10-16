@@ -364,6 +364,51 @@ final class DecodingTests: XCTestCase {
         XCTAssertTrue(try issue(worklog: "").isComplete, "no work log field: nothing to complete")
     }
 
+    func testRepliesSitUnderTheirThreadInEitherOrder() throws {
+        let client = JiraClient(account: Account(site: URL(string: "https://x.atlassian.net")!, email: "e", token: "t"))
+        func comment(_ id: String, _ parent: String = "") throws -> Comment {
+            let json =
+                #"{"id":"\#(id)","body":"x","created":"2026-10-05T09:56:55.551+0300","updated":"2026-10-05T09:56:55.551+0300""#
+                + parent + "}"
+            return try client.decoder.decode(Comment.self, from: Data(json.utf8))
+        }
+        // Jira sends a reply's parent as a number, a copy on disk keeps it as text, a top-level comment has none.
+        let all = try [
+            comment("1"), comment("2", #","parentId":1"#), comment("3"),
+            comment("4", #","parentId":"2""#),  // a reply to a reply: Jira refuses one, but shows what it has
+            comment("5", #","parentId":99"#),  // its parent deleted
+            comment("6", #","parentId":1"#), comment("7", #","parentId":99"#),
+        ]
+        XCTAssertEqual(all.map(\.parentId), [nil, "1", nil, "2", "99", "1", "99"])
+        XCTAssertEqual(try JSONDecoder().decode(Comment.self, from: JSONEncoder().encode(all[1])), all[1])
+        // Replies stay oldest first under their thread whichever way the threads run; orphans lead a thread of
+        // their own.
+        let oldest = Comment.threads(all, newestFirst: false)
+        XCTAssertEqual(oldest.map(\.comment.id), ["1", "2", "4", "6", "3", "5", "7"])
+        XCTAssertEqual(oldest.map(\.root), ["1", "1", "1", "1", "3", "99", "99"])
+        XCTAssertEqual(Comment.threads(all, newestFirst: true).map(\.comment.id), ["5", "7", "3", "1", "2", "4", "6"])
+    }
+
+    @MainActor func testFilesNamedByIDAloneShowAsTheirAttachments() throws {
+        let json =
+            #"{"type":"doc","version":1,"content":[{"type":"mediaGroup","content":[{"type":"media","attrs":{"type":"file","id":"m1","collection":""}},{"type":"media","attrs":{"type":"file","id":"m2","collection":"","alt":"shot.png"}}]}]}"#
+        let doc = try JSONDecoder().decode(ADFNode.self, from: Data(json.utf8))
+        XCTAssertTrue(doc.hasUnnamedFiles)
+        let named = doc.namingFiles(["m1": "data.json", "m2": "other.png"])
+        XCTAssertEqual(named.content?[0].content?.map { $0.attr("alt") }, ["data.json", "shot.png"])
+        XCTAssertFalse(named.hasUnnamedFiles)
+        let file = Attachment(
+            id: "10", filename: "data.json", mimeType: "application/json", size: 62,
+            content: URL(string: "https://x.atlassian.net/rest/api/3/attachment/content/10")!, thumbnail: nil,
+            created: .now, author: nil)
+        let text = ADFAttributed.render(named, attachments: [file]) { _ in nil }
+        var cells: [String] = []
+        text.enumerateAttribute(.attachment, in: NSRange(location: 0, length: text.length)) { v, _, _ in
+            if let c = (v as? NSTextAttachment)?.attachmentCell { cells.append("\(type(of: c))") }
+        }
+        XCTAssertEqual(cells, ["FileChipCell", "ChipCell"], "shot.png is none of the issue's attachments")
+    }
+
     func testHistoryReadsLikeTheIssuePage() {
         typealias Item = ChangeGroup.Item
         let spent = Item(field: "timespent", fromString: "3600", toString: "5400", from: "3600", to: "5400")
@@ -464,6 +509,14 @@ final class LiveWriteTests: XCTestCase {
         let mine = try XCTUnwrap(withComment.fields.comment?.comments.last)
         XCTAssertEqual(mine.author?.accountId, me.accountId)
         XCTAssertEqual(mine.body.content?.count, 1, "one paragraph: text, hard break, text")
+        if !c.account.isServer {
+            // A reply names its parent.
+            try await c.addComment(key, body: .document(markdown: "Conductor self-test reply."), parentId: mine.id)
+            let replied = try await c.issue(key)
+            let reply = try XCTUnwrap(replied.fields.comment?.comments.last)
+            XCTAssertEqual(reply.parentId, mine.id)
+            try await c.deleteComment(key, id: reply.id)
+        }
         try await c.deleteComment(key, id: mine.id)
         let afterDelete = try await c.issue(key)
         XCTAssertEqual(afterDelete.fields.comment?.total, before.fields.comment?.total)

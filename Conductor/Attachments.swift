@@ -18,7 +18,8 @@ struct AttachmentTile: View {
                         // Behind a clear colour, so a wide thumbnail cannot widen the tile into its neighbour.
                         Color.clear.overlay { RemoteImage(url: attachment.thumbnail, fit: true) }.clipped()
                     } else {
-                        Image(systemName: icon).font(.title).foregroundStyle(.secondary)
+                        Image(systemName: AttachmentOpener.symbol(for: attachment)).font(.title)
+                            .foregroundStyle(.secondary)
                     }
                     if busy { ProgressView().controlSize(.small) }
                 }
@@ -43,15 +44,6 @@ struct AttachmentTile: View {
         .onDrag { AttachmentOpener.dragItem(attachment) ?? NSItemProvider() }
     }
 
-    private var icon: String {
-        let mime = attachment.mimeType ?? ""
-        if mime.hasPrefix("image/") { return "photo" }
-        if mime.hasPrefix("video/") { return "film" }
-        if mime.contains("zip") { return "doc.zipper" }
-        if mime.contains("pdf") { return "doc.richtext" }
-        return "doc"
-    }
-
     private func preview() {
         guard let client, !busy else { return }
         busy = true
@@ -63,6 +55,16 @@ struct AttachmentTile: View {
 }
 
 enum AttachmentOpener {
+    /// The SF Symbol for an attachment's type: on its tile, and on its chip in a comment or the description.
+    static func symbol(for attachment: Attachment) -> String {
+        let mime = attachment.mimeType ?? ""
+        if mime.hasPrefix("image/") { return "photo" }
+        if mime.hasPrefix("video/") { return "film" }
+        if mime.contains("zip") { return "doc.zipper" }
+        if mime.contains("pdf") { return "doc.richtext" }
+        return "doc"
+    }
+
     private static func file(for attachment: Attachment) -> URL {
         // The name is Jira's: its last component alone, so it cannot reach outside the attachment's own folder.
         let name = (attachment.filename as NSString).lastPathComponent.replacingOccurrences(of: "/", with: "_")

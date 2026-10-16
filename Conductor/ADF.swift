@@ -79,6 +79,21 @@ struct ADFNode: Codable, Hashable, Sendable {
         }
     }
 
+    /// Whether the document names a file by its Media Services id alone (see `JiraClient.namingFiles`).
+    var hasUnnamedFiles: Bool { unnamedFile != nil || (content ?? []).contains(where: \.hasUnnamedFiles) }
+
+    private var unnamedFile: String? {
+        (type == "media" || type == "mediaInline") && attr("type") == "file" && attr("alt") == nil ? attr("id") : nil
+    }
+
+    /// Each file named by id alone gets its name from `names` (by Media Services id) as `alt`, as a picture has it.
+    func namingFiles(_ names: [String: String]) -> ADFNode {
+        var n = self
+        if let id = unnamedFile, let name = names[id] { n.attrs?["alt"] = .string(name) }
+        n.content = content?.map { $0.namingFiles(names) }
+        return n
+    }
+
     /// Jira Server sends a description or comment as wiki-markup text, not a document.
     init(from decoder: Decoder) throws {
         if let s = try? decoder.singleValueContainer().decode(String.self) {
