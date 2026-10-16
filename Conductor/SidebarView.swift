@@ -66,6 +66,12 @@ struct ListFilters: Hashable, Codable {
         }
     }
 
+    /// The account id on Cloud, the username on Server (as `JiraUser.accountId` holds), and the name for the chip.
+    struct Person: Hashable, Codable {
+        let id: String
+        let name: String
+    }
+
     struct Sort: Hashable, Codable {
         enum Field: String, CaseIterable, Codable {
             case updated = "Updated"
@@ -183,16 +189,18 @@ struct ListFilters: Hashable, Codable {
     }
 
     /// nil: every signed-in account, with a site badge on each row.
-    var account: UUID?
+    var account: UUID? { didSet { if account != oldValue { assignedTo = nil } } }
     /// With `account` nil, a few of the accounts rather than all: still a unified list, under All Accounts.
     var accounts: Set<UUID>?
     /// A project key and a Jira favourite filter: both belong to one account, so they clear when the account changes.
-    var project: String?
+    var project: String? { didSet { if project != oldValue { assignedTo = nil } } }
     var jiraFilter: Filter?
     var scope: Scope = .all
     /// Every list starts on Open unless the Hide Done setting is off; the chip changes it per list.
     var status: Status = (UserDefaults.standard.object(forKey: "hideDone") as? Bool ?? true) ? .open : .any
     var assignee: Assignee = .any
+    /// One of the project's people instead of `assignee`'s built-ins: dropped with the project or account it came from.
+    var assignedTo: Person?
     var reporter: Reporter = .any
     var type: String?
     var updated: Updated = .any
@@ -263,6 +271,7 @@ struct ListFilters: Hashable, Codable {
         case .me: c.append("assignee = currentUser()")
         case .unassigned: c.append("assignee IS EMPTY")
         }
+        if let assignedTo { c.append("assignee = \"\(assignedTo.id)\"") }
         if reporter == .me { c.append("reporter = currentUser()") }
         if let type { c.append("issuetype = \"\(type)\"") }
         switch updated {

@@ -824,15 +824,15 @@ struct IssueDetailView: View {
     }
 
     @ViewBuilder private func assigneeField(_ issue: Issue) -> some View {
-        // "I to set myself" only while the issue is someone else's.
-        let mine = issue.fields.assignee != nil && issue.fields.assignee?.accountId == jira?.me?.accountId
+        // I sets me on someone else's issue and unassigns my own.
+        let mine = IssueActions.isMine(assignee: issue.fields.assignee?.accountId, me: jira?.me?.accountId)
         field(
             "Assignee",
             hint: hint(.assign) { a in
-                guard !mine, let i = Shortcuts.hint(for: .assignToMe) else {
-                    return String(localized: "\(a) to assign to…")
-                }
-                return String(localized: "\(i) to set myself, \(a) to…")
+                guard let i = Shortcuts.hint(for: .assignToMe) else { return String(localized: "\(a) to assign to…") }
+                return mine
+                    ? String(localized: "\(i) to unassign, \(a) to…")
+                    : String(localized: "\(i) to set myself, \(a) to…")
             }
         ) {
             Button {
@@ -1542,8 +1542,7 @@ struct IssueDetailView: View {
         return IssueActions(
             key: key,
             watching: issue.fields.watches?.isWatching == true,
-            assignedToMe: issue.fields.assignee?.accountId != nil
-                && issue.fields.assignee?.accountId == jira?.me?.accountId,
+            assignedToMe: IssueActions.isMine(assignee: issue.fields.assignee?.accountId, me: jira?.me?.accountId),
             transitions: store.transitions,
             canEditSummary: store.canEdit("summary"),
             canEditDescription: store.canEdit("description"),
@@ -1564,7 +1563,8 @@ struct IssueDetailView: View {
         case .assign: reveal(.assignee, .middle) { showAssign = true }
         case .assignToMe:
             let me = jira.me?.accountId
-            run { try await $0.assign(key, to: me) }
+            let to = IssueActions.isMine(assignee: store.issue?.fields.assignee?.accountId, me: me) ? nil : me
+            run { try await $0.assign(key, to: to) }
         case .changeStatus: reveal(.status, .middle) { showStatus = true }
         case .changePriority: reveal(.priority, .middle) { showPriority = true }
         case .editLabels: reveal(.labels, .middle) { showLabels = true }

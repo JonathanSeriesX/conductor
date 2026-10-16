@@ -1745,6 +1745,107 @@
         }
       }
     },
+    "%@ to unassign, %@ to…" : {
+      "comment" : "Caption hint after ASSIGNEE on an issue assigned to me, each %@ is a key: \"I to unassign, A to…\" (I removes me as assignee, A opens the people picker). Keep it as short as possible: it shares one line with the field name in a narrow column.",
+      "localizations" : {
+        "ar" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ لإلغاء الإسناد، %2$@ إلى…"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ niemandem, %2$@ an …"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@ to unassign, %2$@ to…"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ a nadie, %2$@ a…"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ pour personne, %2$@ à…"
+          }
+        },
+        "hi" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ हटाने को, %2$@ किसी को…"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ a nessuno, %2$@ a…"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ 割り当て解除、%2$@ 他の人に…"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ 해제, %2$@ 지정…"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ nikomu, %2$@ komu…"
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ a ninguém, %2$@ a…"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ — снять, %2$@ — на…"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ kaldır, %2$@ başkasına…"
+          }
+        },
+        "uk" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ — зняти, %2$@ — на…"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ 取消分配，%2$@ 给他人…"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ 取消指派，%2$@ 給他人…"
+          }
+        }
+      }
+    },
     "%@ to unwatch" : {
       "comment" : "Caption hint, %@ is a key: \"W to unwatch\"",
       "localizations" : {

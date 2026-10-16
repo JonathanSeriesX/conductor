@@ -478,8 +478,13 @@ struct JiraClient: Sendable {
     func assignableUsers(_ key: String, query: String) async throws -> [JiraUser] {
         try await get(
             "user/assignable/search",
-            query: ["issueKey": key, server ? "username" : "query": query, "maxResults": "20"])
+            query: ["issueKey": key, server ? "username" : "query": query, "maxResults": peopleLimit(query)])
     }
+
+    /// An empty query is the whole list (the picker's first rows, the Assignee chip), a typed one the best matches.
+    /// ponytail: one page of 1000, Jira's cap; Cloud keeps the assignable ones among the site's first 1000 users, so a
+    /// larger site would need startAt paging.
+    private func peopleLimit(_ query: String) -> String { query.isEmpty ? "1000" : "20" }
 
     func assign(_ key: String, to accountId: String?) async throws {
         struct Body: Encodable {
@@ -517,7 +522,7 @@ struct JiraClient: Sendable {
     func assignableUsers(project: String, query: String) async throws -> [JiraUser] {
         try await get(
             "user/assignable/search",
-            query: ["project": project, server ? "username" : "query": query, "maxResults": "20"]
+            query: ["project": project, server ? "username" : "query": query, "maxResults": peopleLimit(query)]
         )
     }
 

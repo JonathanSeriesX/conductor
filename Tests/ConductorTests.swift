@@ -54,6 +54,32 @@ final class JQLTests: XCTestCase {
         XCTAssertEqual(f.jql, "filter = 7 AND watcher = currentUser() AND issuetype = \"Bug\" ORDER BY priority ASC")
     }
 
+    /// One of the project's people: their id goes into the JQL and the preset keeps them; another project or
+    /// account drops them, since ids belong to one site. A preset saved before people could be picked still loads.
+    func testAPersonFilterNarrowsToThemAndStaysWithItsProject() throws {
+        var f = blank
+        f.account = account
+        f.project = "QA"
+        f.assignedTo = .init(id: "5b10ac8d82e05b22cc7d4ef5", name: "Ada Lovelace")
+        XCTAssertEqual(f.jql, "project = \"QA\" AND assignee = \"5b10ac8d82e05b22cc7d4ef5\" ORDER BY updated DESC")
+        XCTAssertEqual(try JSONDecoder().decode(ListFilters.self, from: JSONEncoder().encode(f)), f)
+        f.project = "QA"
+        XCTAssertNotNil(f.assignedTo, "the same project again keeps them")
+        f.project = "ES"
+        XCTAssertNil(f.assignedTo)
+        f.assignedTo = .init(id: "jdoe", name: "Jane Doe")
+        f.account = UUID()
+        XCTAssertNil(f.assignedTo)
+        let old = """
+            {"project":"QA","scope":"Everything","status":"Open","assignee":"Assigned to me","reporter":"Any reporter",\
+            "updated":"Any time","sort":{"field":"Updated","descending":true},"text":""}
+            """
+        let saved = try JSONDecoder().decode(ListFilters.self, from: Data(old.utf8))
+        XCTAssertNil(saved.assignedTo)
+        XCTAssertEqual(
+            saved.jql, "project = \"QA\" AND statusCategory != Done AND assignee = currentUser() ORDER BY updated DESC")
+    }
+
     /// A few accounts of several: the list takes only those, and one account set on its own wins.
     func testAFewAccountsNarrowTheUnifiedList() throws {
         let other = UUID()
@@ -646,6 +672,15 @@ final class FilterAndDurationTests: XCTestCase {
         let relates = LinkType(id: "2", name: "Relates", inward: "relates to", outward: "relates to")
         let picker = LinkIssueView(key: "A-1", types: [blocks, relates]) { _, _, _ in }
         XCTAssertEqual(picker.relations.map(\.label), ["blocks", "is blocked by", "relates to"])
+    }
+
+    /// I takes someone else's issue, or nobody's, and gives up my own; an unknown me is never the assignee.
+    func testITogglesBetweenAssigningMeAndUnassigning() {
+        XCTAssertEqual(Shortcuts.hint(for: .assignToMe), "I")
+        XCTAssertTrue(IssueActions.isMine(assignee: "me", me: "me"))
+        XCTAssertFalse(IssueActions.isMine(assignee: "you", me: "me"))
+        XCTAssertFalse(IssueActions.isMine(assignee: nil, me: "me"))
+        XCTAssertFalse(IssueActions.isMine(assignee: nil, me: nil))
     }
 
     func testVersionCompare() {

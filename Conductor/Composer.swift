@@ -464,7 +464,8 @@ struct PeoplePicker: View {
                 }
             ScrollViewReader { proxy in
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 0) {
+                    // Lazy: an empty search lists the whole project, up to a thousand people.
+                    LazyVStack(alignment: .leading, spacing: 0) {
                         if let me {
                             row(0) {
                                 onPick(me)

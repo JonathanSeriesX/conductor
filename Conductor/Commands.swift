@@ -12,6 +12,7 @@ struct IssueActions {
     }
     let key: String
     let watching: Bool
+    /// I unassigns the issue then, rather than assigning me.
     let assignedToMe: Bool
     let transitions: [Transition]
     let canEditSummary: Bool
@@ -23,6 +24,11 @@ struct IssueActions {
     /// In the main window's preview column; a window of its own already is the issue's window.
     let embedded: Bool
     let perform: (Action) -> Void
+}
+
+extension IssueActions {
+    /// Never true while me is unknown: an unassigned issue is nobody's.
+    static func isMine(assignee: String?, me: String?) -> Bool { assignee != nil && assignee == me }
 }
 
 extension IssueActions: Equatable {
@@ -178,7 +184,7 @@ struct AppCommands: Commands {
                 Button("Change Status") {}.disabled(true)
             }
             item("Assign…", .assign, "a", [])
-            item("Assign to Me", .assignToMe, "i", []).disabled(issue?.assignedToMe == true)
+            item(issue?.assignedToMe == true ? "Unassign" : "Assign to Me", .assignToMe, "i", [])
             item(issue?.watching == true ? "Unwatch" : "Watch", .watch, "w", [])
             item("Remind Me…", .remind, "r", [.command, .option])
             Divider()

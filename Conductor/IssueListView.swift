@@ -480,6 +480,8 @@ struct IssueListView: View {
     @State private var savingFilter = false
     @State private var filterName = ""
     @State private var chipMenus = ChipMenuController()
+    /// The project's assignable people, by name, for the Assignee chip; empty outside one project.
+    @State private var people: [JiraUser] = []
     @FocusState private var searchFocused: Bool
     /// The row last moved to a window of its own; the arrows carry on from it while nothing is selected.
     @State private var opened: IssueTarget?
@@ -1095,11 +1097,22 @@ struct IssueListView: View {
                 }))
         list.append(
             Chip(
-                id: "assignee", name: String(localized: "Assignee"), title: filters.assignee.title,
-                active: filters.assignee != .any,
+                id: "assignee", name: String(localized: "Assignee"),
+                title: filters.assignedTo?.name ?? filters.assignee.title,
+                active: filters.assignee != .any || filters.assignedTo != nil,
                 items: ListFilters.Assignee.allCases.map { a in
-                    ChipItem(a.title, selected: filters.assignee == a) { filters.assignee = a }
-                }))
+                    ChipItem(a.title, selected: filters.assignedTo == nil && filters.assignee == a) {
+                        filters.assignee = a
+                        filters.assignedTo = nil
+                    }
+                }
+                    + (people.isEmpty ? [] : [ChipItem.separator])
+                    + people.map { u in
+                        ChipItem(u.displayName, selected: filters.assignedTo?.id == u.accountId) {
+                            filters.assignee = .any
+                            filters.assignedTo = .init(id: u.accountId, name: u.displayName)
+                        }
+                    }))
         list.append(
             Chip(
                 id: "reporter", name: String(localized: "Reporter"), title: filters.reporter.title,
@@ -1164,6 +1177,18 @@ struct IssueListView: View {
         .background(.bar)
         .overlay(alignment: .bottom) { Divider() }
         .disabled(muted)
+        // Inside one project, the people the assignee picker keeps: the cached list at once, the fresh one behind.
+        .task(id: [filters.account?.uuidString, filters.project]) {
+            people = []
+            guard let st = filters.account.flatMap(session.state), let key = filters.project else { return }
+            let c = st.client
+            let byName = { (l: [JiraUser]) in
+                l.sorted { $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending }
+            }
+            let (now, fresh) = st.memo("assignable-\(key)") { try await c.assignableUsers(project: key, query: "") }
+            people = byName(now ?? [])
+            if let list = await fresh.value, !Task.isCancelled { people = byName(list) }
+        }
         .help(
             filters.isRawJQL
                 ? "Filters don't apply to raw JQL" : filters.isKey ? "A key opens that issue whatever the filters" : "")
