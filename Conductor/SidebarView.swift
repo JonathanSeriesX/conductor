@@ -351,6 +351,9 @@ struct SidebarView: View {
     @State private var renamingPreset: Preset?
     @State private var newTitle = ""
     @State private var signingOut: AccountState?
+    /// Where a dragged account would land: before `session.states[dropSlot]`, or last at `states.count`.
+    @State private var dropSlot: Int?
+    @State private var dropFrames = DropFrames()
 
     var body: some View {
         let selection = Binding<ListFilters?>(
@@ -377,6 +380,12 @@ struct SidebarView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .contentShape(.rect)
                     .onTapGesture { withAnimation { expandedBinding(st).wrappedValue.toggle() } }
+                    .draggable(st.id.uuidString)
+                    .onGeometryChange(for: CGRect.self) {
+                        $0.frame(in: .global)
+                    } action: {
+                        dropFrames.headers[st.id] = $0
+                    }
                     .contextMenu {
                         Button("Rename…", systemImage: "pencil") {
                             newTitle = st.title
@@ -407,6 +416,19 @@ struct SidebarView: View {
                     }
                 }
             }
+            // The end of the accounts, where a dragged account lands last. Only while dragging: it takes a row's room.
+            if dropSlot != nil {
+                Section {
+                } header: {
+                    Color.clear.frame(height: 1)
+                        .onGeometryChange(for: CGRect.self) {
+                            $0.frame(in: .global)
+                        } action: {
+                            dropFrames.end = $0
+                        }
+                        .onDisappear { dropFrames.end = nil }
+                }
+            }
             ForEach(session.accounts.filter { session.unreachable[$0.id] != nil }, id: \.id) { account in
                 Section(account.site.host() ?? String(localized: "Account")) {
                     Label("Couldn't connect", systemImage: "wifi.exclamationmark").foregroundStyle(.secondary)
@@ -417,6 +439,15 @@ struct SidebarView: View {
             }
         }
         .listStyle(.sidebar)
+        .onGeometryChange(for: CGRect.self) {
+            $0.frame(in: .global)
+        } action: {
+            dropFrames.list = $0
+        }
+        .onDrop(of: [.text], delegate: AccountDrop(session: session, frames: dropFrames, slot: $dropSlot))
+        .overlay(alignment: .topLeading) {
+            if let y = dropLineY { InsertionLine().padding(.horizontal, 10).offset(y: y - 3.5) }
+        }
         .navigationTitle("Conductor")
         .navigationSplitViewColumnWidth(min: 200, ideal: 240)
         .bottomBar {
@@ -553,6 +584,15 @@ struct SidebarView: View {
         }
     }
 
+    /// The insertion line's height in the list: in the gap above the header it lands before.
+    private var dropLineY: CGFloat? {
+        guard let slot = dropSlot else { return nil }
+        let f = slot < session.states.count ? dropFrames.headers[session.states[slot].id] : dropFrames.end
+        // A header out of view, or an end never drawn, pins the line to the list's edge.
+        let list = dropFrames.list
+        return min(max((f?.minY ?? .infinity) - list.minY - 8, 4), list.height - 4)
+    }
+
     private func expandedBinding(_ st: AccountState) -> Binding<Bool> {
         Binding(
             get: { !collapsed.contains(st.id) },
@@ -583,5 +623,63 @@ struct SidebarView: View {
                 session.createIssueRequested = true
             }
         }
+    }
+}
+
+/// Where the account headers sit, to place a dragged account. A plain class: the frames change on every scroll, and
+/// the sidebar must not redraw for them.
+private final class DropFrames {
+    var list = CGRect.zero
+    var headers: [UUID: CGRect] = [:]
+    var end: CGRect?
+    /// From entering the list to the drop: SwiftUI sends one more update after the drop, which put the line back.
+    var inside = false
+}
+
+/// A dragged account header lands before the first header below the pointer: over a header, above that account;
+/// over an account's rows, below it.
+private struct AccountDrop: DropDelegate {
+    let session: Session
+    let frames: DropFrames
+    @Binding var slot: Int?
+
+    func dropEntered(info: DropInfo) { frames.inside = true }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        guard frames.inside else { return nil }
+        let y = frames.list.minY + info.location.y
+        slot = session.states.count { (frames.headers[$0.id]?.maxY ?? .infinity) <= y }
+        return DropProposal(operation: .move)
+    }
+
+    func dropExited(info: DropInfo) {
+        frames.inside = false
+        slot = nil
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        defer { (frames.inside, slot) = (false, nil) }
+        guard let to = slot, let item = info.itemProviders(for: [.text]).first else { return false }
+        _ = item.loadTransferable(type: String.self) { id in
+            Task { @MainActor in
+                guard let from = session.states.firstIndex(where: { $0.id.uuidString == (try? id.get()) }) else {
+                    return
+                }
+                withAnimation { session.moveAccounts(fromOffsets: [from], toOffset: to) }
+            }
+        }
+        return true
+    }
+}
+
+/// The line a sidebar draws where a dragged row will land.
+private struct InsertionLine: View {
+    var body: some View {
+        HStack(spacing: 0) {
+            Circle().strokeBorder(lineWidth: 2).frame(width: 7, height: 7)
+            Rectangle().frame(height: 2)
+        }
+        .foregroundStyle(.tint)
+        .allowsHitTesting(false)
     }
 }

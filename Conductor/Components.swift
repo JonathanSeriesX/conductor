@@ -149,14 +149,15 @@ struct Avatar: View {
             if let user {
                 RemoteImage(url: user.avatar, placeholder: "person.crop.circle.fill")
             } else {
+                // White on a selected row, as its text goes: the tertiary grey all but vanished on the accent.
                 Image(systemName: "person.crop.circle.badge.questionmark").resizable().scaledToFit().foregroundStyle(
-                    .tertiary)
+                    prominence == .increased ? AnyShapeStyle(.white) : AnyShapeStyle(.tertiary))
             }
         }
         .frame(width: size, height: size)
         .clipShape(.circle)
-        // A ring on a selected row, so an orange avatar still reads on the orange selection.
-        .overlay { if prominence == .increased { Circle().stroke(.white.opacity(0.9), lineWidth: 1.5) } }
+        // A ring on a selected row, so an orange avatar still reads on the orange selection. The symbol has its own.
+        .overlay { if prominence == .increased, user != nil { Circle().stroke(.white.opacity(0.9), lineWidth: 1.5) } }
         .help(user?.displayName ?? String(localized: "Unassigned"))
         .accessibilityLabel(user?.displayName ?? String(localized: "Unassigned"))
     }

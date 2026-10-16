@@ -617,6 +617,15 @@ final class Session {
         Keychain.save(stored)
     }
 
+    /// The sidebar's drag: reorders the live accounts and saves the order with them.
+    func moveAccounts(fromOffsets from: IndexSet, toOffset to: Int) {
+        states.move(fromOffsets: from, toOffset: to)
+        // Unreachable accounts keep their slots; the live ones fill theirs in the new order.
+        var live = states.compactMap { st in stored.first { $0.id == st.id } }.makeIterator()
+        stored = stored.map { a in states.contains { $0.id == a.id } ? live.next() ?? a : a }
+        Keychain.save(stored)
+    }
+
     func refreshAll() async {
         let tasks = states.map { st in
             Task { @MainActor in
