@@ -280,6 +280,11 @@ final class AccountState: Identifiable {
                 await DiskCache.loadAsync(account: account, name: "workflows-editmeta") ?? [:]
             editMetaByWorkflow = disk.merging(editMetaByWorkflow) { _, fresh in fresh }
         }
+        // Off the first frame too: a big site's people run to megabytes, and only the Assignee chip reads them.
+        peopleRead = Task { @MainActor in
+            let disk: People? = await DiskCache.loadAsync(account: account, name: "people")
+            if people == nil { people = disk }
+        }
         return me != nil
     }
 
@@ -303,6 +308,7 @@ final class AccountState: Identifiable {
         // The account is usable now; the lists, boards and the warm pass fill the cache behind it. Judged before the
         // lists start, since they prefetch details of their own.
         warmIsFirst = prefetched.isEmpty && lists.isEmpty
+        refreshPeople()
         Task { @MainActor in
             await prefetchLists()
             await warm()
@@ -348,6 +354,42 @@ final class AccountState: Identifiable {
         // Starred projects' boards next, one at a time: a board is three or four requests and they should
         // not compete with the lists that are on screen.
         for p in starredProjects { await BoardStore.prefetch(p.key, state: self) }
+    }
+
+    // MARK: People
+
+    /// Every person on the site, for the Assignee chip, and when Jira last listed them. Jira has no "changed since"
+    /// for users, so a refresh lists them all again and replaces the copy: who joined and who left both land.
+    struct People: Codable, Sendable {
+        let fetched: Date
+        let users: [JiraUser]
+    }
+    /// nil until the disk copy is read or the site first answers.
+    var people: People?
+    @ObservationIgnored private var peopleRead: Task<Void, Never>?
+    /// A day after the copy was fetched, or after the last try Jira refused; past, to try at the next call.
+    @ObservationIgnored private var peopleDue = Date.distantPast
+
+    /// Lists the site's people again once the copy is a day old, page after page in the background. Cheap to call
+    /// often: the account check at launch and Session's 20-second tick both do.
+    func refreshPeople() {
+        guard peopleDue <= .now else { return }
+        peopleDue = .now + 86_400
+        Task { @MainActor in
+            await peopleRead?.value
+            if let people, people.fetched + 86_400 > .now {
+                peopleDue = people.fetched + 86_400
+                return
+            }
+            do {
+                let fresh = People(fetched: .now, users: try await client.everyone())
+                people = fresh
+                DiskCache.saveAsync(fresh, account: account, name: "people")
+            } catch {
+                // A site that forbids browsing people (403) is asked again tomorrow; offline, at the next call.
+                if error.isOffline { peopleDue = .distantPast }
+            }
+        }
     }
 
     /// A value kept in memory and on disk under `name`: what is known already comes back at once (nil the first
@@ -664,11 +706,12 @@ final class Session {
     }
 
     /// While offline or with an account that failed its check, retries every 20 s so a dropped VPN, a sleeping
-    /// laptop or a site that was down recovers on its own.
+    /// laptop or a site that was down recovers on its own. The same tick keeps each account's people a day fresh.
     private func watchConnectivity() {
         Task { @MainActor in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(20))
+                for st in states { st.refreshPeople() }
                 if Connectivity.shared.isOffline || states.contains(where: { $0.error != nil }) { await reconnect() }
             }
         }

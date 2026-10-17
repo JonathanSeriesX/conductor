@@ -423,11 +423,13 @@ struct Chip: View {
     }
 }
 
-/// Searchable list of people assignable to an issue or within a project.
+/// Searchable list of people assignable to an issue or within a project, or of people already at hand.
 struct PeoplePicker: View {
     enum Scope {
         case issue(String)
         case project(String)
+        /// Searched on this Mac: the Assignee chip's people, picked to filter by rather than to assign.
+        case people([JiraUser])
     }
     let scope: Scope
     let current: JiraUser?
@@ -438,8 +440,11 @@ struct PeoplePicker: View {
     /// The row ↓ and ↑ walked to, which ↩ picks.
     @State private var highlighted: Int?
 
-    /// "Assign to me" stands in for my own row, so I am not listed twice.
-    private var me: JiraUser? { jira?.me.flatMap { $0.accountId == current?.accountId ? nil : $0 } }
+    /// "Assign to me" stands in for my own row, so I am not listed twice. A filter has no assigning: I am a row there.
+    private var me: JiraUser? {
+        if case .people = scope { return nil }
+        return jira?.me.flatMap { $0.accountId == current?.accountId ? nil : $0 }
+    }
     /// The current assignee leads, as Jira's search for the issue lists them, so the project's list the picker opens
     /// with reads the same as the issue's own when it lands, and no row moves.
     private var others: [JiraUser] {
@@ -504,11 +509,16 @@ struct PeoplePicker: View {
         .padding(10)
         .frame(width: 280)
         .task(id: query) {
+            if case .people(let all) = scope {
+                users = Self.matching(all, query)
+                return
+            }
             guard let st = jira else { return }
             let (c, q) = (st.client, query)
             let name: String
             let fetch: @Sendable () async throws -> [JiraUser]
             switch scope {
+            case .people: return  // searched above, with no site to ask
             case .issue(let key):
                 // Kept per project, which the issue page warms: an issue opened for the first time opens full, and its
                 // own list corrects that behind.
@@ -530,6 +540,17 @@ struct PeoplePicker: View {
             users = (try? await fetch()) ?? []
         }
         .onChange(of: users) { highlighted = nil }  // the rows under it changed
+    }
+
+    /// The people whose name or email has the typed text, in the list's order. At most 200: on a site of thousands
+    /// every keystroke would lay out them all, and a few letters more find anyone.
+    static func matching(_ all: [JiraUser], _ query: String) -> [JiraUser] {
+        let q = query.trimmingCharacters(in: .whitespaces)
+        let found = all.lazy.filter {
+            q.isEmpty || $0.displayName.localizedStandardContains(q)
+                || $0.emailAddress?.localizedStandardContains(q) == true
+        }
+        return Array(found.prefix(200))
     }
 
     /// One pick, the full width of the popover, with no list box around it.

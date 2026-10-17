@@ -486,6 +486,24 @@ final class LiveReadTests: XCTestCase {
         XCTAssertEqual(
             page.worklogs.reduce(0) { $0 + $1.timeSpentSeconds }, issue.fields.timetracking?.timeSpentSeconds)
     }
+
+    /// Every person on the site, page after page: each once, active, by name, me among them.
+    func testEveryoneListsTheSitesPeopleWhole() async throws {
+        let env = ProcessInfo.processInfo.environment
+        guard let site = env["CONDUCTOR_SITE"].flatMap(Account.normalizeSite),
+            let email = env["CONDUCTOR_EMAIL"], let token = env["CONDUCTOR_TOKEN"]
+        else { throw XCTSkip("No live credentials in the environment") }
+        let c = JiraClient(account: Account(site: site, email: email, token: token))
+        let me = try await c.myself()
+        let people = try await c.everyone()
+        XCTAssertEqual(Set(people.map(\.id)).count, people.count)
+        XCTAssertTrue(people.allSatisfy { $0.active == true })
+        XCTAssertTrue(
+            zip(people, people.dropFirst()).allSatisfy {
+                $0.displayName.localizedStandardCompare($1.displayName) != .orderedDescending
+            })
+        XCTAssertTrue(people.contains { $0.id == me.id })
+    }
 }
 
 /// Exercises every write path against a real issue. Skipped unless the environment names one:
@@ -734,6 +752,74 @@ final class FilterAndDurationTests: XCTestCase {
         XCTAssertFalse(IssueActions.isMine(assignee: "you", me: "me"))
         XCTAssertFalse(IssueActions.isMine(assignee: nil, me: "me"))
         XCTAssertFalse(IssueActions.isMine(assignee: nil, me: nil))
+    }
+
+    /// A user as a site sends them; Server sends no account type.
+    private func user(
+        _ id: String, _ name: String, email: String? = nil, type: String? = "atlassian", active: Bool = true
+    ) throws -> JiraUser {
+        var json: [String: Any] = ["accountId": id, "displayName": name, "active": active]
+        json["emailAddress"] = email
+        json["accountType"] = type
+        return try JSONDecoder().decode(JiraUser.self, from: JSONSerialization.data(withJSONObject: json))
+    }
+
+    /// The site's people are its active humans, by name: apps, service desk customers and the deactivated are no
+    /// one to filter by. Every active Server user is a person.
+    func testTheSitesPeopleAreItsActiveHumansByName() throws {
+        let users = [
+            try user("1", "zoe"), try user("2", "Automation", type: "app"), try user("3", "Customer", type: "customer"),
+            try user("4", "Gone", active: false), try user("5", "Émile"), try user("jdoe", "ada", type: nil),
+        ]
+        XCTAssertEqual(JiraClient.people(users).map(\.displayName), ["ada", "Émile", "zoe"])
+    }
+
+    /// People cached before the account type was kept still load, and the type and fetch date survive the disk.
+    func testCachedPeopleLoadAcrossTheAccountTypeChange() throws {
+        let old = try JSONDecoder().decode(
+            JiraUser.self, from: Data(#"{"accountId":"1","displayName":"Ada","active":true}"#.utf8))
+        XCTAssertNil(old.accountType)
+        let people = AccountState.People(
+            fetched: Date(timeIntervalSince1970: 1_790_000_000), users: [old, try user("2", "Bot", type: "app")])
+        let back = try JSONDecoder().decode(AccountState.People.self, from: JSONEncoder().encode(people))
+        XCTAssertEqual(back.users, people.users)
+        XCTAssertEqual(back.users.last?.accountType, "app")
+        XCTAssertEqual(back.fetched, people.fetched)
+    }
+
+    /// Up to 500 people the Assignee chip names them all; past that only Choose person…, which searches them. The
+    /// chosen person is listed either way, once, even when no longer among the people.
+    @MainActor func testTheAssigneeMenuNamesUpTo500PeopleThenOffersThePicker() throws {
+        let people = try (1...501).map { try user("\($0)", "Person \($0)") }
+        let five = ListFilters.Person(id: "5", name: "Person 5")
+        let all = IssueListView.assigneeMenu(Array(people.prefix(500)), chosen: five)
+        XCTAssertEqual(all.listed.count, 500)
+        XCTAssertFalse(all.picker)
+        XCTAssertEqual(all.listed.filter { $0.id == "5" }.count, 1)
+        let gone = ListFilters.Person(id: "ada", name: "Ada")
+        XCTAssertEqual(
+            IssueListView.assigneeMenu(Array(people.prefix(2)), chosen: gone).listed.map(\.id), ["ada", "1", "2"])
+        let many = IssueListView.assigneeMenu(people, chosen: nil)
+        XCTAssertEqual(many.listed, [])
+        XCTAssertTrue(many.picker)
+        XCTAssertEqual(IssueListView.assigneeMenu(people, chosen: five).listed, [five])
+        let none = IssueListView.assigneeMenu([], chosen: nil)
+        XCTAssertTrue(none.listed.isEmpty && !none.picker, "a list of several accounts keeps the built-ins alone")
+    }
+
+    /// Choose person… searches the cached people as you type: any part of a name or email, whatever the case or
+    /// accents, in the list's order, never more than 200 rows.
+    @MainActor func testThePickerSearchesTheCachedPeopleLocally() throws {
+        let people = [try user("1", "Zoë Adams", email: "zoe@x.com"), try user("2", "Bob", email: "robert@x.com")]
+        XCTAssertEqual(PeoplePicker.matching(people, "").map(\.id), ["1", "2"])
+        XCTAssertEqual(PeoplePicker.matching(people, "zoe").map(\.id), ["1"])
+        XCTAssertEqual(PeoplePicker.matching(people, "ADA").map(\.id), ["1"])
+        XCTAssertEqual(PeoplePicker.matching(people, "robert").map(\.id), ["2"])
+        XCTAssertEqual(PeoplePicker.matching(people, " bob ").map(\.id), ["2"])
+        XCTAssertEqual(PeoplePicker.matching(people, "nobody"), [])
+        let crowd = try (1...300).map { try user("\($0)", "Person \($0)") }
+        XCTAssertEqual(PeoplePicker.matching(crowd, "").count, 200)
+        XCTAssertEqual(PeoplePicker.matching(crowd, "Person 299").map(\.id), ["299"])
     }
 
     func testVersionCompare() {
@@ -995,6 +1081,19 @@ final class ServerTests: XCTestCase {
 /// Every Server-specific path against a real Jira Data Center. Skipped unless the environment names one:
 /// TEST_RUNNER_CONDUCTOR_SERVER_SITE / _TOKEN and a project key in _PROJECT (xcodebuild strips the prefix).
 final class LiveServerTests: XCTestCase {
+    /// Server's user search stops at 100 matches whatever the paging; the user list's cursor reaches everyone.
+    func testEveryoneWalksTheWholeUserList() async throws {
+        let env = ProcessInfo.processInfo.environment
+        guard let site = env["CONDUCTOR_SERVER_SITE"].flatMap(Account.normalizeSite),
+            let token = env["CONDUCTOR_SERVER_TOKEN"]
+        else { throw XCTSkip("No live Server in the environment") }
+        let c = JiraClient(account: Account(site: site, email: "", token: token))
+        let me = try await c.myself()
+        let people = try await c.everyone()
+        XCTAssertEqual(Set(people.map(\.id)).count, people.count)
+        XCTAssertTrue(people.contains { $0.id == me.id })
+    }
+
     func testEveryReadAndWriteSpeaksServer() async throws {
         let env = ProcessInfo.processInfo.environment
         guard let site = env["CONDUCTOR_SERVER_SITE"].flatMap(Account.normalizeSite),

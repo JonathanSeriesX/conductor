@@ -8,10 +8,14 @@ struct JiraUser: Codable, Hashable, Sendable, Identifiable {
     let emailAddress: String?
     let avatarUrls: [String: URL]?
     let active: Bool?
+    /// Cloud only: "atlassian" for a person, "app" for a bot, "customer" for a service desk customer.
+    let accountType: String?
 
     var avatar: URL? { avatarUrls?["48x48"] ?? avatarUrls?.values.first }
 
-    private enum CodingKeys: String, CodingKey { case accountId, name, displayName, emailAddress, avatarUrls, active }
+    private enum CodingKeys: String, CodingKey {
+        case accountId, name, displayName, emailAddress, avatarUrls, active, accountType
+    }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -20,6 +24,7 @@ struct JiraUser: Codable, Hashable, Sendable, Identifiable {
         emailAddress = try c.decodeIfPresent(String.self, forKey: .emailAddress)
         avatarUrls = try c.decodeIfPresent([String: URL].self, forKey: .avatarUrls)
         active = try c.decodeIfPresent(Bool.self, forKey: .active)
+        accountType = try c.decodeIfPresent(String.self, forKey: .accountType)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -29,6 +34,7 @@ struct JiraUser: Codable, Hashable, Sendable, Identifiable {
         try c.encodeIfPresent(emailAddress, forKey: .emailAddress)
         try c.encodeIfPresent(avatarUrls, forKey: .avatarUrls)
         try c.encodeIfPresent(active, forKey: .active)
+        try c.encodeIfPresent(accountType, forKey: .accountType)
     }
 }
 

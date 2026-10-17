@@ -480,8 +480,10 @@ struct IssueListView: View {
     @State private var savingFilter = false
     @State private var filterName = ""
     @State private var chipMenus = ChipMenuController()
-    /// The project's assignable people, by name, for the Assignee chip; empty outside one project.
-    @State private var people: [JiraUser] = []
+    /// The project's assignable people, by name: the Assignee chip's people where the site hides its own.
+    @State private var assignable: [JiraUser] = []
+    /// The chip Choose person… was picked under, which its picker hangs from: Assignee, or Filter while it is unset.
+    @State private var choosingUnder: String?
     @FocusState private var searchFocused: Bool
     /// The row last moved to a window of its own; the arrows carry on from it while nothing is selected.
     @State private var opened: IssueTarget?
@@ -1031,6 +1033,43 @@ struct IssueListView: View {
         let items: [ChipItem]
     }
 
+    /// The people the Assignee chip offers inside one account: the site's, else, where the site hides them, the
+    /// project's assignable ones; none in a list of several accounts, since ids belong to one site.
+    private var people: [JiraUser] {
+        let everyone = filters.account.flatMap(session.state)?.people?.users ?? []
+        return everyone.isEmpty ? assignable : everyone
+    }
+
+    /// Up to this many people the Assignee chip's menu names them all; a menu of thousands is unusable.
+    static let peopleInMenu = 500
+
+    /// What the Assignee chip lists after its built-ins: everyone up to `peopleInMenu`, past it only Choose person…,
+    /// which searches them all. The chosen person is listed whatever the count, even one no longer among the people,
+    /// so the check mark always shows whom the chip filters by.
+    static func assigneeMenu(_ people: [JiraUser], chosen: ListFilters.Person?) -> (
+        listed: [ListFilters.Person], picker: Bool
+    ) {
+        let picker = people.count > peopleInMenu
+        let listed = picker ? [] : people.map { ListFilters.Person(id: $0.accountId, name: $0.displayName) }
+        guard let chosen, !listed.contains(where: { $0.id == chosen.id }) else { return (listed, picker) }
+        return ([chosen] + listed, picker)
+    }
+
+    /// True while Choose person…'s picker hangs from the chip `id`.
+    private func choosing(_ id: String) -> Binding<Bool> {
+        Binding(get: { choosingUnder == id }, set: { if !$0 { choosingUnder = nil } })
+    }
+
+    /// Choose person…'s picker: the chip's people, searched on this Mac as you type.
+    private var personPicker: some View {
+        PeoplePicker(scope: .people(people), current: nil) { u in
+            choosingUnder = nil
+            guard let u else { return }
+            filters.assignee = .any
+            filters.assignedTo = .init(id: u.accountId, name: u.displayName)
+        }
+    }
+
     private var chipList: [Chip] {
         var list: [Chip] = []
         if session.states.count > 1 {
@@ -1095,24 +1134,32 @@ struct IssueListView: View {
                 items: ListFilters.Status.allCases.map { s in
                     ChipItem(s.title, selected: filters.status == s) { filters.status = s }
                 }))
+        let assigneeSet = filters.assignee != .any || filters.assignedTo != nil
+        let menu = Self.assigneeMenu(people, chosen: filters.assignedTo)
         list.append(
             Chip(
                 id: "assignee", name: String(localized: "Assignee"),
                 title: filters.assignedTo?.name ?? filters.assignee.title,
-                active: filters.assignee != .any || filters.assignedTo != nil,
+                active: assigneeSet,
                 items: ListFilters.Assignee.allCases.map { a in
                     ChipItem(a.title, selected: filters.assignedTo == nil && filters.assignee == a) {
                         filters.assignee = a
                         filters.assignedTo = nil
                     }
                 }
-                    + (people.isEmpty ? [] : [ChipItem.separator])
-                    + people.map { u in
-                        ChipItem(u.displayName, selected: filters.assignedTo?.id == u.accountId) {
+                    + (menu.listed.isEmpty && !menu.picker ? [] : [ChipItem.separator])
+                    + menu.listed.map { p in
+                        ChipItem(p.name, selected: filters.assignedTo?.id == p.id) {
                             filters.assignee = .any
-                            filters.assignedTo = .init(id: u.accountId, name: u.displayName)
+                            filters.assignedTo = p
                         }
-                    }))
+                    }
+                    + (menu.picker
+                        ? [
+                            ChipItem(String(localized: "Choose person…"), selected: false) {
+                                choosingUnder = assigneeSet ? "assignee" : "add"
+                            }
+                        ] : [])))
         list.append(
             Chip(
                 id: "reporter", name: String(localized: "Reporter"), title: filters.reporter.title,
@@ -1152,7 +1199,9 @@ struct IssueListView: View {
                 HStack(spacing: 6) {
                     ForEach(all.filter(\.active), id: \.id) { c in
                         FilterChip(
-                            id: c.id, title: c.title, active: true, enabled: !muted, menus: chipMenus, items: c.items)
+                            id: c.id, title: c.title, active: true, enabled: !muted, menus: chipMenus, items: c.items
+                        )
+                        .popover(isPresented: choosing(c.id), arrowEdge: .bottom) { personPicker }
                     }
                     if !more.isEmpty {
                         FilterChip(
@@ -1161,6 +1210,7 @@ struct IssueListView: View {
                             items: more.map { ChipItem($0.name, children: $0.items) }
                         )
                         .help("Add a filter")
+                        .popover(isPresented: choosing("add"), arrowEdge: .bottom) { personPicker }
                     }
                     if filters != cleared {
                         Button {
@@ -1177,17 +1227,20 @@ struct IssueListView: View {
         .background(.bar)
         .overlay(alignment: .bottom) { Divider() }
         .disabled(muted)
-        // Inside one project, the people the assignee picker keeps: the cached list at once, the fresh one behind.
+        // Inside one project of a site that hides its people, the ones the assignee picker keeps: the cached list at
+        // once, the fresh one behind.
         .task(id: [filters.account?.uuidString, filters.project]) {
-            people = []
-            guard let st = filters.account.flatMap(session.state), let key = filters.project else { return }
+            assignable = []
+            guard let st = filters.account.flatMap(session.state), let key = filters.project,
+                st.people?.users.isEmpty ?? true
+            else { return }
             let c = st.client
             let byName = { (l: [JiraUser]) in
                 l.sorted { $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending }
             }
             let (now, fresh) = st.memo("assignable-\(key)") { try await c.assignableUsers(project: key, query: "") }
-            people = byName(now ?? [])
-            if let list = await fresh.value, !Task.isCancelled { people = byName(list) }
+            assignable = byName(now ?? [])
+            if let list = await fresh.value, !Task.isCancelled { assignable = byName(list) }
         }
         .help(
             filters.isRawJQL

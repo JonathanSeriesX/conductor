@@ -527,7 +527,8 @@ struct JiraClient: Sendable {
             query: ["issueKey": key, server ? "username" : "query": query, "maxResults": peopleLimit(query)])
     }
 
-    /// An empty query is the whole list (the picker's first rows, the Assignee chip), a typed one the best matches.
+    /// An empty query is the whole list (the picker's first rows; the Assignee chip where the site hides its people), a
+    /// typed one the best matches.
     /// ponytail: one page of 1000, Jira's cap; Cloud keeps the assignable ones among the site's first 1000 users, so a
     /// larger site would need startAt paging.
     private func peopleLimit(_ query: String) -> String { query.isEmpty ? "1000" : "20" }
@@ -569,6 +570,42 @@ struct JiraClient: Sendable {
     /// People search for @mentions; falls back to assignable users when the site hides the directory.
     func users(matching query: String) async throws -> [JiraUser] {
         try await get("user/search", query: [server ? "username" : "query": query, "maxResults": "8"])
+    }
+
+    /// Every active person on the site, by name, one page after another. Cloud lists apps and service desk customers
+    /// too and pages up to 1000 (asked for more, it sends 1000). Server's user search stops at 100 matches whatever
+    /// the paging, so it walks the user list's cursor instead.
+    func everyone() async throws -> [JiraUser] {
+        var all: [JiraUser] = []
+        if server {
+            struct Page: Decodable {
+                let values: [JiraUser]
+                let isLast: Bool?
+                let nextCursor: String?
+            }
+            var cursor: String?
+            repeat {
+                var query = ["maxResults": "1000"]
+                query["cursor"] = cursor
+                let p: Page = try await get("user/list", query: query)
+                all += p.values
+                cursor = p.isLast == false ? p.nextCursor : nil
+            } while cursor != nil
+        } else {
+            while true {
+                let page: [JiraUser] = try await get(
+                    "users/search", query: ["startAt": "\(all.count)", "maxResults": "1000"])
+                all += page
+                if page.count < 1000 { break }
+            }
+        }
+        return Self.people(all)
+    }
+
+    /// The people among a site's users: active humans, by name.
+    static func people(_ users: [JiraUser]) -> [JiraUser] {
+        users.filter { $0.active == true && ($0.accountType ?? "atlassian") == "atlassian" }
+            .sorted { $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending }
     }
 
     func assignableUsers(project: String, query: String) async throws -> [JiraUser] {
