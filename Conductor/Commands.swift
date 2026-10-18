@@ -131,8 +131,8 @@ struct AppCommands: Commands {
         CommandMenu("Go") {
             Button("Assigned to Me") { go(.assigned) }.keyboardShortcut("1")
             Button("Reported by Me") { go(.reported) }.keyboardShortcut("2")
-            Button("Recently Viewed") { go(.recent) }.keyboardShortcut("3")
-            Button("Watching") { go(.watching) }.keyboardShortcut("4")
+            // No Recently Viewed: issueHistory() is one account's, so All Accounts has no such list.
+            Button("Watching") { go(.watching) }.keyboardShortcut("3")
             Divider()
             Button("Refresh") { session.reloadTick += 1 }.keyboardShortcut("r")
             Button("Refresh Projects") { Task { await session.refreshAll() } }
