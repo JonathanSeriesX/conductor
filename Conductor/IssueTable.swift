@@ -30,6 +30,9 @@ struct IssueTable: NSViewRepresentable {
     let lastShown: (String) -> Void
     /// Every row of the list is here: End lands on the last one.
     var complete = true
+    /// Rows still to come while the list loads, by the server's count: the table keeps room for them under its rows,
+    /// so the scroller keeps its size as their pages land, as Mail's does. 0 with none, or no count.
+    var toCome = 0
     /// End is waiting for the rest of the list: the table stays at its end, on the spinner, until every row is in.
     var pinEnd = false
     /// End pressed before every row was here (true), or a key or a scroll since then (false).
@@ -261,6 +264,20 @@ final class IssueOutline: NSOutlineView {
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         if window != nil { coordinator?.attach() }
+    }
+
+    /// The room under the last row it last tiled with (see `Coordinator.reserve`): blank, below the spinner.
+    private(set) var reserved: CGFloat = 0
+
+    // The table's height takes the rows still to come in, so the scroller stands for the whole list from its first
+    // page. Up to the last row's end plus the room, never on top of the height already there: a tile that kept it
+    // adds nothing again.
+    override func tile() {
+        super.tile()
+        reserved = coordinator?.reserve ?? 0
+        guard reserved > 0, numberOfRows > 0 else { return }
+        let end = rect(ofRow: numberOfRows - 1).maxY + reserved
+        if frame.height < end { setFrameSize(NSSize(width: frame.width, height: end)) }
     }
 
     // The rows AppKit sets up around the window are measured first.
@@ -495,6 +512,8 @@ extension IssueTable {
                 apply(new, duration: seen ? duration : nil, anchor: a)
             }
             if p.complete { settled = true }
+            // The count landed, or End let go, with the same rows: the room under them follows.
+            if outline.reserved != reserve { outline.tile() }
             // Each view its own row's cell: the views include a removed row's, fading out under a row number that is
             // another row's now, and it drew that row's content.
             outline.enumerateAvailableRowViews { view, row in
@@ -803,6 +822,7 @@ extension IssueTable {
         private func scrollToEnd() {
             guard let sv = outline?.enclosingScrollView else { return }
             pinnedToEnd = true
+            outline?.tile()  // the room for rows to come goes: the end is the spinner's
             measureEnd()
             gliding = true
             sv.glide(to: .greatestFiniteMagnitude) { [weak self] in
@@ -815,6 +835,9 @@ extension IssueTable {
         }
         /// End was pressed, and nothing the reader did since took the window off the end.
         private var pinnedToEnd = false
+        /// Room under the rows for those still to come (`IssueTable.toCome`), each at the stand-in, as the table tiles.
+        /// None while End holds the window: it waits on the spinner at the rows' end, not on blank space below it.
+        var reserve: CGFloat { pinnedToEnd ? 0 : CGFloat(parent?.toCome ?? 0) * standIn }
         /// End's glide is under way: it lands on the end itself.
         private var gliding = false
 
@@ -1139,11 +1162,12 @@ extension IssueTable {
             IndexSet(measured.filter { m in told(m.0).map { $0 != m.1 } ?? false }.map(\.0))
         }
 
-        /// The last issue row has come into the window: once each time it does, as the List's row appeared.
+        /// The last issue row has come into the window: once each time it does, as the List's row appeared. A window
+        /// past it, in the room for rows to come (the scroller dragged there), counts: their pages go on screen.
         private var lastInWindow: String?
         private func lastShown(in vis: NSRect) {
             guard let outline, let p = parent, let last = p.rows.last, let i = rowOf[last.id] else { return }
-            let shown = outline.rect(ofRow: i).intersects(vis) ? last.id : nil
+            let shown = outline.rect(ofRow: i).minY < vis.maxY ? last.id : nil
             if shown != lastInWindow, let shown { p.lastShown(shown) }
             lastInWindow = shown
         }

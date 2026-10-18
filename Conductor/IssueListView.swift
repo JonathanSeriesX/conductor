@@ -150,6 +150,13 @@ final class IssueListStore {
         let n = rows.count - stale.count
         return query != nil && !hasMore && !isLoading ? n : max(total ?? 0, n)
     }
+    /// The rows the count says are still to come while the list loads its pages, up to `cap` an account: the table
+    /// keeps room for them (see `IssueTable.toCome`). None before the first rows, once all are here or the load
+    /// stopped, or with no count.
+    var toCome: Int {
+        guard isLoading, !complete, !rows.isEmpty, let total else { return 0 }
+        return max(0, min(total, Self.cap * pages.count) - (rows.count - stale.count))
+    }
     /// True from the start: a new list is always about to load, and must not flash "No issues" first.
     var isLoading = true
     /// The next page is on its way: the only load that shows a spinner under rows already on screen.
@@ -1596,7 +1603,7 @@ private struct IssueRows: View {
                     store.loadMore()
                 }
             },
-            complete: store.complete, pinEnd: store.endPending,
+            complete: store.complete, toCome: store.toCome, pinEnd: store.endPending,
             waitForEnd: { wait in if store.endPending != wait { store.endPending = wait && !store.complete } },
             list: store.shownKey
         )
