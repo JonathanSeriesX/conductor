@@ -261,9 +261,11 @@ struct RootView: View {
         .onChange(of: filters) { old, new in
             // Another list: the preview would otherwise show an issue that is not in it. A search typed or cleared
             // is not another list: the open issue stays, so Escape clears the search first and the selection next.
-            var sameButText = old
-            sameButText.text = new.text
-            if sameButText != new { selection = [] }
+            // Nor is another order: the same issues, the selected one going to its new place, as in Mail.
+            var sameList = old
+            sameList.text = new.text
+            sameList.sort = new.sort
+            if sameList != new { selection = [] }
             storedFilters = (try? JSONEncoder().encode(new)).flatMap { String(data: $0, encoding: .utf8) } ?? ""
             session.lastFilters = new
         }

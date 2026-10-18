@@ -348,7 +348,9 @@ final class IssueListStore {
                 await restoreWhole(queries, gen: gen, shows: false)
                 guard gen == generation else { return }
             }
-            show(merged(), keep: false)  // another query: a row it lacks was never in it
+            // Another query: a row it lacks was never in it. Another order of the same list: a selected row the new
+            // order's first rows lack stays, greyed, until a page brings it, or the sort dropped the preview's row.
+            show(merged(), keep: resorted == f)
             // Only now: a load superseded before its rows reached the screen must not let the next one skip them.
             shownKey = queryKey
         }
