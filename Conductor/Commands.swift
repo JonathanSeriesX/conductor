@@ -127,7 +127,38 @@ struct AppCommands: Commands {
     @Environment(\.openWindow) private var openWindow
 
     var body: some Commands {
-        CommandGroup(replacing: .printItem) {}
+        // The File menu's first section, in here for the focused issue Clone Issue… acts on.
+        CommandGroup(replacing: .newItem) {
+            Button("New Issue…") {
+                // The list window knows which project it shows and fills it in; without one, a plain window.
+                if NSApp.windows.contains(where: {
+                    $0.identifier?.rawValue.hasPrefix("main") == true && $0.isVisible
+                }) {
+                    session.createIssueRequested = true
+                } else {
+                    openWindow(id: "create", value: CreateRequest())
+                }
+            }
+            .keyboardShortcut("n")
+            .disabled(!session.isSignedIn)
+            item("Clone Issue…", .clone, "n", [.command, .option])
+            // New Issue windows closed with something in them, as Mail's Drafts; one picked reopens its window.
+            let drafts = Drafts.shared.creates
+            if drafts.isEmpty {
+                Button("Drafts") {}.disabled(true)
+            } else {
+                Menu("Drafts") {
+                    ForEach(drafts) { d in
+                        Button(d.summary.isEmpty ? String(localized: "Untitled") : String(d.summary.prefix(60))) {
+                            openWindow(id: "create", value: d.request)
+                        }
+                    }
+                }
+            }
+            Button("Save Filter…") { list?.saveFilter?() }
+                .keyboardShortcut("s")
+                .disabled(list?.saveFilter == nil)
+        }
         CommandMenu("Go") {
             Button("Assigned to Me") { go(.assigned) }.keyboardShortcut("1")
             Button("Reported by Me") { go(.reported) }.keyboardShortcut("2")
@@ -137,27 +168,25 @@ struct AppCommands: Commands {
             Button("Refresh") { session.reloadTick += 1 }.keyboardShortcut("r")
             Button("Refresh Projects") { Task { await session.refreshAll() } }
         }
-        CommandGroup(after: .newItem) {
-            Button("Save Filter…") { list?.saveFilter?() }
-                .keyboardShortcut("s")
-                .disabled(list?.saveFilter == nil)
-        }
         CommandGroup(before: .windowList) {
             // Mail's "Message Viewer" ⌘0: the list window, after it was closed behind an issue window.
             Button("Issues") { showMain() }.keyboardShortcut("0")
+            // No Divider after it: a group placed before another shares one line with it.
             Button("Bin") { openWindow(id: "bin") }
             Divider()
         }
+        // The toolbar items are here rather than ToolbarCommands': that group sat between the window-tab items and
+        // this one, two lines on each side. First in the View menu now, this group's leading separator is the
+        // menu's first item, which AppKit hides, and it shares one line with Show Sidebar below.
         CommandGroup(before: .sidebar) {
             Button("Open Board") { list?.openBoard?() }
                 .keyboardShortcut("b", modifiers: [.command, .shift])
                 .disabled(list?.openBoard == nil)
-            Divider()
-            // Inline, as Mail's Sort By would be without its submenu.
+            // Inline, as Mail's Sort By would be without its submenu. The section draws a separator on each side, so
+            // a Divider beside it made a second line.
             Section("Sort By") {
                 SortMenuItems(sort: list?.sort ?? .constant(ListFilters.Sort())).disabled(list?.sort == nil)
             }
-            Divider()
         }
         CommandMenu("Issue") {
             item("Open in Browser", .openInBrowser, "o", [.command, .shift])
@@ -197,7 +226,6 @@ struct AppCommands: Commands {
             item("Link Issue…", .link, "l", [.command, .shift])
             item("Log Work…", .logWork, "l", [.command, .option])
             item("Create Subtask…", .subtask, "n", [.command, .shift])
-            item("Clone…", .clone)
             Divider()
             item("Refresh Issue", .refresh, "r", [.command, .shift])
             item("Activity History", .history, "h", [.command, .option])

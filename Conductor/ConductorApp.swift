@@ -9,7 +9,24 @@ struct BoardTarget: Hashable, Codable {
 @main
 struct ConductorApp: App {
     @State private var session = Session()
-    @Environment(\.openWindow) private var openWindow
+
+    /// Hides every separator that would follow another visible one, or open or close `menu`, there and in its submenus.
+    private static func hideDoubledSeparators(in menu: NSMenu) {
+        var afterSeparator = true  // one at the top goes too
+        var last: NSMenuItem?
+        for item in menu.items {
+            if item.isSeparatorItem {
+                if item.isHidden != afterSeparator { item.isHidden = afterSeparator }
+                if !afterSeparator { last = item }
+                afterSeparator = true
+            } else if !item.isHidden {
+                afterSeparator = false
+                last = nil
+            }
+            if let sub = item.submenu { hideDoubledSeparators(in: sub) }
+        }
+        if let last, !last.isHidden { last.isHidden = true }
+    }
 
     init() {
         LaunchProbe.install()
@@ -24,6 +41,15 @@ struct ConductorApp: App {
         Shortcuts.guardTyping()
         BinUndo.install()
         AttachmentOpener.installQuickLookCopy()
+        // No window tabs: no window here is one to tab, and AppKit's tab items (Show Tab Bar in View, the tab
+        // commands in Window) each brought a separator beside SwiftUI's, two lines in both menus.
+        NSWindow.allowsAutomaticWindowTabbing = false
+        // SwiftUI draws a separator at both edges of every command group and merges none with its neighbours' or
+        // AppKit's, so each group boundary showed two lines, an empty group one at a menu's end. Hidden as a menu
+        // begins tracking, before its submenus show; a hidden item leaves the accessibility tree too.
+        NotificationCenter.default.addObserver(
+            forName: NSMenu.didBeginTrackingNotification, object: nil, queue: .main
+        ) { _ in MainActor.assumeIsolated { if let m = NSApp.mainMenu { Self.hideDoubledSeparators(in: m) } } }
         _ = Self.probe
         LaunchProbe.once("installs.done")
     }
@@ -49,33 +75,6 @@ struct ConductorApp: App {
         .defaultSize(width: 1400, height: 820)
         .handlesExternalEvents(matching: ["*"])
         .commands {
-            CommandGroup(replacing: .newItem) {
-                Button("New Issue…") {
-                    // The list window knows which project it shows and fills it in; without one, a plain window.
-                    if NSApp.windows.contains(where: {
-                        $0.identifier?.rawValue.hasPrefix("main") == true && $0.isVisible
-                    }) {
-                        session.createIssueRequested = true
-                    } else {
-                        openWindow(id: "create", value: CreateRequest())
-                    }
-                }
-                .keyboardShortcut("n")
-                .disabled(!session.isSignedIn)
-                // New Issue windows closed with something in them, as Mail's Drafts; one picked reopens its window.
-                let drafts = Drafts.shared.creates
-                if drafts.isEmpty {
-                    Button("Drafts") {}.disabled(true)
-                } else {
-                    Menu("Drafts") {
-                        ForEach(drafts) { d in
-                            Button(d.summary.isEmpty ? String(localized: "Untitled") : String(d.summary.prefix(60))) {
-                                openWindow(id: "create", value: d.request)
-                            }
-                        }
-                    }
-                }
-            }
             // Takes ⌘F away from the text-editing Find panel: in this app, Find means the issue search.
             CommandGroup(replacing: .textEditing) {
                 Button("Find Issues") { session.focusSearchRequested = true }.keyboardShortcut("f")
