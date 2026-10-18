@@ -346,7 +346,9 @@ struct SidebarView: View {
     @Binding var filters: ListFilters
     @State private var showAddAccount = false
     @State private var collapsed: Set<UUID> = []
-    @State private var expandedAllProjects: Set<UUID> = []
+    /// Each account's All Projects group, open or shut, kept across launches as Mail's sidebar keeps its folders.
+    /// An account not toggled this launch reads its saved state; the dictionary is there so a toggle redraws.
+    @State private var expandedAllProjects: [UUID: Bool] = [:]
     @State private var renaming: AccountState?
     @State private var renamingPreset: Preset?
     @State private var newTitle = ""
@@ -517,8 +519,13 @@ struct SidebarView: View {
         ForEach(st.starredProjects) { projectRow($0, st) }
         DisclosureGroup(
             isExpanded: Binding(
-                get: { expandedAllProjects.contains(st.id) },
-                set: { if $0 { expandedAllProjects.insert(st.id) } else { expandedAllProjects.remove(st.id) } }
+                get: {
+                    expandedAllProjects[st.id] ?? UserDefaults.standard.bool(forKey: "allProjectsExpanded.\(st.id)")
+                },
+                set: {
+                    expandedAllProjects[st.id] = $0
+                    UserDefaults.standard.set($0, forKey: "allProjectsExpanded.\(st.id)")
+                }
             )
         ) {
             // The starred ones sit above already; a second row for the same list would light up with the first.
