@@ -190,6 +190,8 @@ private struct ListRowLabelStyle: LabelStyle {
 /// draws it, so a row is set up once.
 final class IssueTableRow: NSTableRowView {
     private var host: NSHostingController<TableCell>?
+    /// The row the view shows, by id: only that row's cell goes on it again, but where the table takes it.
+    private(set) var rowID: String?
 
     init() {
         super.init(frame: .zero)
@@ -198,8 +200,9 @@ final class IssueTableRow: NSTableRowView {
     }
     required init?(coder: NSCoder) { fatalError() }
 
-    /// Set up with `cell`: a row view never reaches the table without its content.
-    func show(_ cell: TableCell) {
+    /// Set up with `cell`, row `id`'s: a row view never reaches the table without its content.
+    func show(_ cell: TableCell, id: String) {
+        rowID = id
         if let host {
             if host.rootView != cell { host.rootView = cell }
         } else {
@@ -376,6 +379,8 @@ extension IssueTable {
         private var spare: [IssueTableRow] = []
         /// Rows set up and measured ahead of the table asking for them, by row id.
         private var prepared: [String: IssueTableRow] = [:]
+        /// During an animated `apply`, the frames rows near the window had before it, by row id.
+        private var before: [String: NSRect] = [:]
         /// Measures rows the table does not show: one row view takes each in turn.
         private lazy var sizer = IssueTableRow()
         nonisolated(unsafe) private var observers: [NSObjectProtocol] = []
@@ -490,8 +495,13 @@ extension IssueTable {
                 apply(new, duration: seen ? duration : nil, anchor: a)
             }
             if p.complete { settled = true }
+            // Each view its own row's cell: the views include a removed row's, fading out under a row number that is
+            // another row's now, and it drew that row's content.
             outline.enumerateAvailableRowViews { view, row in
-                if let view = view as? IssueTableRow, let c = cell(row) { view.show(c) }
+                guard let view = view as? IssueTableRow, items.indices.contains(row), view.rowID == items[row].id,
+                    let c = cell(row)
+                else { return }
+                view.show(c, id: items[row].id)
             }
             measureVisible()
             // The rows off screen once a fold or a glide has run, so that telling the table their heights does not retile
@@ -575,6 +585,18 @@ extension IssueTable {
             }
             let gone: NSTableView.AnimationOptions = duration == nil ? [] : [.effectFade, .slideUp]
             let come: NSTableView.AnimationOptions = duration == nil ? [] : [.effectFade, .slideDown]
+            // Where the rows within a screen of the window stand now: one the change brings into the window glides
+            // from there (see `rowViewForItem`).
+            if duration != nil, let clip = outline.enclosingScrollView?.contentView {
+                let near = outline.rows(
+                    in: outline.convert(clip.bounds, from: clip).insetBy(dx: 0, dy: -clip.bounds.height))
+                before = Dictionary(
+                    (near.location..<min(NSMaxRange(near), items.count)).map {
+                        (items[$0].id, outline.rect(ofRow: $0))
+                    },
+                    uniquingKeysWith: { a, _ in a })
+            }
+            defer { before = [:] }
             NSAnimationContext.beginGrouping()
             NSAnimationContext.current.duration = duration ?? 0
             outline.beginUpdates()
@@ -1080,9 +1102,11 @@ extension IssueTable {
         /// table asks for it; else in the sizer.
         @discardableResult private func take(_ i: Int, _ id: String, _ width: CGFloat, keep: Bool) -> CGFloat {
             guard let c = cell(i) else { return heights[id]?.height ?? IssueTable.estimate }
+            // The table's view at the row only when it is this row's: mid-change it can be a removed row's.
             let shown = rowOf[id].flatMap { outline?.rowView(atRow: $0, makeIfNecessary: false) as? IssueTableRow }
+                .flatMap { $0.rowID == id ? $0 : nil }
             let v = shown ?? (keep ? prepared[id] ?? spare.popLast() ?? IssueTableRow() : sizer)
-            v.show(c)
+            v.show(c, id: id)
             if keep, shown == nil { prepared[id] = v }
             let h = v.height(width: width)
             record(id, rowKey(i), width, h)
@@ -1149,12 +1173,26 @@ extension IssueTable {
         func outlineView(_ outlineView: NSOutlineView, rowViewForItem item: Any) -> NSTableRowView? {
             guard let id = (item as? Item)?.id, let row = rowOf[id], let c = cell(row) else { return nil }
             let view = prepared.removeValue(forKey: id) ?? spare.popLast() ?? IssueTableRow()
-            view.show(c)
+            // A view from the pool has no frame, or another row's, and inside an animated change AppKit glides it from
+            // there: a row that rows leaving above brought into the window slid down from the list's top. It starts
+            // where its row stood, gliding in with the rows around it, else where it lands. Put there at once: the
+            // table's own animator calls turn implicit animation on for the change's group, and a frame set plainly
+            // in it glided too, from the view's last place.
+            let frame = before[id] ?? outlineView.rect(ofRow: row)
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = 0
+                ctx.allowsImplicitAnimation = false
+                view.frame = frame
+            }
+            view.show(c, id: id)
             return view
         }
 
         func outlineView(_ outlineView: NSOutlineView, didRemove rowView: NSTableRowView, forRow row: Int) {
-            if let v = rowView as? IssueTableRow, spare.count < 40 { spare.append(v) }
+            // A row deleted (-1) during an animated `apply` (`before` is filled then) can still be fading out on screen:
+            // its view is not used again, or another row's content came up in it there.
+            guard row >= 0 || before.isEmpty, let v = rowView as? IssueTableRow, spare.count < 40 else { return }
+            spare.append(v)
         }
 
         func outlineView(_ outlineView: NSOutlineView, shouldSelectItem item: Any) -> Bool {

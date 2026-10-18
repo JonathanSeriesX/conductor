@@ -678,14 +678,20 @@ final class IssueListStore {
         })?.state.id
     }
 
-    /// The list's selection changed: a greyed row it left goes.
+    /// The list's selection changed: a greyed row it left goes, the rows under it gliding up, as in Mail. A turn
+    /// later, as the selection then stands, and both changes in the animation: called from the list's onChange, the
+    /// removal landed in the selection's own pass, whose transaction has none, and the rows jumped up in one frame.
     func keep(_ selection: Set<IssueTarget>) {
         kept = selection
         guard !stale.isEmpty else { return }  // or each arrow press went through every row
-        let gone = Set(rows.filter { stale.contains($0.id) && !selection.contains($0.target) }.map(\.id))
-        guard !gone.isEmpty else { return }
-        stale.subtract(gone)
-        withAnimation(.smooth(duration: 0.35)) { rows.removeAll { gone.contains($0.id) } }
+        DispatchQueue.main.async { [self] in
+            let gone = Set(rows.filter { stale.contains($0.id) && !kept.contains($0.target) }.map(\.id))
+            guard !gone.isEmpty else { return }
+            withAnimation(.smooth(duration: 0.35)) {
+                stale.subtract(gone)
+                rows.removeAll { gone.contains($0.id) }
+            }
+        }
     }
 
     /// The reader is near the end of the rows showing: the ones the whole list's load has fetched since (see `fill`)
