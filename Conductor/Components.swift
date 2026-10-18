@@ -96,8 +96,72 @@ struct Backdrop: View {
     var body: some View { Color(nsColor: .windowBackgroundColor).ignoresSafeArea() }
 }
 
-@MainActor enum ImageCache {
-    static let shared = NSCache<NSURL, NSImage>()
+enum ImageCache {
+    /// NSCache is thread-safe: launch fills it from other threads before the first layout.
+    nonisolated(unsafe) static let shared = NSCache<NSURL, NSImage>()
+
+    /// The colour space SwiftUI rasterizes a vector image in: the screen's (the main one's, as `NSScreen` has it).
+    /// CoreGraphics answers on any thread; the first call pays for the window server connection.
+    static var space: CGColorSpace { CGDisplayCopyColorSpace(CGMainDisplayID()) }
+
+    /// Every size, in points, an icon or avatar is drawn at: list rows, chips, the board, the sidebar, comments.
+    private static let sizes: [CGFloat] = [12, 14, 16, 18, 20, 22, 26]
+    /// The backing scales of the displays online at launch, from CoreGraphics on whichever thread asks first (NSScreen
+    /// cost the main thread 40 ms that early); 2x when none answers. A rep for a scale no screen has was a fifth of
+    /// every icon's memory.
+    static let scales: Set<CGFloat> = {
+        var (ids, n) = ([CGDirectDisplayID](repeating: 0, count: 16), UInt32(0))
+        guard CGGetOnlineDisplayList(16, &ids, &n) == .success else { return [2] }
+        let s = Set(
+            ids.prefix(Int(n)).compactMap { id -> CGFloat? in
+                guard let mode = CGDisplayCopyDisplayMode(id), mode.width > 0 else { return nil }
+                return (CGFloat(mode.pixelWidth) / CGFloat(mode.width)).rounded()
+            })
+        return s.isEmpty ? [2] : s
+    }()
+
+    /// Jira's SVG icons as bitmaps, rasterized once at each of those sizes and `scales` the way SwiftUI rasterizes a
+    /// vector on every pass (the screen's colour space, half floats): the same pixels, without the work. Nil for
+    /// anything else, which `NSImage(data:)` reads as before; a non-square SVG stays a vector.
+    static func svg(_ data: Data, space: CGColorSpace = ImageCache.space) -> NSImage? {
+        guard data.starts(with: Data("<svg".utf8)) || data.starts(with: Data("<?xml".utf8)),
+            let vector = NSImage(data: data), vector.size.width > 0, vector.size.width == vector.size.height
+        else { return nil }
+        let out = NSImage(size: vector.size)
+        for px in Set(sizes.flatMap { s in scales.map { Int(s * $0) } }) {
+            let info =
+                CGBitmapInfo.floatComponents.rawValue | CGBitmapInfo.byteOrder16Little.rawValue
+                | CGImageAlphaInfo.premultipliedLast.rawValue
+            guard
+                let ctx = CGContext(
+                    data: nil, width: px, height: px, bitsPerComponent: 16, bytesPerRow: 0, space: space,
+                    bitmapInfo: info)
+            else { return vector }
+            ctx.scaleBy(x: CGFloat(px) / vector.size.width, y: CGFloat(px) / vector.size.height)
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: false)
+            vector.draw(in: NSRect(origin: .zero, size: vector.size))
+            NSGraphicsContext.restoreGraphicsState()
+            guard let cg = ctx.makeImage() else { return vector }
+            let rep = NSBitmapImageRep(cgImage: cg)
+            rep.size = vector.size  // one point size for all: NSImage draws the rep whose pixels fit the destination
+            out.addRepresentation(rep)
+        }
+        return out
+    }
+
+    /// Reads and decodes every image of `urls` that is on disk into memory, on the calling thread and its siblings,
+    /// so the first layout finds them all here rather than reading and decoding each on the main thread.
+    static func warm(_ urls: Set<URL>) {
+        let (urls, space) = (Array(urls), ImageCache.space)
+        DispatchQueue.concurrentPerform(iterations: urls.count) { i in
+            let key = urls[i] as NSURL
+            guard shared.object(forKey: key) == nil, let data = DiskCache.imageDataNow(for: urls[i]),
+                let img = svg(data, space: space) ?? NSImage(data: data)
+            else { return }
+            shared.setObject(img, forKey: key)
+        }
+    }
 }
 
 /// Image that goes through the Jira client so site-hosted avatars and thumbnails get auth.
@@ -114,7 +178,12 @@ struct RemoteImage: View {
         if let loaded { return loaded }
         guard let url else { return nil }
         if let hit = ImageCache.shared.object(forKey: url as NSURL) { return hit }
-        guard let data = DiskCache.imageDataNow(for: url), let img = NSImage(data: data) else { return nil }
+        // A thumbnail (`fit`) is drawn far larger than any icon size: it keeps its vector.
+        guard let data = DiskCache.imageDataNow(for: url),
+            let img = (fit ? nil : ImageCache.svg(data)) ?? NSImage(data: data)
+        else { return nil }
+        LaunchProbe.once(
+            "img \(url.lastPathComponent) \(data.prefix(4).map { String(format: "%02x", $0) }.joined()) \(data.count)B")
         ImageCache.shared.setObject(img, forKey: url as NSURL)
         return img
     }
@@ -129,9 +198,10 @@ struct RemoteImage: View {
         }
         .task(id: url) {
             guard let url, image == nil else { return }
-            guard let client = session.client(for: url), let data = try? await client.data(for: url),
-                let img = await DiskCache.decodeImage(data, maxPixels: 256)
-            else { return }
+            guard let client = session.client(for: url), let data = try? await client.data(for: url) else { return }
+            var decoded = fit ? nil : ImageCache.svg(data)
+            if decoded == nil { decoded = await DiskCache.decodeImage(data, maxPixels: 256) }
+            guard let img = decoded else { return }
             DiskCache.saveImage(data, for: url)
             ImageCache.shared.setObject(img, forKey: url as NSURL)
             loaded = img
@@ -142,6 +212,8 @@ struct RemoteImage: View {
 struct Avatar: View {
     let user: JiraUser?
     var size: CGFloat = 22
+    /// The name as a tooltip; a list row has it only under the pointer (see `help(_:tips:)`).
+    var tips = true
     @Environment(\.backgroundProminence) private var prominence
 
     var body: some View {
@@ -158,7 +230,7 @@ struct Avatar: View {
         .clipShape(.circle)
         // A ring on a selected row, so an orange avatar still reads on the orange selection. The symbol has its own.
         .overlay { if prominence == .increased, user != nil { Circle().stroke(.white.opacity(0.9), lineWidth: 1.5) } }
-        .help(user?.displayName ?? String(localized: "Unassigned"))
+        .help(Text(user?.displayName ?? String(localized: "Unassigned")), tips: tips)
         .accessibilityLabel(user?.displayName ?? String(localized: "Unassigned"))
     }
 }
@@ -167,6 +239,13 @@ extension View {
     /// Greys a coloured element while its window is inactive, as the system does with sidebar icons and the
     /// selection. Text stays as it is; pills, badges and every remote image (icons, avatars) lose their colour.
     func inactiveDim() -> some View { modifier(InactiveDim()) }
+
+    /// `help(text)` with `tips` on; off, the text stays for VoiceOver alone, which is the half of `help` that is not
+    /// the tooltip. A tooltip costs its view a tracking area that every scroll moves: a list row has them only while
+    /// the pointer is over it, or four per row cost a fast scroll a quarter of its frames.
+    @ViewBuilder func help(_ text: Text, tips: Bool) -> some View {
+        if tips { help(text) } else { accessibilityHint(text) }
+    }
 }
 
 private struct InactiveDim: ViewModifier {
@@ -225,6 +304,7 @@ struct StatusPill: View {
 struct PriorityIcon: View {
     let priority: Priority
     var size: CGFloat = 14
+    var tips = true
     @Environment(\.backgroundProminence) private var prominence
 
     var body: some View {
@@ -233,7 +313,7 @@ struct PriorityIcon: View {
             .frame(width: size, height: size)
             .padding(2)  // constant so the glyph does not shift when the disc appears
             .background(prominence == .increased ? .white.opacity(0.9) : .clear, in: .circle)
-            .help(priority.name)
+            .help(Text(priority.name), tips: tips)
     }
 }
 
@@ -987,6 +1067,12 @@ extension NSScrollView {
         let top = -contentInsets.top
         // SwiftUI's scroll views and tables are flipped: y grows downwards.
         let to = NSPoint(x: clip.bounds.origin.x, y: min(max(y, top), max(top, doc.frame.height - clip.bounds.height)))
+        // From afar (End on a list of thousands), a glide set up and drew a screen of other rows every frame: it starts
+        // a screen short of where it lands.
+        let far = to.y - clip.bounds.origin.y
+        if animated, abs(far) > 2 * clip.bounds.height {
+            clip.scroll(to: NSPoint(x: to.x, y: to.y - (far > 0 ? clip.bounds.height : -clip.bounds.height)))
+        }
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = animated ? 0.2 : 0
             ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)

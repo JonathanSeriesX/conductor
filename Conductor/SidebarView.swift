@@ -355,6 +355,7 @@ struct SidebarView: View {
     var body: some View {
         let selection = Binding<ListFilters?>(
             get: { session.preset(matching: filters)?.filters ?? filters }, set: { if let f = $0 { filters = f } })
+        let _ = LaunchProbe.tick("sidebar.body")
         List(selection: selection) {
             if session.states.count > 1 {
                 Section("All Accounts") {

@@ -4,6 +4,18 @@ import SwiftUI
 import Synchronization
 import UniformTypeIdentifiers
 
+/// What the cached branch of `IssueDetailStore.load` puts in place for one issue.
+struct PageSeed: Sendable {
+    let target: IssueTarget
+    let issue: Issue
+    let children: [Issue]
+    let related: [String: Issue]
+    let editMeta: EditMeta?
+    let transitions: [Transition]
+    let sprints: [Sprint]
+    var built = ProcessInfo.processInfo.systemUptime
+}
+
 @MainActor @Observable
 final class IssueDetailStore {
     var issue: Issue?
@@ -63,7 +75,92 @@ final class IssueDetailStore {
     private(set) var account: UUID?
     func holds(_ state: AccountState, _ key: String) -> Bool { self.key == key && account == state.id }
 
+    /// A store already holding the seed's page: `load` then goes straight to the network, as for an issue it shows.
+    init(seed: PageSeed? = nil) {
+        guard let seed else { return }
+        key = seed.target.key
+        account = seed.target.accountID
+        issue = seed.issue
+        editMeta = seed.editMeta
+        transitions = seed.transitions
+        children = seed.children
+        sprints = seed.sprints
+        related = seed.related
+        LaunchProbe.once("page.seeded")
+        LaunchProbe.once("issue.shown")
+    }
+
+    /// The issue the main window's preview shows, kept across launches: the next launch builds its page early.
+    static var lastPreviewed: IssueTarget? {
+        get {
+            guard let raw = UserDefaults.standard.string(forKey: "lastPreviewed"), let bar = raw.firstIndex(of: "|"),
+                let id = UUID(uuidString: String(raw[..<bar]))
+            else { return nil }
+            return IssueTarget(accountID: id, key: String(raw[raw.index(after: bar)...]))
+        }
+        set {
+            UserDefaults.standard.set(newValue.map { "\($0.accountID.uuidString)|\($0.key)" }, forKey: "lastPreviewed")
+        }
+    }
+
+    /// The page `seed` built at launch, until the first preview takes it; once taken, a late seed is not kept.
+    private nonisolated static let seeded = Mutex<(page: PageSeed?, taken: Bool)>((nil, false))
+
+    /// The launch's page for `target`, to the first preview only: whatever it shows, the seed goes, so a page opened
+    /// later never starts from what the disk held at launch. ponytail: a launch whose window restores no preview
+    /// leaves it to a first preview within 3 s; past that the network may have rewritten the disk, so it is dropped.
+    static func takeSeed(_ target: IssueTarget) -> PageSeed? {
+        seeded.withLock { s in
+            defer { s = (nil, true) }
+            guard let page = s.page, page.target == target, ProcessInfo.processInfo.systemUptime - page.built < 3
+            else { return nil }
+            return page
+        }
+    }
+
+    /// Builds `target`'s page from its account's launch decode and the disk, on the calling thread, as the cached
+    /// branch of `load` would: so the preview restored at launch draws the issue in its first pass, not a spinner and
+    /// then the issue. Nothing for an issue that branch would first complete or fetch from Jira.
+    nonisolated static func seed(_ target: IssueTarget, account: Account, cached c: CachedAccount) {
+        let key = target.key
+        // `AccountState.apply`'s peek: each row's first copy across the cached lists, in that dictionary's order.
+        var peek: [String: Issue] = [:]
+        for issues in c.lists.values { for i in issues where peek[i.key] == nil { peek[i.key] = i } }
+        guard let issue = pick(DiskCache.load(account: account, name: "issue-\(key)"), peek[key]), issue.isComplete
+        else { return }
+        let children: [Issue] = DiskCache.load(account: account, name: "children-\(key)") ?? []
+        // As `known`: memory first, then each issue's own file.
+        let keys = relatedKeys(of: issue, children: children)
+        var related: [String: Issue] = [:]
+        for k in keys { related[k] = peek[k] }
+        for k in keys.filter({ related[$0] == nil }) {
+            if let i = DiskCache.load(Issue.self, account: account, name: "issue-\(k)") { related[i.key] = i }
+        }
+        let workflow = AccountState.workflowKey(issue)
+        let meta = DiskCache.load([String: EditMeta].self, account: account, name: "workflows-editmeta")?[workflow]
+        var sprints: [Sprint] = []
+        if let project = issue.fields.project?.key, let field = c.sprintField, meta?.fields[field] != nil {
+            sprints = DiskCache.load(account: account, name: "sprints-\(project)") ?? []
+        }
+        let page = PageSeed(
+            target: target, issue: issue, children: children, related: related, editMeta: meta,
+            transitions: c.transitions[workflow] ?? [], sprints: sprints)
+        seeded.withLock { if !$0.taken { $0.page = page } }
+        ImageCache.warm(AccountState.imageURLs([issue] + children + Array(related.values), projects: [], me: nil))
+    }
+
+    /// Memory's copy when it is full, no less complete than the disk's and at least as new; else the disk's.
+    private nonisolated static func pick(_ disk: Issue?, _ peek: Issue?) -> Issue? {
+        if let p = peek, p.fields.comment != nil, p.isComplete || disk?.isComplete != true,
+            (p.fields.updated ?? .distantPast) >= (disk?.fields.updated ?? .distantPast)
+        {
+            return p
+        }
+        return disk
+    }
+
     func load(_ state: AccountState, key: String, full: Bool = true) async {
+        LaunchProbe.tick("detail.load")
         let client = state.client
         var pending: Task<Issue, Error>?
         if !holds(state, key) {
@@ -79,13 +176,7 @@ final class IssueDetailStore {
                 full ? DiskCache.loadAsync(account: account, name: "children-\(key)") : nil
             let (cached, kids) = await (diskIssue, diskChildren)
             guard holds(state, key) else { return }
-            // Memory's copy when it is full, no less complete than the disk's and at least as new.
-            var next = cached
-            if let p = state.peek[key], p.fields.comment != nil, p.isComplete || cached?.isComplete != true,
-                (p.fields.updated ?? .distantPast) >= (cached?.fields.updated ?? .distantPast)
-            {
-                next = p
-            }
+            var next = Self.pick(cached, state.peek[key])
             if next == nil {
                 // Never opened on this Mac: wait for the whole issue rather than show the row's copy and grow it
                 // a moment later. Right once beats fast and shifting; past a second and a half, the row's copy.
@@ -122,6 +213,7 @@ final class IssueDetailStore {
             gone = false
             allLabels = []
             related = seeds
+            LaunchProbe.once("issue.shown")
         }
         do {
             let i = pending ?? Task { try await client.issue(key) }
@@ -132,6 +224,7 @@ final class IssueDetailStore {
             let fresh = try await i.value
             guard holds(state, key) else { return }
             update(\.issue, fresh)
+            LaunchProbe.once("issue.fresh")
             DiskCache.saveAsync(fresh, account: state.account, name: "issue-\(key)")
             Spotlight.index([fresh], host: state.host)
             if let fresh = try? await t, holds(state, key) {
@@ -221,7 +314,7 @@ final class IssueDetailStore {
     }
 
     /// The keys this page can open with a click.
-    private static func relatedKeys(of issue: Issue?, children: [Issue]) -> [String] {
+    private nonisolated static func relatedKeys(of issue: Issue?, children: [Issue]) -> [String] {
         guard let issue else { return [] }
         var keys =
             (issue.fields.subtasks ?? []).map(\.key) + children.map(\.key)
@@ -274,8 +367,21 @@ struct IssueDetailView: View {
     @Environment(Session.self) private var session
     @Environment(\.jira) private var jira
     @Environment(\.openWindow) private var openWindow
-    @State private var store = IssueDetailStore()
+    @State private var store: IssueDetailStore
     private var key: String { target.key }
+
+    init(
+        target: IssueTarget, open: @escaping (IssueTarget) -> Void, back: (() -> Void)? = nil, embedded: Bool = false,
+        forward: Bool = true
+    ) {
+        self.target = target
+        self.open = open
+        self.back = back
+        self.embedded = embedded
+        self.forward = forward
+        // The preview restored at launch starts on the page built behind its account's decode, when it is ready.
+        _store = State(initialValue: IssueDetailStore(seed: embedded ? IssueDetailStore.takeSeed(target) : nil))
+    }
     /// Keys from subtasks, links and parents live in the same account as this issue.
     private func open(_ key: String) {
         let t = IssueTarget(accountID: target.accountID, key: key)
@@ -356,6 +462,7 @@ struct IssueDetailView: View {
 
     var body: some View {
         Group {
+            let _ = LaunchProbe.tick(store.issue == nil ? "detail.body.empty" : "detail.body")
             if let issue = store.issue {
                 content(issue)
             } else if store.gone {

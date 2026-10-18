@@ -173,6 +173,16 @@ final class JQLTests: XCTestCase {
         let edited = [try row("B-4", 9, b), try row("B-1", 7, b), try row("B-2", 5, b)]
         XCTAssertEqual(
             IssueListStore.refreshed(old, fetched: edited, more: true).map(\.issue.key), ["B-4", "B-1", "B-2", "B-3"])
+        // The whole list from disk goes under the first page on screen, which is as new or newer: B-0 came since,
+        // and the rest runs on from where that page ends, once each.
+        let whole = old + [try row("B-5", 1, b), try row("B-6", 0, b)]
+        XCTAssertEqual(
+            IssueListStore.refreshed(whole, fetched: fresh, more: true).map(\.issue.key),
+            ["B-0", "B-1", "B-3", "B-4", "B-5", "B-6"])
+        // Every account whole: the merge waits on none and is one plain sort.
+        XCTAssertEqual(
+            IssueListStore.merge([rowsA, whole], bound: nil, sort: sort).map(\.issue.key),
+            ["A-1", "B-1", "A-9", "A-10", "A-2", "B-2", "B-3", "B-4", "B-5", "B-6"])
     }
 
     /// A selected row a reload drops stays where it was, after the row above it; one that only moved is not kept.
@@ -204,6 +214,66 @@ final class JQLTests: XCTestCase {
         XCTAssertEqual(keys(moved), ["A-3", "A-1", "A-2", "A-4"])
         XCTAssertTrue(moved.1.isEmpty, "a row that only moved is not greyed")
         XCTAssertEqual(keys(IssueListStore.keeping([], of: old, in: try rows("A-1"))), ["A-1"])
+    }
+
+    /// A refresh of a whole list: the keys in the server's order, each once, each the newest copy there is (a changed
+    /// row, else the row as it stands), a key nobody has left out; rows that tie keep the order they stand in.
+    @MainActor func testASyncTakesTheServersOrderAndTheNewestRows() throws {
+        let st = AccountState(account: Account(site: URL(string: "https://a.atlassian.net")!, email: "e", token: "t"))
+        func row(_ key: String, _ second: Int, _ summary: String = "s") throws -> ListRow {
+            let issue = try st.client.decoder.decode(
+                Issue.self,
+                from: Data(
+                    #"{"id":"1","key":"\#(key)","fields":{"summary":"\#(summary)","updated":"2026-10-05T09:00:\#(String(format: "%02d", second)).000Z","status":{"id":"1","name":"To Do","statusCategory":{"key":"new","name":"To Do"}},"issuetype":{"id":"1","name":"Task"}}}"#
+                        .utf8))
+            return ListRow(issue: issue, state: st)
+        }
+        let rows = [try row("A-1", 9), try row("A-2", 8), try row("A-3", 8), try row("A-4", 5), try row("A-5", 3)]
+        // A-4 was edited and leads; A-5 left the list; A-6 joined (fetched by key); A-7 is listed but came in neither.
+        // The server ties A-3 and A-2 the other way round.
+        let out = IssueListStore.synced(
+            ["A-4", "A-1", "A-3", "A-2", "A-7", "A-6", "A-4"], rows: rows,
+            changed: [try row("A-4", 10, "edited"), try row("A-6", 1)],
+            sort: ListFilters.Sort(field: .updated, descending: true))
+        XCTAssertEqual(out.map(\.issue.key), ["A-4", "A-1", "A-2", "A-3", "A-6"])
+        XCTAssertEqual(out[0].issue.fields.summary, "edited")
+        XCTAssertTrue(out[1] === rows[0], "an unchanged row is the same object, which the redraw skips")
+
+        // The changes since the last pass: the list's query narrowed by the server's own clock, newest first.
+        XCTAssertEqual(
+            IssueListStore.changed(#"project = "KAN" AND statusCategory != Done ORDER BY updated DESC"#, minutes: 8),
+            #"(project = "KAN" AND statusCategory != Done) AND (updated >= -8m OR lastViewed >= -8m) ORDER BY updated DESC"#
+        )
+        XCTAssertEqual(
+            IssueListStore.changed("assignee = currentUser() order by created", minutes: 5),
+            "(assignee = currentUser()) AND (updated >= -5m OR lastViewed >= -5m) ORDER BY updated DESC")
+        XCTAssertEqual(
+            IssueListStore.changed("ORDER BY key", minutes: 5),
+            "(updated >= -5m OR lastViewed >= -5m) ORDER BY updated DESC")
+    }
+
+    /// Search suggestions: the five newest issues in memory by key prefix or summary, a key once across accounts.
+    @MainActor func testSuggestionsAreTheFiveNewestMatches() throws {
+        let site = { (h: String) in
+            AccountState(account: Account(site: URL(string: "https://\(h).atlassian.net")!, email: "e", token: "t"))
+        }
+        let (a, b) = (site("a"), site("b"))
+        func put(_ key: String, _ summary: String, _ second: Int, _ st: AccountState) throws {
+            st.peek[key] = try st.client.decoder.decode(
+                Issue.self,
+                from: Data(
+                    #"{"id":"1","key":"\#(key)","fields":{"summary":"\#(summary)","updated":"2026-10-05T09:00:\#(String(format: "%02d", second)).000Z","status":{"id":"1","name":"To Do","statusCategory":{"key":"new","name":"To Do"}},"issuetype":{"id":"1","name":"Task"}}}"#
+                        .utf8))
+        }
+        for n in 1...7 { try put("QA-\(n)", "Fix the login", n, a) }
+        try put("QA-8", "Unrelated", 50, a)
+        try put("QA-7", "Fix the login, the other site's", 59, b)
+        try put("ST-1", "Login page", 40, b)
+        XCTAssertEqual(
+            IssueListView.newestKnown(matching: "login", in: [a, b]).map(\.key),
+            ["ST-1", "QA-7", "QA-6", "QA-5", "QA-4"])
+        XCTAssertEqual(IssueListView.newestKnown(matching: "qa-8", in: [a, b]).map(\.key), ["QA-8"], "a key prefix")
+        XCTAssertEqual(IssueListView.newestKnown(matching: "nothing", in: [a, b]).map(\.key), [])
     }
 
     /// Jira puts undated issues first under "duedate DESC"; the list puts them last whichever way it sorts.
@@ -1378,5 +1448,204 @@ final class LabelMatchTests: XCTestCase {
 
     func testParseSplitsOnCommasAndTurnsSpacesIntoDashes() {
         XCTAssertEqual(Labels.parse("a, b c,,"), ["a", "b-c"])
+    }
+}
+
+final class IssueTableTests: XCTestCase {
+    /// The table's rows follow the list by steps the outline view takes one after another; a page landing is one
+    /// insert and an edited row gone to the top is one move, the glide.
+    func testStepsTakeTheRowsToTheirNewOrder() {
+        typealias Table = IssueTable.Coordinator
+        func run(_ old: [String], _ new: [String]) -> [String] {
+            var rows = old
+            for step in Table.steps(from: old, to: new)! {
+                switch step {
+                case .remove(let r): rows = rows.indices.filter { !r.contains($0) }.map { rows[$0] }
+                case .move(let a, let b): rows.insert(rows.remove(at: a), at: b)
+                case .insert(let r): rows.insert(contentsOf: new[r], at: r.lowerBound)
+                }
+            }
+            return rows
+        }
+        XCTAssertEqual(
+            Table.steps(from: ["a", "b", "~spinner"], to: ["a", "b", "c", "d"]), [.remove([2]), .insert(2..<4)])
+        XCTAssertEqual(Table.steps(from: ["a", "b", "c", "d"], to: ["c", "a", "b", "d"]), [.move(2, 0)])
+        XCTAssertEqual(Table.steps(from: ["a", "b"], to: ["a", "b"]), [])
+        XCTAssertEqual(Table.steps(from: [], to: ["a", "b"]), [.insert(0..<2)])
+        XCTAssertEqual(Table.steps(from: ["a", "x", "b"], to: ["a", "b"]), [.remove([1])])
+        var g = SystemRandomNumberGenerator()
+        for _ in 0..<200 {
+            let old = (0..<Int.random(in: 0...12, using: &g)).map { "r\($0)" }
+            let added = (0..<Int.random(in: 0...4, using: &g)).map { "n\($0)" }
+            let new = (old.filter { _ in Bool.random(using: &g) } + added).shuffled(using: &g)
+            XCTAssertEqual(run(old, new), new, "\(old) → \(new)")
+        }
+        // A whole list sorted anew is too many moves to take one by one: the table reloads instead.
+        XCTAssertNil(Table.steps(from: ["a", "b", "c", "d"], to: ["d", "c", "b", "a"], moves: 2))
+        XCTAssertEqual(Table.steps(from: ["a", "b", "c", "d"], to: ["c", "a", "b", "d"], moves: 1), [.move(2, 0)])
+    }
+
+    /// In a list loaded whole, a row not measured yet stands at the mean of the measured ones, in whole points, and
+    /// keeps the height it was first given until it is measured: a stand-in that followed the mean moved every row
+    /// below it.
+    @MainActor func testAnUnmeasuredRowStandsAtTheMeanItWasFirstGiven() throws {
+        typealias Table = IssueTable.Coordinator
+        let c = Table()
+        let height = { (id: String) in c.outlineView(NSOutlineView(), heightOfRowByItem: Table.Item(id)) }
+        c.record("a", Table.RowKey(), 400, 56)
+        c.record("b", Table.RowKey(), 400, 72)
+        XCTAssertEqual(height("x"), 64)
+        c.record("c", Table.RowKey(), 400, 57)
+        XCTAssertEqual(height("x"), 64, "given once")
+        XCTAssertEqual(height("y"), 62)
+        c.record("b", Table.RowKey(), 400, 56)  // measured again: counted once
+        XCTAssertEqual(height("z"), 56)
+    }
+
+    /// A run of selected rows is one block: no line at its rows or over its first, and none under the last row.
+    /// A row is at the height it was last measured at, whatever width or content that was for, else the estimate.
+    @MainActor func testARowIsAtItsLastMeasureElseTheEstimate() {
+        typealias Table = IssueTable.Coordinator
+        let c = Table()
+        c.heights["a"] = (Table.RowKey(), -1, 72)
+        XCTAssertEqual(c.outlineView(NSOutlineView(), heightOfRowByItem: Table.Item("a")), 72)
+        XCTAssertEqual(c.outlineView(NSOutlineView(), heightOfRowByItem: Table.Item("b")), IssueTable.estimate)
+    }
+
+    /// A row is measured again for what moves its height (its summary, its date, its place), not for its status.
+    @MainActor func testARowIsMeasuredAgainForItsSummaryNotItsStatus() throws {
+        let st = AccountState(account: Account(site: URL(string: "https://a.atlassian.net")!, email: "e", token: "t"))
+        func row(_ summary: String, _ status: String, _ second: Int) throws -> DisplayRow {
+            let issue = try st.client.decoder.decode(
+                Issue.self,
+                from: Data(
+                    #"{"id":"1","key":"A-1","fields":{"summary":"\#(summary)","updated":"2026-10-05T09:00:\#(String(format: "%02d", second)).000Z","status":{"id":"1","name":"\#(status)","statusCategory":{"key":"new","name":"To Do"}},"issuetype":{"id":"1","name":"Task"}}}"#
+                        .utf8))
+            return DisplayRow(row: ListRow(issue: issue, state: st))
+        }
+        let key = IssueTable.Coordinator.key
+        XCTAssertEqual(key(try row("Fix it", "To Do", 1)), key(try row("Fix it", "Doing", 1)))
+        XCTAssertNotEqual(key(try row("Fix it", "To Do", 1)), key(try row("Fix it now", "To Do", 1)))
+        XCTAssertNotEqual(key(try row("Fix it", "To Do", 1)), key(try row("Fix it", "To Do", 2)))
+    }
+
+    /// A measured row the table holds at another height is told again, against the height the table was given, not
+    /// the last measure: rows the table took at the estimate stayed squashed when the measure was compared with itself.
+    /// A row the table has not asked for yet takes its measure when it does.
+    func testRowsTheTableHasAtAnotherHeightAreToldAgain() {
+        let told: [CGFloat?] = [24, 24, 56, nil]
+        let changes = { IssueTable.Coordinator.changes($0) { told[$0] } }
+        XCTAssertEqual(changes([(0, 56), (1, 56), (2, 56), (3, 72)]), [0, 1])
+        XCTAssertEqual(changes([(2, 56)]), [])
+    }
+
+    /// The table takes a row's measure only when told: asked again, it gets the height it was given last.
+    @MainActor func testTheTableKeepsTheHeightItWasGivenUntilTold() {
+        typealias Table = IssueTable.Coordinator
+        let c = Table()
+        let height = { (id: String) in c.outlineView(NSOutlineView(), heightOfRowByItem: Table.Item(id)) }
+        c.heights["a"] = (Table.RowKey(), 400, 56)
+        XCTAssertEqual(height("a"), 56)
+        c.record("a", Table.RowKey(), 400, 72)
+        XCTAssertEqual(height("a"), 56, "measured since, not told yet")
+    }
+
+    /// While rows change around it, the window holds the first row under the toolbar and chips where it is, or the
+    /// list's end once End was pressed or the reader is within a row of it; nothing at the top, where rows that come
+    /// in above push the others down, or while every row fits.
+    func testTheWindowHoldsItsFirstRowOrTheEnd() {
+        typealias Table = IssueTable.Coordinator
+        let visible = [
+            (id: "a", frame: NSRect(x: 0, y: 400, width: 420, height: 56)),
+            (id: "b", frame: NSRect(x: 0, y: 456, width: 420, height: 72)),
+            (id: "c", frame: NSRect(x: 0, y: 528, width: 420, height: 56)),
+        ]
+        // 89 points of toolbar and chips over the rows: "a" ends under them, "b" is the first row in sight.
+        let mid = NSRect(x: 0, y: 380, width: 420, height: 700)
+        XCTAssertEqual(
+            Table.anchor(clip: mid, inset: 89, height: 10_000, pinned: false, visible: visible), .row("b", 76))
+        XCTAssertEqual(Table.anchor(clip: mid, inset: 89, height: 10_000, pinned: true, visible: visible), .end)
+        let nearEnd = NSRect(x: 0, y: 9_250, width: 420, height: 700)  // 50 points short of the end, the last row 56
+        XCTAssertEqual(Table.anchor(clip: nearEnd, inset: 89, height: 10_000, pinned: false, visible: visible), .end)
+        XCTAssertNotEqual(
+            Table.anchor(clip: nearEnd, inset: 89, height: 10_000, pinned: false, settled: false, visible: visible),
+            .end, "a list still coming in ends where its rows so far stop")
+        let top = NSRect(x: 0, y: -89, width: 420, height: 700)
+        XCTAssertNil(Table.anchor(clip: top, inset: 89, height: 10_000, pinned: false, visible: visible))
+        XCTAssertNil(Table.anchor(clip: mid, inset: 89, height: 600, pinned: true, visible: visible))
+        // Rows above "b" grew by 40: the window moves down with it; the end follows the document, kept inside it.
+        let grown = { (id: String) in id == "b" ? NSRect(x: 0, y: 496, width: 420, height: 72) : nil }
+        XCTAssertEqual(Table.origin(for: .row("b", 76), frame: grown, height: 10_040, clip: 700, inset: 89), 420)
+        XCTAssertEqual(Table.origin(for: .end, frame: grown, height: 10_040, clip: 700, inset: 89), 9_340)
+        XCTAssertNil(Table.origin(for: .row("gone", 0), frame: grown, height: 10_040, clip: 700, inset: 89))
+        XCTAssertEqual(Table.origin(for: .end, frame: grown, height: 300, clip: 700, inset: 89), -89)
+    }
+
+    /// A list opens on the first row of its place that is still there with the next one right under it, at that row's
+    /// offset: an issue edited away since (to the top, or out of the list) takes the window nowhere. The end stays the
+    /// end; with none of its rows left, or no place, the list opens at its top.
+    func testAListOpensOnTheRowItWasLeftOn() {
+        typealias Table = IssueTable.Coordinator
+        let place: [Table.Anchor] = [.row("a", -5), .row("b", 51), .row("c", 107)]
+        XCTAssertEqual(Table.restored(place, in: ["x", "a", "b", "c", "y"]), .row("a", -5))
+        XCTAssertEqual(Table.restored(place, in: ["a", "x", "y", "b", "c"]), .row("b", 51), "a went to the top")
+        XCTAssertEqual(Table.restored(place, in: ["x", "b", "c"]), .row("b", 51), "a left the list")
+        XCTAssertEqual(Table.restored(place, in: ["a", "c", "x"]), .row("a", -5), "b left the list, c is under a")
+        XCTAssertEqual(Table.restored(place, in: ["x", "c"]), .row("c", 107))
+        XCTAssertEqual(Table.restored(place, in: ["a", "n", "b", "c"]), .row("b", 51), "an issue came in under a")
+        XCTAssertNil(Table.restored(place, in: ["x", "y"]))
+        XCTAssertNil(Table.restored([], in: ["x", "y"]))
+        XCTAssertEqual(Table.restored([.end], in: ["x"]), .end)
+        XCTAssertEqual(Table.origin(for: .top, frame: { _ in nil }, height: 10_000, clip: 700, inset: 89), -89)
+        // The memory keeps places in the defaults as JSON.
+        let data = try! JSONEncoder().encode(place + [.end, .top])
+        XCTAssertEqual(try! JSONDecoder().decode([Table.Anchor].self, from: data), place + [.end, .top])
+        // A typed search over the same JQL is a list of its own.
+        let id = UUID()
+        XCTAssertNotEqual(ListKey(accounts: [id], jql: "j"), ListKey(accounts: [id], jql: "j", typed: true))
+    }
+
+    /// While rows change, the window holds a row that keeps its place among the rows both orders have, not one an edit
+    /// moved away, nor the rows it left; a row gone or come in between moves nothing. When every row moved, any row
+    /// still there does.
+    func testTheWindowHoldsARowThatKeptItsPlace() {
+        typealias Table = IssueTable.Coordinator
+        let old = ["a", "b", "c", "d", "e", "f", "g", "h"]
+        XCTAssertEqual(Table.staying(0..<8, of: old, in: old), Set(old))
+        XCTAssertEqual(
+            Table.staying(0..<8, of: old, in: ["c", "a", "b", "d", "e", "f", "g", "h"]), ["e", "f", "g", "h"])
+        XCTAssertEqual(Table.staying(0..<4, of: ["a", "b", "c", "d"], in: ["a", "c", "d"]), ["a", "c", "d"])
+        XCTAssertEqual(Table.staying(0..<3, of: ["a", "b", "c"], in: ["a", "x", "b", "c"]), ["a", "b", "c"])
+        XCTAssertEqual(Table.staying(0..<3, of: ["a", "b", "c"], in: ["c", "b", "a"]), ["a", "b", "c"])
+        XCTAssertEqual(Table.staying(2..<4, of: old, in: old), ["c", "d"])
+    }
+
+    func testSeparatorsStopAtSelectedRowsAndTheLastRow() {
+        let selected: Set<Int> = [1, 2, 3]
+        let lines = (0..<6).map { IssueTable.Coordinator.separates($0, of: 6, selected: selected.contains) }
+        XCTAssertEqual(lines, [false, false, false, false, true, false])
+        XCTAssertFalse(IssueTable.Coordinator.separates(0, of: 1) { _ in false })
+    }
+
+    /// Sorted by update, a parent whose subtask was touched last comes first with it; equal dates keep id order.
+    @MainActor func testAParentSortsByItsLatestSubtask() throws {
+        let st = AccountState(account: Account(site: URL(string: "https://a.atlassian.net")!, email: "e", token: "t"))
+        func row(_ key: String, _ second: Int, parent: String? = nil) throws -> ListRow {
+            let parentJSON = parent.map { #","parent":{"id":"9","key":"\#($0)","fields":{"summary":"p"}}"# } ?? ""
+            let issue = try st.client.decoder.decode(
+                Issue.self,
+                from: Data(
+                    #"{"id":"1","key":"\#(key)","fields":{"summary":"s","updated":"2026-10-05T09:00:\#(String(format: "%02d", second)).000Z","status":{"id":"1","name":"To Do","statusCategory":{"key":"new","name":"To Do"}},"issuetype":{"id":"1","name":"Task","subtask":\#(parent != nil)}\#(parentJSON)}}"#
+                        .utf8))
+            return ListRow(issue: issue, state: st)
+        }
+        let rows = [try row("A-2", 20), try row("A-3", 20), try row("A-1", 10), try row("A-4", 30, parent: "A-1")]
+        let sort = ListFilters.Sort(field: .updated, descending: true)
+        let nested = DisplayRow.nest(rows, expanded: [], sort: sort)
+        XCTAssertEqual(nested.map(\.row.issue.key), ["A-1", "A-2", "A-3"])
+        XCTAssertEqual(nested.first?.children.map(\.issue.key), ["A-4"])
+        XCTAssertEqual(
+            DisplayRow.nest(rows, expanded: ["\(st.id)|A-1"], sort: sort).map(\.row.issue.key),
+            ["A-1", "A-4", "A-2", "A-3"])
     }
 }

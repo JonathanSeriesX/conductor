@@ -1,11 +1,17 @@
 import AppKit
 import SwiftUI
 
-/// One row of a list: the issue and the account it came from.
-struct ListRow: Identifiable {
+/// One row of a list: the issue and the account it came from. A class: every pass over a list of thousands (its
+/// merge, its nesting, each refresh's comparison) copied each row's whole issue, and a row the pass did not change
+/// is the same object, so the comparison skips it.
+final class ListRow: Identifiable, Sendable {
     let issue: Issue
     let state: AccountState
-    var id: String { "\(state.id)|\(issue.key)" }
+    /// Made once: every pass over the list (its diff, the nesting, each row) asked for it, a UUID printed each time.
+    let id: String
+    init(issue: Issue, state: AccountState) {
+        (self.issue, self.state, id) = (issue, state, "\(state.id)|\(issue.key)")
+    }
     var target: IssueTarget { IssueTarget(accountID: state.id, key: issue.key) }
 }
 
@@ -34,15 +40,16 @@ struct DisplayRow: Identifiable {
         // Sorted by update, a parent whose children were touched more recently moves with them; any other
         // order is the server's and stays as it came.
         if sort.field == .updated {
-            func latest(_ r: ListRow) -> Date {
-                max(
-                    r.issue.fields.updated ?? .distantPast,
-                    children[r.id]?.compactMap(\.issue.fields.updated).max() ?? .distantPast)
+            // Each row's date worked out once: in the comparison, it cost every comparison a pass over the children.
+            let dated: [(row: ListRow, date: Date)] = top.map { r in
+                let kids = children[r.id]?.compactMap(\.issue.fields.updated).max() ?? .distantPast
+                return (r, max(r.issue.fields.updated ?? .distantPast, kids))
             }
-            top.sort { a, b in
-                let (la, lb) = (latest(a), latest(b))
-                return la != lb ? (sort.descending ? la > lb : la < lb) : a.id < b.id
+            let descending = sort.descending
+            top = dated.sorted { a, b in
+                a.date != b.date ? (descending ? a.date > b.date : a.date < b.date) : a.row.id < b.row.id
             }
+            .map(\.row)
         }
         var out: [DisplayRow] = []
         for r in top {
@@ -54,9 +61,29 @@ struct DisplayRow: Identifiable {
     }
 }
 
+/// A list as `IssueListStore.load` tells lists apart: the accounts it spans and its JQL, the order included. A typed
+/// search is a list too, but none whose place is kept (see `ScrollMemory`).
+struct ListKey: Hashable, Codable, Sendable {
+    var accounts: [UUID]
+    var jql: String
+    var typed = false
+}
+
 @MainActor @Observable
 final class IssueListStore {
-    var rows: [ListRow] = []
+    var rows: [ListRow] = [] { didSet { nested = nil } }
+    /// `DisplayRow.nest` of `rows`, until they, the unfolded parents or the order change: the body, each arrow press
+    /// and each fold asked for it again, a pass over every row each time.
+    @ObservationIgnored private var nested: (expanded: Set<String>, sort: ListFilters.Sort, rows: [DisplayRow])?
+    /// In the order of the list the rows are of (`shown`): from a click on another list to its rows landing, the
+    /// chips have its order already, and the rows on screen sorted by it moved for a few frames.
+    func displayRows(expanded: Set<String>) -> [DisplayRow] {
+        let (rows, sort) = (rows, shown.sort)  // read either way: the caller redraws when they change
+        if let n = nested, n.expanded == expanded, n.sort == sort { return n.rows }
+        let out = DisplayRow.nest(rows, expanded: expanded, sort: sort)
+        nested = (expanded, sort, out)
+        return out
+    }
     /// Ids of selected rows a reload no longer brings (an edit took them out of the list): they stay where they
     /// were, greyed, until the selection leaves them, so the preview's issue keeps its place for the arrows.
     private(set) var stale: Set<String> = []
@@ -64,6 +91,8 @@ final class IssueListStore {
     private var kept: Set<IssueTarget> = []
     /// Keys with a write on its way to Jira.
     var pending: Set<String> = []
+    /// The row under the pointer, the one with tooltips. Read by the rows themselves, never the list's body.
+    var hovered: String?
     /// One account's share of the list: its rows so far and where its next page starts.
     private struct Page {
         let state: AccountState
@@ -76,13 +105,43 @@ final class IssueListStore {
         /// More rows to load: a next page, or a part not started. A page not fetched yet (cached, or kept from the
         /// last load) is taken to have more when it is a full page, so the merge holds the same rows back.
         var more: Bool
-        init(state: AccountState, rows: [ListRow], more: Bool? = nil) {
-            (self.state, self.rows, self.more) = (state, rows, more ?? (rows.count >= 50))
+        /// The rows run to the list's end, or to `cap`: fetched to there, or the whole list from disk. A refresh
+        /// brings them up to date (see `sync`) rather than fetching them again.
+        var full = false
+        /// The rows are current from then on: when the download or the sync that brought them started, or the date
+        /// of the whole list on disk. Nil before a download has started.
+        var since: Date?
+        init(state: AccountState, rows: [ListRow], more: Bool? = nil, full: Bool = false, since: Date? = nil) {
+            (self.state, self.rows, self.more, self.full, self.since) =
+                (state, rows, more ?? (rows.count >= 50), full, since)
+        }
+        /// A refresh brings the rows up to date rather than fetching them: they are whole, run past the first page,
+        /// and are known to be current from some time on.
+        var syncs: Bool { full && more && since != nil }
+    }
+    /// Not watched: a page fetched again with the same rows (a reload refreshes them all) redrew the whole list.
+    /// What the screen shows of them is `rows` and `hasMore`.
+    @ObservationIgnored private var pages: [UUID: Page] = [:] {
+        didSet {
+            let more = pages.values.contains(where: \.more)
+            if more != hasMore { hasMore = more }
+            let all = !pages.values.contains { $0.more && !$0.full }
+            if all != complete { complete = all }
+            if all, endPending { endPending = false }
         }
     }
-    private var pages: [UUID: Page] = [:]
     private var query: (jql: String, parts: [String], cache: Bool)?
-    var hasMore: Bool { pages.values.contains(where: \.more) }
+    private(set) var hasMore = false
+    /// Every row of the list is here (up to `cap` an account): End can go to the last one.
+    private(set) var complete = true
+    /// End was pressed before every row was here: the spinner shows under the rows, and the list stays on it until
+    /// the last row is in, then lands there.
+    var endPending = false
+    /// Rows fetched behind the screen since it last showed them (see `fill`).
+    @ObservationIgnored private var unshown = false
+
+    /// Rows a list loads ahead per account: past it, End stops there and the count still says how many match.
+    static let cap = 5000
     /// How many issues the query matches on the server, every account summed: the last count from the cache until
     /// this load's own answers. Nil when no count is known yet.
     var total: Int?
@@ -95,6 +154,9 @@ final class IssueListStore {
     var isLoading = true
     /// The next page is on its way: the only load that shows a spinner under rows already on screen.
     var isLoadingMore = false
+    /// The last row that has been on screen. The spinner waits for it: the next page starts ten rows before the end,
+    /// and a spinner row put in and taken out below the screen cost the table a pass over every row, twice a page.
+    var lastShown: String?
     var error: String?
     /// The filters restrict nothing, which Jira refuses; the list explains instead of asking.
     var unbounded = false
@@ -102,21 +164,30 @@ final class IssueListStore {
     var queryError: String?
     private var generation = 0
     /// The query whose rows (cached or fresh) are on screen.
-    private var shownKey = ""
-    private var shown = ListFilters()
+    private(set) var shownKey: ListKey?
+    /// The filters whose rows are on screen.
+    private(set) var shown = ListFilters()
     private var sort = ListFilters.Sort()
 
-    /// One page of a query for one account. With `cache` on, the page is saved to disk, indexed for
-    /// Spotlight and remembered as a peek for the issue page. Shared by the list and the launch prefetch.
-    static func fetch(jql: String, state: AccountState, nextPageToken: String? = nil, cache: Bool) async throws
-        -> SearchPage
-    {
-        let page = try await state.client.search(jql: jql, nextPageToken: nextPageToken)
+    /// One page of a query for one account, remembered as peeks for the issue page. With `cache` on, the rows that
+    /// changed since the app last saw them go to Spotlight, and a first page is saved to disk unless `remembers` is
+    /// off (a query no list opens). Shared by the list and the launch prefetch.
+    static func fetch(
+        jql: String, state: AccountState, nextPageToken: String? = nil, cache: Bool, size: Int = 50,
+        remembers: Bool = true
+    ) async throws -> SearchPage {
+        let page = try await state.client.search(jql: jql, nextPageToken: nextPageToken, maxResults: size)
+        // The rows' icons and avatars from disk into memory on other threads, before any row is made: a row's first
+        // layout read and decoded each on the main thread. One not on disk yet is still the row's to fetch.
+        let urls = AccountState.imageURLs(page.issues, projects: [], me: nil)
+        await Task.detached(priority: .userInitiated) { ImageCache.warm(urls) }.value
+        // Any change Jira makes moves `updated`: a row seen at the same one is already in Spotlight as it is.
+        let changed = page.issues.filter { state.peek[$0.key]?.fields.updated != $0.fields.updated }
         for issue in page.issues { state.peek[issue.key] = issue }
         state.warmTransitions(page.issues)
         if cache {
-            if nextPageToken == nil { remember(page.issues, jql: jql, state: state) }
-            Spotlight.index(page.issues, host: state.host)
+            if nextPageToken == nil, remembers { remember(page.issues, jql: jql, state: state) }
+            Spotlight.index(changed, host: state.host)
         }
         return page
     }
@@ -132,20 +203,21 @@ final class IssueListStore {
     /// short, so the rows arrive together and nothing is added under them a moment later. The first page of a
     /// list of parts is cached whole, under the list's own query.
     static func pageWorth(
-        _ parts: [String], whole jql: String, part: Int, token: String?, state: AccountState, cache: Bool
+        _ parts: [String], whole jql: String, part: Int, token: String?, state: AccountState, cache: Bool,
+        size: Int = 50
     ) async throws -> (issues: [Issue], part: Int, token: String?) {
         let first = part == 0 && token == nil
         var (issues, part, token) = ([Issue](), part, token)
         while true {
             // A part's own first page is not a list anyone opens: only the whole is cached, below.
             let page = try await fetch(
-                jql: parts[part], state: state, nextPageToken: token, cache: cache && parts.count == 1)
-            if cache, parts.count > 1 { Spotlight.index(page.issues, host: state.host) }
+                jql: parts[part], state: state, nextPageToken: token, cache: cache, size: size,
+                remembers: parts.count == 1)
             issues += page.issues
             token = page.isLast == true ? nil : page.nextPageToken
             guard token == nil, part + 1 < parts.count else { break }
             part += 1
-            if issues.count >= 50 { break }
+            if issues.count >= size { break }
         }
         if cache, parts.count > 1, first { remember(issues, jql: jql, state: state) }
         return (issues, part, token)
@@ -201,7 +273,7 @@ final class IssueListStore {
         generation += 1
         let gen = generation
         // Every row of the list is here: the last page is in, or the rows reach the count.
-        let complete = !hasMore && !rows.isEmpty
+        let complete = self.complete && !rows.isEmpty
         sort = f.sort
         unbounded = !f.isBounded
         queryError = nil
@@ -211,7 +283,7 @@ final class IssueListStore {
             pages = [:]
             query = nil
             total = nil
-            shownKey = ""
+            shownKey = nil
             shown = f
             isLoading = false
             return
@@ -225,20 +297,29 @@ final class IssueListStore {
             return sum + c
         }
         Task { await countIssues(queries, gen: gen, cache: cacheable) }
-        let queryKey = queries.map { "\($0.0.id)|\($0.1)" }.joined()
+        let queryKey = ListKey(accounts: states.map(\.id), jql: f.jql, typed: !cacheable)
+        let opening = shownKey != queryKey
         // Each account's rows stay put (from cache on a new query, else what is shown) until its own fresh
         // page lands, so the list never collapses to the fastest site and then grows back.
-        if shownKey != queryKey {
+        var sorted = false
+        if opening {
+            endPending = false
             var byAccount = pages.mapValues(\.rows)
+            let since = pages.mapValues(\.since)
             var resorted = shown
             resorted.sort = f.sort
             if resorted == f, !rows.isEmpty {
-                // Only the order changed. A list that is all here changes places at once, exactly, and the server's
-                // page confirms it. A longer one would sort only the rows it has, and the server's first page would
-                // swap them for others a moment later: it shows the new order's cached page if there is one, else
-                // keeps the old order until the server answers, so the rows reorder once.
+                // Only the order changed. A list that is all here changes places at once, and its sync confirms it
+                // with no first page over it, which would reorder its top a second time. Jira orders types and
+                // statuses by the site's own sequence, so one account keeps its order until Jira's lands. A longer
+                // list would sort only the rows it has, and the server's first page would swap them for others a
+                // moment later: it shows the new order's cached page if there is one, else keeps the old order until
+                // the server answers, so the rows reorder once.
                 if complete {
-                    byAccount = byAccount.mapValues { $0.sorted { f.sort.areInOrder($0.issue, $1.issue) } }
+                    if pages.count > 1 || ![.type, .status].contains(f.sort.field) {
+                        byAccount = byAccount.mapValues { $0.sorted { f.sort.areInOrder($0.issue, $1.issue) } }
+                    }
+                    sorted = true
                 } else if cacheable {
                     let cached = await Self.cachedRows(queries)
                     guard gen == generation else { return }
@@ -249,36 +330,49 @@ final class IssueListStore {
                 guard gen == generation else { return }
             }
             pages = Dictionary(
-                uniqueKeysWithValues: states.map { ($0.id, Page(state: $0, rows: byAccount[$0.id] ?? [])) })
+                uniqueKeysWithValues: states.map {
+                    (
+                        $0.id,
+                        Page(
+                            state: $0, rows: byAccount[$0.id] ?? [], full: sorted,
+                            since: sorted ? since[$0.id] ?? nil : nil)
+                    )
+                })
+            // The last list's rows behind the screen are not this one's: none goes on screen under its name meanwhile.
+            unshown = false
+            // Its place past the rows of its first pages (see `ScrollMemory`): the whole list first, so that the list's
+            // first frame stands on it.
+            if let place = ScrollMemory.place(queryKey)?.anchors, !place.isEmpty,
+                [nil, .end].contains(IssueTable.Coordinator.restored(place, in: merged().map(\.id)))
+            {
+                await restoreWhole(queries, gen: gen, shows: false)
+                guard gen == generation else { return }
+            }
             show(merged(), keep: false)  // another query: a row it lacks was never in it
             // Only now: a load superseded before its rows reached the screen must not let the next one skip them.
             shownKey = queryKey
         }
         shown = f
         query = (f.jql, f.jqlParts, cacheable)
-        for id in pages.keys { (pages[id]!.part, pages[id]!.token) = (0, nil) }  // the first page replaces
         isLoading = true
-        let tasks = pages.keys.map { id in Task { @MainActor in try await self.fetchPage(id, gen: gen) } }
+        let started = Date()
+        let whole = opening && cacheable && !sorted ? Task { await restoreWhole(queries, gen: gen) } : nil
+        let tasks = pages.filter { !sorted || !$0.value.syncs }.keys.map { id in
+            Task { @MainActor in try await self.fetchPage(id, gen: gen, first: true) }
+        }
         for t in tasks {
             let result = await t.result
             guard gen == generation else { return }
             // Of several sites, a failed one keeps what it had; alone, it says what went wrong.
             if case .failure(let e) = result, f.account != nil { fail(e, cacheable: cacheable) }
         }
-        // The rows a reload kept below its first page are refreshed in place, page by page, as far as they reach.
-        while gen == generation,
-            let id = pages.first(where: { $0.value.more && $0.value.rows.count > $0.value.fetched })?.key
-        {
-            let before = pages[id]?.fetched
-            do { try await fetchPage(id, gen: gen) } catch { break }
-            if pages[id]?.fetched == before { break }  // an empty page that still says "more"
-        }
-        guard gen == generation else { return }
-        isLoading = false
-        // A merge holds rows back behind the account furthest behind; it still opens on a page's worth, as one site does.
-        while gen == generation, hasMore, rows.count < 50 { await loadMore() }
+        await whole?.value
         guard gen == generation else { return }
         if cacheable { Self.prefetchDetails(rows) }
+        await fill(gen: gen, started: started)
+        guard gen == generation else { return }
+        isLoading = false
+        endPending = false  // a site that failed on the way: the spinner goes, the list stays where it is
     }
 
     /// One count request per account, in parallel with the page fetch; a failed site leaves the last count standing.
@@ -293,7 +387,7 @@ final class IssueListStore {
             }
             sum += c
         }
-        if gen == generation { total = sum }
+        if gen == generation, total != sum { total = sum }
     }
 
     /// Last known first pages: from memory when this session has them (no suspension, so a list opened from the
@@ -327,13 +421,201 @@ final class IssueListStore {
         return out
     }
 
+    /// The whole list as it was last loaded to its end ("listfull-<hash of JQL>"), decoded at launch only for a place
+    /// past its first page (see `Session.prepare`).
+    nonisolated static func wholeName(_ jql: String) -> String { "listfull-" + DiskCache.hash(jql) }
+
+    /// Each account's whole list from disk, read off the main thread (from memory when launch decoded it), under the
+    /// rows this load already has: a list opened again is whole at once, and a sync brings it up to date from the
+    /// file's date. A first page that ends the list, or rows fetched to the end already, need nothing from disk.
+    private func restoreWhole(_ queries: [(AccountState, String)], gen: Int, shows: Bool = true) async {
+        var changed = false
+        func take(_ st: AccountState, _ issues: [Issue], _ date: Date?) {
+            guard let p = pages[st.id], p.more, !p.full else { return }
+            pages[st.id]!.rows = Self.refreshed(
+                issues.map { ListRow(issue: $0, state: st) }, fetched: p.rows, more: true)
+            pages[st.id]!.full = true
+            pages[st.id]!.since = date
+            changed = true
+        }
+        var reads: [(AccountState, Task<([Issue], Date?)?, Never>)] = []
+        for (st, jql) in queries where pages[st.id].map({ $0.more && !$0.full }) == true {
+            let name = Self.wholeName(jql)
+            if let hit = Session.launchWhole(name, account: st.id) {
+                take(st, hit, DiskCache.modified(account: st.account, name: name))
+                continue
+            }
+            let read = Task.detached(priority: .userInitiated) { [account = st.account] in
+                DiskCache.load([Issue].self, account: account, name: name).map {
+                    ($0, DiskCache.modified(account: account, name: name))
+                }
+            }
+            reads.append((st, read))
+        }
+        for (st, read) in reads {
+            guard let (issues, date) = await read.value, gen == generation else { continue }
+            take(st, issues, date)
+        }
+        if changed, shows { show(merged()) }
+    }
+
+    /// Every account's rows to the list's end (or `cap`) behind its first page: a list whole already is brought up to
+    /// date (see `sync`); any other is fetched one page after another per account, accounts side by side, each page
+    /// the largest the site serves, once.
+    /// The pages go on screen when the list is whole, or as they come while the reader is at the end of the rows
+    /// showing: each time, the rows are merged, nested and compared whole, which a page of rows per second of a long
+    /// Cloud list made a stall a second. End waits for the last one, on the spinner.
+    private func fill(gen: Int, started: Date) async {
+        isLoadingMore = true
+        defer { if gen == generation { isLoadingMore = false } }
+        let tasks = pages.keys.map { id in Task { @MainActor in await self.fill(id, gen: gen, started: started) } }
+        for t in tasks { await t.value }
+        if gen == generation, unshown { show(merged()) }  // a site that failed on the way
+    }
+
+    private func fill(_ id: UUID, gen: Int, started: Date) async {
+        guard let start = pages[id] else { return }
+        if start.syncs { return await sync(id, gen: gen, started: started) }
+        // A download an edit's reload took over goes on from its page, then catches up with what changed meanwhile.
+        let resumed = start.since != nil && !start.full
+        if start.since == nil { pages[id]!.since = started }
+        let size = start.state.client.largestPage
+        while gen == generation, let p = pages[id], p.more, p.fetched < Self.cap {
+            do { try await fetchPage(id, gen: gen, size: min(size, Self.cap - p.fetched), shows: false) } catch {
+                return
+            }
+            if pages[id]?.fetched == p.fetched { return }  // an empty page that still says "more"
+            if !endPending, lastShown == rows.last?.id { show(merged()) }
+        }
+        guard gen == generation, let q = query, var p = pages[id] else { return }
+        if p.more { p.rows = Array(p.rows.prefix(Self.cap)) }  // the last load's rows past the cap go
+        p.full = true
+        pages[id] = p
+        show(merged())
+        if q.cache, p.fetched > 50 {
+            DiskCache.saveAsync(
+                p.rows.map(\.issue), account: p.state.account, name: Self.wholeName(q.jql), asOf: p.since)
+        }
+        if resumed, p.syncs { await sync(id, gen: gen, started: started) }
+    }
+
+    /// One account's whole list brought up to date without fetching it again: its keys in the server's order, the
+    /// rows changed since it was last current (its query narrowed to them, with five minutes of slack for the clocks
+    /// and for what changed while that pass ran), and by key the few it lists that neither has (an issue viewed on the
+    /// web joins Recently Viewed unchanged). A failure leaves the rows as they are, for the next pass.
+    private func sync(_ id: UUID, gen: Int, started: Date) async {
+        guard let q = query, let p = pages[id], let since = p.since else { return }
+        let st = p.state
+        let minutes = Int(started.timeIntervalSince(since) / 60) + 5
+        async let sweep = Self.keys(q.parts, state: st)
+        async let delta = Self.all(Self.changed(q.jql, minutes: minutes), state: st, cache: q.cache)
+        guard let (keys, more) = try? await sweep, let changed = try? await delta, gen == generation,
+            let now = pages[id]
+        else { return }
+        let have = Set(now.rows.map(\.issue.key)).union(changed.map(\.key))
+        let missing = keys.filter { !have.contains($0) }
+        var found: [Issue] = []
+        for start in stride(from: 0, to: missing.count, by: 100) {
+            let batch = missing[start..<min(start + 100, missing.count)].map { "\"\($0)\"" }
+            guard
+                let got = try? await Self.all(
+                    "issuekey in (\(batch.joined(separator: ",")))", state: st, cache: q.cache)
+            else { break }
+            found += got
+        }
+        guard gen == generation, let now = pages[id] else { return }
+        // Off the main thread: thousands of rows, keyed and compared, held a frame of a sort change.
+        let fresh = (changed + found).map { ListRow(issue: $0, state: st) }
+        let sort = sort
+        var rows = await Task.detached(priority: .userInitiated) {
+            Self.synced(keys, rows: now.rows, changed: fresh, sort: sort)
+        }.value
+        guard gen == generation, let after = pages[id] else { return }
+        // An edit landed meanwhile: the rows it changed are taken again, here.
+        if after.rows.count != now.rows.count || zip(after.rows, now.rows).contains(where: { $0 !== $1 }) {
+            rows = Self.synced(keys, rows: after.rows, changed: fresh, sort: sort)
+        }
+        pages[id]!.rows = rows
+        pages[id]!.fetched = rows.count
+        pages[id]!.more = more
+        pages[id]!.since = started
+        show(merged(), animated: true)
+        guard q.cache else { return }
+        DiskCache.saveAsync(rows.map(\.issue), account: st.account, name: Self.wholeName(q.jql), asOf: started)
+        Self.remember(rows.prefix(50).map(\.issue), jql: q.jql, state: st)
+    }
+
+    /// The keys of a list made of parts, in order, up to `cap`, and whether it runs past it.
+    private static func keys(_ parts: [String], state: AccountState) async throws -> (keys: [String], more: Bool) {
+        var keys: [String] = []
+        for (n, part) in parts.enumerated() {
+            let got = try await state.client.keys(jql: part, limit: cap - keys.count)
+            keys += got.keys
+            if got.more || keys.count >= cap { return (keys, got.more || n + 1 < parts.count) }
+        }
+        return (keys, false)
+    }
+
+    /// Every row `jql` matches for one account, up to `cap`, in pages of the largest the site serves.
+    private static func all(_ jql: String, state: AccountState, cache: Bool) async throws -> [Issue] {
+        var (issues, token) = ([Issue](), nil as String?)
+        repeat {
+            let page = try await fetch(
+                jql: jql, state: state, nextPageToken: token, cache: cache, size: state.client.largestPage,
+                remembers: false)
+            issues += page.issues
+            token = page.isLast == true ? nil : page.nextPageToken
+        } while token != nil && issues.count < cap
+        return issues
+    }
+
+    /// A list's query narrowed to the issues changed, or viewed on the web, in the last `minutes`, newest first.
+    /// Relative dates are the server's own clock and zone.
+    static func changed(_ jql: String, minutes: Int) -> String {
+        let clause = jql.ranges(of: /(?i)\border\s+by\b/).last.map { jql[..<$0.lowerBound] } ?? jql[...]
+        let recent = "(updated >= -\(minutes)m OR lastViewed >= -\(minutes)m)"
+        let rest = clause.trimmingCharacters(in: .whitespaces)
+        return (rest.isEmpty ? recent : "(\(rest)) AND \(recent)") + " ORDER BY updated DESC"
+    }
+
+    /// One account's rows brought up to date: `keys` in their order (the server's, each once), each the newest copy
+    /// there is, a changed row's, else the row as it stands; a key neither has is left out. Rows that tie on the sort
+    /// field keep the order they stand in, so a list sorted here reorders once, when Jira's order lands.
+    nonisolated static func synced(_ keys: [String], rows: [ListRow], changed: [ListRow], sort: ListFilters.Sort)
+        -> [ListRow]
+    {
+        var known = Dictionary(rows.map { ($0.issue.key, $0) }, uniquingKeysWith: { a, _ in a })
+        for r in changed { known[r.issue.key] = r }
+        var seen = Set<String>()
+        var out = keys.compactMap { seen.insert($0).inserted ? known[$0] : nil }
+        let place = Dictionary(rows.enumerated().map { ($1.issue.key, $0) }, uniquingKeysWith: { a, _ in a })
+        // Each row's place as it stands, new ones last; already in that order (a refresh, mostly), nothing to keep.
+        let at = out.map { place[$0.issue.key] ?? .max }
+        let old = at.filter { $0 != .max }
+        guard zip(old, old.dropFirst()).contains(where: { $0 > $1 }) else { return out }
+        var i = 0
+        while i < out.count {
+            var j = i + 1
+            while j < out.count, sort.compare(out[j - 1].issue, out[j].issue) == .orderedSame { j += 1 }
+            if j - i > 1 {
+                let run = (i..<j).sorted { (at[$0], $0) < (at[$1], $1) }.map { out[$0] }
+                out.replaceSubrange(i..<j, with: run)
+            }
+            i = j
+        }
+        return out
+    }
+
     /// Replaces the rows unless nothing changed: a refresh that brings the same page back must not redraw the list.
     /// `animated` for fresh rows replacing ones on screen: an edited issue glides to its new place, as in Mail,
     /// instead of every row jumping at once.
     private func show(_ new: [ListRow], animated: Bool = false, keep: Bool = true) {
+        unshown = false
         let (new, stale) = Self.keeping(keep ? kept : [], of: rows, in: new)
         if stale != self.stale { self.stale = stale }  // unchanged, nothing reading it redraws
-        guard new.count != rows.count || zip(new, rows).contains(where: { $0.id != $1.id || $0.issue != $1.issue })
+        guard
+            new.count != rows.count
+                || zip(new, rows).contains(where: { $0 !== $1 && ($0.id != $1.id || $0.issue != $1.issue) })
         else { return }
         if animated, !rows.isEmpty {
             withAnimation(.smooth(duration: 0.35)) { rows = new }
@@ -384,9 +666,10 @@ final class IssueListStore {
         return rows.sorted { sort.compare($0.issue, $1.issue) == first }
     }
 
-    /// The account the merge waits on: the one with more pages whose last row comes first.
+    /// The account the merge waits on: the one with more pages whose last row comes first. One whose rows already run
+    /// to its end waits for nothing, so lists all whole merge as one plain sort.
     private var waiting: UUID? {
-        pages.values.filter(\.more).min(by: {
+        pages.values.filter { $0.more && !$0.full }.min(by: {
             guard let a = $0.rows.last else { return true }
             guard let b = $1.rows.last else { return false }
             return sort.areInOrder(a.issue, b.issue)
@@ -396,48 +679,49 @@ final class IssueListStore {
     /// The list's selection changed: a greyed row it left goes.
     func keep(_ selection: Set<IssueTarget>) {
         kept = selection
+        guard !stale.isEmpty else { return }  // or each arrow press went through every row
         let gone = Set(rows.filter { stale.contains($0.id) && !selection.contains($0.target) }.map(\.id))
         guard !gone.isEmpty else { return }
         stale.subtract(gone)
         withAnimation(.smooth(duration: 0.35)) { rows.removeAll { gone.contains($0.id) } }
     }
 
-    /// The next page of the account the merge waits on, and the next again while nothing new reaches the screen:
-    /// a page of rows that all tie with the last one adds nothing until the tie is passed.
-    func loadMore() async {
-        guard hasMore, !isLoading, let cache = query?.cache else { return }
-        let gen = generation
-        isLoading = true
-        isLoadingMore = true
-        // Not for a superseded page: the load that replaced it is still running under the same flag.
-        defer {
-            isLoadingMore = false
-            if gen == generation { isLoading = false }
-        }
-        let before = rows.count
-        while gen == generation, rows.count == before, let id = waiting {
-            do { try await fetchPage(id, gen: gen) } catch { return fail(error, cacheable: cache) }
-        }
+    /// The reader is near the end of the rows showing: the ones the whole list's load has fetched since (see `fill`)
+    /// go on screen. End waits for the last row instead.
+    func loadMore() {
+        if unshown, !endPending { show(merged()) }
     }
 
     /// One account's next page into its `Page` and onto the screen. A page from the start replaces the rows it
     /// covers, and the rows of the last load below them stay until a fresh page reaches them: a reload (the app
     /// coming to the front, an edit, the timer) took a long list back to its first page, and a merged one to the
-    /// few rows before the furthest-behind account's 50th, then grew it back under the reader.
-    private func fetchPage(_ id: UUID, gen: Int) async throws {
+    /// few rows before the furthest-behind account's 50th, then grew it back under the reader. `first`: the list's
+    /// first page, else the page after the last one fetched.
+    private func fetchPage(_ id: UUID, gen: Int, first: Bool = false, size: Int = 50, shows: Bool = true) async throws {
         guard let q = query, let p = pages[id] else { return }
         let page = try await Self.pageWorth(
-            q.parts, whole: q.jql, part: p.part, token: p.token, state: p.state, cache: q.cache)
-        guard gen == generation, pages[id] != nil else { return }
-        let first = p.part == 0 && p.token == nil
-        let fetched =
-            (first ? [] : Array(p.rows.prefix(p.fetched))) + page.issues.map { ListRow(issue: $0, state: p.state) }
+            q.parts, whole: q.jql, part: first ? 0 : p.part, token: first ? nil : p.token, state: p.state,
+            cache: q.cache, size: size)
+        // The rows as they are now: the whole list from disk can have landed under them meanwhile.
+        guard gen == generation, let now = pages[id] else { return }
+        let new = page.issues.map { ListRow(issue: $0, state: p.state) }
         let more = page.token != nil || page.part + 1 < q.parts.count
-        pages[id]!.rows = Self.refreshed(p.rows, fetched: fetched, more: more)
-        pages[id]!.fetched = fetched.count
-        (pages[id]!.part, pages[id]!.token) = (page.part, page.token)
-        pages[id]!.more = more
-        show(merged(), animated: !isLoadingMore)
+        if first, more, !now.full, now.fetched > new.count {
+            // A download under way (an edit reloaded the list): the top is fresh at once, and the download goes on
+            // from its own page rather than from the first again.
+            pages[id]!.rows = Self.refreshed(now.rows, fetched: new, more: true)
+        } else {
+            // A row a page brings again (it moved down the list since the page above it came) counts once.
+            let above = first ? [] : Array(now.rows.prefix(p.fetched))
+            let ids = Set(above.map(\.id))
+            let fetched = above + new.filter { !ids.contains($0.id) }
+            pages[id]!.rows = Self.refreshed(now.rows, fetched: fetched, more: more)
+            pages[id]!.fetched = fetched.count
+            (pages[id]!.part, pages[id]!.token) = (page.part, page.token)
+            pages[id]!.more = more
+        }
+        if shows { show(merged(), animated: !isLoadingMore) } else { unshown = true }
+        LaunchProbe.once("list.fresh")
     }
 
     /// One account's rows during a load: what it fetched so far, then the last load's rows from where those end,
@@ -474,7 +758,6 @@ struct IssueListView: View {
     @Environment(Session.self) private var session
     @Environment(\.openWindow) private var openWindow
     @Environment(\.layoutDirection) private var layoutDirection
-    @Environment(\.appearsActive) private var active
     @State private var store = IssueListStore()
     @State private var suggestions: [(display: String, completion: String)] = []
     @State private var savingFilter = false
@@ -496,9 +779,10 @@ struct IssueListView: View {
     @State private var pressed: (Int, NSPoint)?
     /// Parents whose subtasks are unfolded. Per parent, so opening one never shifts the rows above it.
     @State private var expanded: Set<String> = []
-    private var displayRows: [DisplayRow] { DisplayRow.nest(store.rows, expanded: expanded, sort: filters.sort) }
+    /// The chip strip's height: the rows start under it, and scroll under it.
+    @State private var chipsHeight: CGFloat = 0
+    private var displayRows: [DisplayRow] { store.displayRows(expanded: expanded) }
 
-    private var isUnified: Bool { filters.account == nil }
     /// The account the chips describe; the first one stands in for unified lists (search assist, issue types).
     private var state: AccountState? {
         filters.account.flatMap(session.state) ?? session.states.first { filters.includes($0.id) }
@@ -530,154 +814,41 @@ struct IssueListView: View {
     }
 
     var body: some View {
-        let shown = displayRows
-        let picked = shown.map(\.row).filter { selection.contains($0.target) }
-        // What the table has selected is the truth: SwiftUI builds this set from the table's changes since its
-        // last pass, and when several land between passes (arrows queued behind a refresh) it adds the new row
-        // without dropping the old one ("2 Issues Selected" after ⌘R and ↓).
-        let listSelection = Binding<Set<IssueTarget>>(get: { selection }) { new in
-            if new.count > 1, let t = NSApp.keyWindow?.contentView.flatMap(firstTable),
-                t.selectedRowIndexes.count < new.count
-            {
-                let actual = Set(t.selectedRowIndexes.compactMap { $0 < shown.count ? shown[$0].row.target : nil })
-                selection = actual.isEmpty ? new : actual
-            } else {
-                selection = new
-            }
-        }
-        List(selection: listSelection) {
-            ForEach(Array(shown.enumerated()), id: \.element.id) { i, d in
-                let row = d.row
-                // The open issue stays in the accent colour while the window is active, as in Notes and Mail;
-                // behind another window it goes grey like any selection. A run of selected rows is one block,
-                // rounded at its ends only, as Mail paints it.
-                let selected = selection.contains(row.target)
-                let emphasized = selected && active && !previewFocused
-                let above = i > 0 && selection.contains(shown[i - 1].row.target)
-                let below = i + 1 < shown.count && selection.contains(shown[i + 1].row.target)
-                let corner: CGFloat = selected ? 6 : 0
-                IssueRow(
-                    issue: row.issue,
-                    site: isUnified && session.states.count > 1 ? (row.state.title, row.state.color) : nil,
-                    date: filters.sort.date(of: row.issue), dayOnly: filters.sort.field == .due,
-                    depth: d.depth, folded: d.children.count, expanded: expanded.contains(d.id),
-                    toggle: d.children.isEmpty
-                        ? nil : { withAnimation(.snappy(duration: 0.25)) { expanded.formSymmetricDifference([d.id]) } },
-                    pending: store.pending.contains(row.issue.key)
-                )
-                .opacity(store.stale.contains(row.id) ? 0.45 : 1)  // out of this list since the last reload
-                // A new view after an edit, so the table measures the row again. The row's own id in it too: this id
-                // is the table row's identity, and two issues with the same summary became one row, drawn twice.
-                .id("\(d.id)|\(row.issue.fields.summary)")
-                .tag(row.target)
-                // The table's own highlight, grey without focus, is off: the rows paint theirs.
-                .foregroundStyle(emphasized ? AnyShapeStyle(.white) : AnyShapeStyle(.foreground))
-                .environment(\.backgroundProminence, emphasized ? .increased : .standard)
-                .listRowBackground(
-                    UnevenRoundedRectangle(
-                        topLeadingRadius: above ? 0 : corner, bottomLeadingRadius: below ? 0 : corner,
-                        bottomTrailingRadius: below ? 0 : corner, topTrailingRadius: above ? 0 : corner
+        let _ = LaunchProbe.tick("list.body")
+        IssueRows(
+            store: store, selection: $selection, expanded: $expanded,
+            previewFocused: $previewFocused, subtitle: $shownSubtitle, chips: chipsHeight,
+            menu: { targets in
+                // Over a selected row the menu acts on the whole selection, else on the row under the pointer.
+                let rows = store.rows.filter { targets.contains($0.target) }
+                guard let state = rows.first?.state, rows.allSatisfy({ $0.state === state }) else { return nil }
+                return NSHostingMenu(
+                    rootView: IssueMenu(
+                        issues: rows.map(\.issue), state: state, write: { act(keys: rows.map(\.issue.key), $0) },
+                        patch: store.patch
                     )
-                    // Unselected rows in the table's own colour over the whole row, not clear or inset: a row gliding
-                    // to its new place passes over the others, or under them for its first frame, and see-through it
-                    // drew its text over theirs, inset its corners showed round theirs.
-                    .fill(
-                        emphasized
-                            ? Color.accentColor
-                            : selected
-                                ? Color(nsColor: .unemphasizedSelectedContentBackgroundColor)
-                                : Color(nsColor: .controlBackgroundColor)
-                    )
-                    // 10, not 8: the ring AppKit draws around right-clicked rows then runs 1 pt inside this block on
-                    // every side, as Mail's does; at 8 it sat 3 pt in at the sides and 1 pt at the top and bottom.
-                    .padding(.horizontal, selected ? 10 : 0)
-                    // Over the row gap, so two selected rows meet without a seam.
-                    .padding(.top, selected && above ? -3 : 0).padding(.bottom, selected && below ? -3 : 0)
-                )
-                .listRowSeparator(selected && below ? .hidden : .automatic, edges: .bottom)
-                .onAppear { if d.id == shown.last?.id { Task { await store.loadMore() } } }
-                // Drag a row into Slack, a browser or a note as its Jira link.
-                .itemProvider {
-                    let p = NSItemProvider(object: row.state.client.browseURL(row.issue.key) as NSURL)
-                    p.suggestedName = "\(row.issue.key) \(row.issue.fields.summary)"  // the .webloc's name in the Finder
-                    return p
-                }
-            }
-            // Only while there is nothing to show or the next page is coming: a refresh behind rows that are
-            // already on screen must not add and remove a row at the end of the list (the table then re-applied
-            // a selection a click had just changed, and the arrows were lost).
-            if store.isLoading, store.rows.isEmpty || store.isLoadingMore {
-                HStack {
-                    Spacer()
-                    ProgressView().controlSize(.small)
-                    Spacer()
-                }
-                .listRowSeparator(.hidden)
-            }
-            if filters.scope == .recent, !store.rows.isEmpty, !store.isLoading {
-                // Jira's history only records issues opened on the web; nothing Conductor does can add to it.
-                Text(
-                    "Jira keeps this list from the issues you open on the web. Issues opened in Conductor don't count."
-                )
-                .font(.caption).foregroundStyle(.tertiary).padding(.vertical, 8)
-                .listRowSeparator(.hidden)
-            }
-        }
-        .listStyle(.inset)
-        .background(NativeSelectionOff(previewFocused: $previewFocused))
-        .onCopyCommand { keyItems(picked.map(\.issue.key)) }
-        .contextMenu(forSelectionType: IssueTarget.self) { targets in
-            // Over a selected row the menu acts on the whole selection, else on the row under the pointer.
-            let rows = store.rows.filter { targets.contains($0.target) }
-            if let state = rows.first?.state, rows.allSatisfy({ $0.state === state }) {
-                IssueMenu(
-                    issues: rows.map(\.issue), state: state, write: { act(keys: rows.map(\.issue.key), $0) },
-                    patch: store.patch)
-            }
-        } primaryAction: { targets in
-            // Double-click, ↩ or Space moves the issue to a window of its own, like a message in Mail: the preview
-            // lets it go, so the same page is never open twice.
-            for t in targets { openWindow(id: "issue", value: t) }
-            opened = targets.first
-            selection = []
-        }
-        // → unfolds a parent's subtasks; with nothing to unfold it moves the keyboard into the preview, whose ←
-        // brings it back (the other way round right to left).
-        .onKeyPress(.rightArrow) { sideways(towardPreview: layoutDirection == .leftToRight) }
-        .onKeyPress(.leftArrow) { sideways(towardPreview: layoutDirection == .rightToLeft) }
-        .onKeyPress(.space) {
-            guard !selection.isEmpty else { return .ignored }
-            for t in selection { openWindow(id: "issue", value: t) }
-            opened = selection.first
-            selection = []
-            return .handled
-        }
+                    // Titles alone, as the List's context menu had: a hosting menu draws the icons too.
+                    .labelStyle(.titleOnly)
+                    .environment(session))
+            },
+            open: { targets in
+                // Double-click, ↩ or Space moves the issue to a window of its own, like a message in Mail: the preview
+                // lets it go, so the same page is never open twice.
+                for t in targets { openWindow(id: "issue", value: t) }
+                opened = targets.first
+                selection = []
+            },
+            key: listKey
+        )
         .modifier(FollowsOtherWindows(store: store, selection: $selection, opened: $opened))
-        .onKeyPress(keys: [.downArrow, .upArrow]) { step($0, by: $0.key == .downArrow ? 1 : -1) }
-        .safeAreaInset(edge: .top, spacing: 0) { chips }
-        .overlay {
-            if store.unbounded {
-                ContentUnavailableView(
-                    "Pick a filter", systemImage: "line.3.horizontal.decrease.circle",
-                    description: Text(
-                        "Jira won't list a whole site at once. Choose a project, a status, a person or a scope, or type a search."
-                    ))
-            } else if let e = store.queryError {
-                ContentUnavailableView("Incomplete query", systemImage: "text.magnifyingglass", description: Text(e))
-            } else if !store.isLoading, store.rows.isEmpty {
-                ContentUnavailableView {
-                    Label(filters.isActive ? "No matches" : "No issues", systemImage: "tray")
-                } description: {
-                    if filters != cleared { Text("Nothing matches these filters.") }
-                } actions: {
-                    if !filters.text.isEmpty {
-                        Button("Clear Search") { filters.text = "" }
-                    } else if filters != cleared {
-                        Button("Clear Filters") { filters = cleared }
-                    }
-                }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            chips.onGeometryChange(for: CGFloat.self) {
+                $0.size.height
+            } action: {
+                chipsHeight = $0
             }
         }
+        .overlay { ListOverlay(store: store, filters: $filters, cleared: cleared) }
         .focusedSceneValue(
             \.listActions,
             ListActions(
@@ -689,9 +860,6 @@ struct IssueListView: View {
                 openBoard: boardTarget.map { b in { openWindow(id: "board", value: b) } },
                 sort: $filters.sort
             )
-        )
-        .focusedSceneValue(
-            \.selectedLinks, picked.count > 1 ? picked.map { $0.state.client.browseURL($0.issue.key) } : nil
         )
         .navigationTitle(session.title(for: filters))  // the Window menu; the toolbar draws its own, with the sort
         .toolbar(removing: .title)
@@ -747,7 +915,8 @@ struct IssueListView: View {
                 .onGeometryChange(for: CGFloat.self) {
                     $0.size.width
                 } action: {
-                    titleWidth = $0
+                    // Only what moves the column's minimum: each write runs the whole window's body again.
+                    if max(420, $0 + 150) != max(420, titleWidth + 150) { titleWidth = $0 }
                 }
             }
             .glassTitle()
@@ -799,7 +968,6 @@ struct IssueListView: View {
             await store.load(filters, session: session)
         }
         .task(id: filters.text) { await updateSuggestions() }
-        .onChange(of: subtitle, initial: true) { if let s = subtitle { shownSubtitle = s } }
         .task {
             // ponytail: a fixed 3-minute reload; a per-list "updated since" poll would be lighter if it ever matters.
             while !Task.isCancelled {
@@ -882,9 +1050,9 @@ struct IssueListView: View {
                 // Arrows carry the function and numeric-pad flags, so only the real modifiers count.
                 guard e.keyCode == 125, e.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty,
                     let tv = e.window?.firstResponder as? NSTextView, tv.isFieldEditor, tv.delegate is NSSearchField,
-                    suggestions.isEmpty, !shown.isEmpty
+                    suggestions.isEmpty, let first = displayRows.first?.row.target
                 else { return e }
-                if selection.isEmpty, let first = shown.first?.row.target { selection = [first] }
+                if selection.isEmpty { selection = [first] }
                 searchFocused = false
                 NSApp.keyWindow?.focusList()
                 return nil
@@ -918,17 +1086,37 @@ struct IssueListView: View {
     /// did) would only throw its answer away.
     private func refresh() { if !store.isLoading { refreshTick += 1 } }
 
+    /// The keys the list acts on before its table: ↓ and ↑ (see `step`), → and ← (see `sideways`), and Space, which
+    /// opens the selection as ↩ and a double-click do. True when one acted.
+    private func listKey(_ e: NSEvent) -> Bool {
+        switch e.keyCode {
+        case 125, 126:
+            let plain = e.modifierFlags.intersection([.shift, .option, .command, .control]).isEmpty
+            return step(by: e.keyCode == 125 ? 1 : -1, plain: plain, repeating: e.isARepeat)
+        // → unfolds a parent's subtasks; with nothing to unfold it moves the keyboard into the preview, whose ←
+        // brings it back (the other way round right to left).
+        case 124: return sideways(towardPreview: layoutDirection == .leftToRight)
+        case 123: return sideways(towardPreview: layoutDirection == .rightToLeft)
+        case 49:
+            guard !selection.isEmpty else { return false }
+            for t in selection { openWindow(id: "issue", value: t) }
+            opened = selection.first
+            selection = []
+            return true
+        default: return false
+        }
+    }
+
     /// A plain ↓ or ↑ steps from the one selected row, or, back from an issue opened in its own window, from that
-    /// issue rather than the top of the list. Here, not in the table: SwiftUI writes its selection back into the table
-    /// a pass late, and steps the table took in between were undone. Shift and the other arrows stay the table's, as
-    /// does a multi-selection.
-    private func step(_ press: KeyPress, by delta: Int) -> KeyPress.Result {
+    /// issue rather than the top of the list. Here, not in the table: the selection reaches the table a pass late,
+    /// and steps the table took in between were undone. Shift and the other arrows stay the table's, as does a
+    /// multi-selection.
+    private func step(by delta: Int, plain: Bool, repeating: Bool) -> Bool {
         let shown = displayRows  // not the body's: a held key reaching the end goes on into the next page
-        let plain = press.modifiers.isDisjoint(with: [.shift, .option, .command, .control])
         let current = cursor.map { [$0] } ?? selection
         guard let row = current.isEmpty ? opened : (plain && current.count == 1 ? current.first : nil),
             let i = shown.firstIndex(where: { $0.row.target == row })
-        else { return .ignored }
+        else { return false }
         let target = shown[max(0, min(shown.count - 1, i + delta))].row.target
         let from = shown[i].row.target
         selection = [target]
@@ -951,27 +1139,24 @@ struct IssueListView: View {
                         r = r.union(table.rect(ofRow: k))
                     }
                     return sv.contentView.convert(r, from: table)
-                }, room: 12, animated: press.phase != .repeat)
+                }, room: 12, animated: !repeating)
         }
-        return .handled
+        return true
     }
 
-    private func sideways(towardPreview: Bool) -> KeyPress.Result {
-        let r = fold(open: towardPreview)
-        guard r == .ignored, towardPreview, selection.count == 1, NSApp.keyWindow?.focusPreviewPage() == true else {
-            return r
-        }
-        return .handled
+    private func sideways(towardPreview: Bool) -> Bool {
+        fold(open: towardPreview)
+            || (towardPreview && selection.count == 1 && NSApp.keyWindow?.focusPreviewPage() == true)
     }
 
     /// → unfolds the selected parent's subtasks, ← folds them, as in an outline (the other way round right to left).
-    private func fold(open: Bool) -> KeyPress.Result {
+    private func fold(open: Bool) -> Bool {
         guard selection.count == 1, let sel = selection.first,
             let d = displayRows.first(where: { $0.row.target == sel }), !d.children.isEmpty,
             expanded.contains(d.id) != open
-        else { return .ignored }
+        else { return false }
         withAnimation(.snappy(duration: 0.25)) { expanded.formSymmetricDifference([d.id]) }
-        return .handled
+        return true
     }
 
     /// There is something to save once the list differs from every sidebar entry, built-in, saved or project.
@@ -989,13 +1174,6 @@ struct IssueListView: View {
     private var boardTarget: BoardTarget? {
         guard let id = filters.account, let key = filters.project else { return nil }
         return BoardTarget(accountID: id, projectKey: key)
-    }
-
-    /// The issues the query matches (the server's count, or the rows once all are loaded); "50+" only while no
-    /// count is known. Nil while a list loads with nothing to show yet.
-    private var subtitle: String? {
-        store.rows.isEmpty && store.total == nil && store.isLoading
-            ? nil : issues(store.count, more: store.total == nil && store.hasMore)
     }
 
     // MARK: Row actions
@@ -1249,6 +1427,26 @@ struct IssueListView: View {
 
     // MARK: Search assist
 
+    /// The five newest issues in memory whose key starts with `needle` or whose summary holds it, a key once. Kept
+    /// as it goes, with no copy of every issue and no sort of every match: it runs on each keystroke.
+    static func newestKnown(matching needle: String, in states: [AccountState]) -> [Issue] {
+        let key = needle.uppercased()
+        var (seen, top) = (Set<String>(), [Issue]())
+        for st in states {
+            for i in st.peek.values
+            where seen.insert(i.key).inserted
+                && (i.key.hasPrefix(key) || i.fields.summary.localizedCaseInsensitiveContains(needle))
+            {
+                let updated = i.fields.updated ?? .distantPast
+                let at = top.firstIndex { ($0.fields.updated ?? .distantPast) < updated } ?? top.endIndex
+                guard at < 5 else { continue }
+                top.insert(i, at: at)
+                if top.count > 5 { top.removeLast() }
+            }
+        }
+        return top
+    }
+
     private func updateSuggestions() async {
         let q = filters.text
         if q.isEmpty {
@@ -1258,16 +1456,7 @@ struct IssueListView: View {
         // Issues the app has seen whose key or summary matches, newest first: picking one puts its key in the
         // field, and ↩ opens it. Raw JQL gets the field and value help below instead.
         if !filters.isRawJQL {
-            let needle = q.trimmingCharacters(in: .whitespaces)
-            var seen = Set<String>()
-            let hits = session.states.flatMap(\.knownIssues)
-                .filter {
-                    seen.insert($0.key).inserted
-                        && ($0.key.hasPrefix(needle.uppercased())
-                            || $0.fields.summary.localizedCaseInsensitiveContains(needle))
-                }
-                .sorted { ($0.fields.updated ?? .distantPast) > ($1.fields.updated ?? .distantPast) }
-                .prefix(5)
+            let hits = Self.newestKnown(matching: q.trimmingCharacters(in: .whitespaces), in: session.states)
             if !hits.isEmpty {
                 suggestions = hits.map { (display: "\($0.key)  \($0.fields.summary)", completion: $0.key) }
                 return
@@ -1324,6 +1513,130 @@ struct IssueListView: View {
     }
 }
 
+/// The rows and what reads them. A view of its own, so a page landing redraws the table, not the list's toolbar,
+/// chips and search around it.
+private struct IssueRows: View {
+    let store: IssueListStore
+    @Binding var selection: Set<IssueTarget>
+    @Binding var expanded: Set<String>
+    @Binding var previewFocused: Bool
+    /// The toolbar's count, kept as it changes.
+    @Binding var subtitle: String
+    let chips: CGFloat
+    let menu: (Set<IssueTarget>) -> NSMenu?
+    let open: (Set<IssueTarget>) -> Void
+    let key: (NSEvent) -> Bool
+    @Environment(Session.self) private var session
+    @Environment(\.appearsActive) private var active
+
+    /// The issues the query matches (the server's count, or the rows once all are loaded); "50+" only while no
+    /// count is known. Nil while a list loads with nothing to show yet.
+    private var count: String? {
+        store.rows.isEmpty && store.total == nil && store.isLoading
+            ? nil : issues(store.count, more: store.total == nil && store.hasMore)
+    }
+
+    var body: some View {
+        let shown = store.displayRows(expanded: expanded)
+        // As the list the rows are of, until another list's rows land.
+        let of = store.shown
+        let _ = LaunchProbe.once("list.rows", when: !shown.isEmpty)
+        // Only a multi-selection has links to copy: a pass over every row for each arrow press was for nothing.
+        let picked = selection.count > 1 ? shown.map(\.row).filter { selection.contains($0.target) } : []
+        IssueTable(
+            rows: shown,
+            // The spinner only while there is nothing to show, or rows are still to come under the last one on screen
+            // or under a waiting End: a refresh behind rows that are already on screen must not add and remove a row
+            // at the end of the list.
+            footer: store.isLoading
+                ? (store.rows.isEmpty
+                    || (!store.complete
+                        && (store.endPending || store.isLoadingMore && store.lastShown == shown.last?.id))
+                    ? .spinner : nil)
+                : of.scope == .recent && !store.rows.isEmpty ? .caption : nil,
+            selection: $selection,
+            chips: chips,
+            content: { i in
+                let d = shown[i]
+                let row = d.row
+                let selected = selection.contains(row.target)
+                return ListRowView(
+                    d: d, site: of.account == nil && session.states.count > 1, sort: of.sort,
+                    selected: selected, emphasized: selected && active && !previewFocused,
+                    above: i > 0 && selection.contains(shown[i - 1].row.target),
+                    below: i + 1 < shown.count && selection.contains(shown[i + 1].row.target),
+                    expanded: expanded.contains(d.id), pending: store.pending.contains(row.issue.key),
+                    stale: store.stale.contains(row.id), store: store,
+                    toggle: d.children.isEmpty
+                        ? nil : { withAnimation(.snappy(duration: 0.25)) { expanded.formSymmetricDifference([d.id]) } }
+                )
+            },
+            session: session, menu: menu, open: open, key: key,
+            lastShown: { id in
+                // On screen, the last row takes the rows fetched since, if the scroll has not already, and the
+                // spinner shows while more are on their way.
+                Task {
+                    if store.lastShown != id { store.lastShown = id }
+                    store.loadMore()
+                }
+            },
+            complete: store.complete, pinEnd: store.endPending,
+            waitForEnd: { wait in if store.endPending != wait { store.endPending = wait && !store.complete } },
+            list: store.shownKey
+        )
+        // Under the toolbar, the chips and the sidebar, as the List lay: its insets keep the rows clear of them.
+        .ignoresSafeArea()
+        // VoiceOver's frame for the list is the part clear of them, as the List's was; SwiftUI sets it, not the table.
+        .contentShape(.accessibility, Rectangle())
+        .background(
+            NativeSelectionOff(
+                previewFocused: $previewFocused,
+                hover: { i in
+                    let id = i.flatMap { $0 < shown.count ? shown[$0].id : nil }
+                    if store.hovered != id { store.hovered = id }
+                },
+                // Ten rows before the end, so the rows fetched since are in before the reader gets there.
+                nearEnd: { if store.hasMore { Task { store.loadMore() } } }
+            )
+        )
+        .focusedSceneValue(
+            \.selectedLinks, picked.count > 1 ? picked.map { $0.state.client.browseURL($0.issue.key) } : nil
+        )
+        .onChange(of: count, initial: true) { _, s in if let s { subtitle = s } }
+    }
+}
+
+/// What the list says in place of rows: no filter, a query Jira refused, or nothing found.
+private struct ListOverlay: View {
+    let store: IssueListStore
+    @Binding var filters: ListFilters
+    let cleared: ListFilters
+
+    var body: some View {
+        if store.unbounded {
+            ContentUnavailableView(
+                "Pick a filter", systemImage: "line.3.horizontal.decrease.circle",
+                description: Text(
+                    "Jira won't list a whole site at once. Choose a project, a status, a person or a scope, or type a search."
+                ))
+        } else if let e = store.queryError {
+            ContentUnavailableView("Incomplete query", systemImage: "text.magnifyingglass", description: Text(e))
+        } else if !store.isLoading, store.rows.isEmpty {
+            ContentUnavailableView {
+                Label(filters.isActive ? "No matches" : "No issues", systemImage: "tray")
+            } description: {
+                if filters != cleared { Text("Nothing matches these filters.") }
+            } actions: {
+                if !filters.text.isEmpty {
+                    Button("Clear Search") { filters.text = "" }
+                } else if filters != cleared {
+                    Button("Clear Filters") { filters = cleared }
+                }
+            }
+        }
+    }
+}
+
 /// The account tag on a row in a unified list: square, as opposed to the status capsule. Reads the
 /// prominence itself, like StatusPill: the row's own read did not flip to white on a focused selection.
 /// What the list takes from other windows, as they happen.
@@ -1361,6 +1674,73 @@ struct SiteBadge: View {
     }
 }
 
+/// A list row and what the list knows about it. A view of its own, so the row under the pointer is read here and a
+/// pointer move redraws rows, not the list; compared as a value, so an update leaves the rows it did not change be.
+struct ListRowView: View, Equatable {
+    let d: DisplayRow
+    /// The account tag shows: a list of several accounts.
+    let site: Bool
+    let sort: ListFilters.Sort
+    // The open issue stays in the accent colour while the window is active, as in Notes and Mail; behind another
+    // window it goes grey like any selection. A run of selected rows is one block, rounded at its ends only, as Mail
+    // paints it: `above` and `below` say whether the neighbours are selected too.
+    let selected: Bool
+    let emphasized: Bool
+    let above: Bool
+    let below: Bool
+    let expanded: Bool
+    let pending: Bool
+    /// Out of this list since the last reload.
+    let stale: Bool
+    let store: IssueListStore
+    /// Not compared: it only flips `expanded`, which is, and it is there exactly when `d` has children.
+    let toggle: (() -> Void)?
+
+    nonisolated static func == (a: Self, b: Self) -> Bool {
+        a.d.row.issue == b.d.row.issue && a.d.row.state === b.d.row.state && a.d.depth == b.d.depth
+            && a.d.children.count == b.d.children.count && a.site == b.site && a.sort == b.sort
+            && a.selected == b.selected && a.emphasized == b.emphasized && a.above == b.above && a.below == b.below
+            && a.expanded == b.expanded && a.pending == b.pending && a.stale == b.stale && a.store === b.store
+    }
+
+    var body: some View {
+        let row = d.row
+        IssueRow(
+            issue: row.issue, site: site ? (row.state.title, row.state.color) : nil, date: sort.date(of: row.issue),
+            dayOnly: sort.field == .due, depth: d.depth, folded: d.children.count, expanded: expanded, toggle: toggle,
+            pending: pending, tips: store.hovered == d.id
+        )
+        .opacity(stale ? 0.45 : 1)
+        // The table's own highlight, grey without focus, is off: the rows paint theirs.
+        .foregroundStyle(emphasized ? AnyShapeStyle(.white) : AnyShapeStyle(.foreground))
+        .environment(\.backgroundProminence, emphasized ? .increased : .standard)
+    }
+
+    /// Behind the whole row, over its full width.
+    var selectionBlock: some View {
+        let corner: CGFloat = selected ? 6 : 0
+        return UnevenRoundedRectangle(
+            topLeadingRadius: above ? 0 : corner, bottomLeadingRadius: below ? 0 : corner,
+            bottomTrailingRadius: below ? 0 : corner, topTrailingRadius: above ? 0 : corner
+        )
+        // Unselected rows in the table's own colour over the whole row, not clear or inset: a row gliding
+        // to its new place passes over the others, or under them for its first frame, and see-through it
+        // drew its text over theirs, inset its corners showed round theirs.
+        .fill(
+            emphasized
+                ? Color.accentColor
+                : selected
+                    ? Color(nsColor: .unemphasizedSelectedContentBackgroundColor)
+                    : Color(nsColor: .controlBackgroundColor)
+        )
+        // 10, not 8: the ring AppKit draws around right-clicked rows then runs 1 pt inside this block on
+        // every side, as Mail's does; at 8 it sat 3 pt in at the sides and 1 pt at the top and bottom.
+        .padding(.horizontal, selected ? 10 : 0)
+        // Over the row gap, so two selected rows meet without a seam.
+        .padding(.top, selected && above ? -3 : 0).padding(.bottom, selected && below ? -3 : 0)
+    }
+}
+
 struct IssueRow: View {
     let issue: Issue
     var site: (name: String, color: Color)?
@@ -1376,6 +1756,8 @@ struct IssueRow: View {
     var toggle: (() -> Void)?
     /// A write to this issue is on its way to Jira: a spinner beside the status.
     var pending = false
+    /// Tooltips on the icons, the date and the chevron: the list gives them to the row under the pointer alone.
+    var tips = true
     /// `.increased` on the selected row: the accent is the background, so the greys go white and the icons
     /// get a light backing, like the priority icon.
     @Environment(\.backgroundProminence) private var prominence
@@ -1389,7 +1771,7 @@ struct IssueRow: View {
                 .padding(2).background(selected ? .white.opacity(0.9) : .clear, in: .rect(cornerRadius: 5)).padding(-2)
                 .padding(.top, 2)
                 .inactiveDim()
-                .help(issue.fields.issuetype.name)
+                .help(Text(issue.fields.issuetype.name), tips: tips)
             VStack(alignment: .leading, spacing: 5) {
                 if depth == 0, issue.fields.issuetype.isSubtask, let parent = issue.fields.parent {
                     // The parent is not in this list, so say which one it is.
@@ -1407,9 +1789,10 @@ struct IssueRow: View {
                     if let date {
                         Text(relativeDay(date)).font(.caption).foregroundStyle(dim).fixedSize()
                             .help(
-                                dayOnly
-                                    ? date.formatted(date: .long, time: .omitted)
-                                    : date.formatted(date: .abbreviated, time: .shortened))
+                                Text(
+                                    dayOnly
+                                        ? date.formatted(date: .long, time: .omitted)
+                                        : date.formatted(date: .abbreviated, time: .shortened)), tips: tips)
                     }
                 }
                 HStack(spacing: 8) {
@@ -1441,11 +1824,11 @@ struct IssueRow: View {
                             .contentShape(.rect)
                         }
                         .buttonStyle(.plain)
-                        .help(expanded ? "Hide subtasks" : "Show \(folded) subtasks from this list")
+                        .help(Text(expanded ? "Hide subtasks" : "Show \(folded) subtasks from this list"), tips: tips)
                     }
                     Spacer(minLength: 0)
-                    if let p = issue.fields.priority { PriorityIcon(priority: p) }
-                    Avatar(user: issue.fields.assignee, size: 18)
+                    if let p = issue.fields.priority { PriorityIcon(priority: p, tips: tips) }
+                    Avatar(user: issue.fields.assignee, size: 18, tips: tips)
                 }
             }
         }
@@ -1718,16 +2101,53 @@ struct SortMenuItems: View {
 struct NativeSelectionOff: NSViewRepresentable {
     /// Set while the keyboard is in the preview column of this window.
     var previewFocused: Binding<Bool>?
+    /// The row under the pointer, by index, nil off the rows: the one row with tooltips (see `help(_:tips:)`).
+    var hover: ((Int?) -> Void)?
+    /// The scroll has brought one of the last ten rows on screen. From the scroll, not a row's appearance: the
+    /// table also makes rows it does not show (to measure them, for accessibility), and those loaded pages nobody
+    /// had scrolled to.
+    var nearEnd: (() -> Void)?
     func makeNSView(context: Context) -> Finder { Finder() }
-    func updateNSView(_ view: Finder, context: Context) { view.previewFocused = previewFocused }
+    func updateNSView(_ view: Finder, context: Context) {
+        view.previewFocused = previewFocused
+        view.hover = hover
+        view.nearEnd = nearEnd
+    }
     final class Finder: NSView {
         var previewFocused: Binding<Bool>?
+        var hover: ((Int?) -> Void)?
+        var nearEnd: (() -> Void)?
+        private weak var table: NSTableView?
         nonisolated(unsafe) private var monitor: Any?
         nonisolated(unsafe) private var observer: Any?
+        nonisolated(unsafe) private var scrollEnd: Any?
+        nonisolated(unsafe) private var scrolled: Any?
         override func viewDidMoveToWindow() { find(attempt: 0) }
         deinit {
             if let monitor { NSEvent.removeMonitor(monitor) }
-            if let observer { NotificationCenter.default.removeObserver(observer) }
+            for o in [observer, scrollEnd, scrolled] { if let o { NotificationCenter.default.removeObserver(o) } }
+        }
+
+        // Moves of the pointer alone: a scroll under a resting pointer leaves the tooltips where they were until it
+        // ends. One tracking area over the list, this view's own, where every tooltip was one.
+        override func updateTrackingAreas() {
+            super.updateTrackingAreas()
+            if trackingAreas.isEmpty {
+                addTrackingArea(
+                    NSTrackingArea(
+                        rect: .zero, options: [.mouseMoved, .mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+                        owner: self))
+            }
+        }
+        override func mouseEntered(with event: NSEvent) { pointerMoved() }
+        override func mouseMoved(with event: NSEvent) { pointerMoved() }
+        override func mouseExited(with event: NSEvent) { hover?(nil) }
+
+        private func pointerMoved() {
+            guard let table, let window = table.window else { return }
+            let p = table.convert(window.mouseLocationOutsideOfEventStream, from: nil)
+            let row = table.visibleRect.contains(p) ? table.row(at: p) : -1
+            hover?(row >= 0 ? row : nil)
         }
 
         /// The table is a sibling subtree: the nearest ancestor with one below it, short of the split view that
@@ -1752,9 +2172,11 @@ struct NativeSelectionOff: NSViewRepresentable {
             // Page Up and Down, Home and End scroll the list smoothly; the table's own jump lands in one frame.
             monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak table] e in
                 guard let table, e.window === table.window, table.window?.firstResponder === table,
-                    let sv = table.enclosingScrollView, sv.scrollAnimated(for: e, line: 0, arrows: false)
+                    let sv = table.enclosingScrollView
                 else { return e }
-                return nil
+                // End on a list loaded whole goes to its true end, waiting for its last rows if need be.
+                if (table as? IssueOutline)?.coordinator?.endKey(e) == true { return nil }
+                return sv.scrollAnimated(for: e, line: 0, arrows: false) ? nil : e
             }
             if let observer { NotificationCenter.default.removeObserver(observer) }
             observer = NotificationCenter.default.addObserver(
@@ -1762,6 +2184,22 @@ struct NativeSelectionOff: NSViewRepresentable {
             ) { [weak self] n in
                 let on = n.userInfo?["on"] as? Bool ?? false
                 MainActor.assumeIsolated { self?.previewFocused?.wrappedValue = on }
+            }
+            self.table = table
+            if let scrollEnd { NotificationCenter.default.removeObserver(scrollEnd) }
+            scrollEnd = NotificationCenter.default.addObserver(
+                forName: NSScrollView.didEndLiveScrollNotification, object: table.enclosingScrollView, queue: .main
+            ) { [weak self] _ in MainActor.assumeIsolated { self?.pointerMoved() } }
+            if let scrolled { NotificationCenter.default.removeObserver(scrolled) }
+            scrolled = NotificationCenter.default.addObserver(
+                forName: NSView.boundsDidChangeNotification, object: table.enclosingScrollView?.contentView, queue: nil
+            ) { [weak self, weak table] _ in
+                MainActor.assumeIsolated {
+                    guard let table, NSMaxRange(table.rows(in: table.visibleRect)) >= table.numberOfRows - 10 else {
+                        return
+                    }
+                    self?.nearEnd?()
+                }
             }
         }
     }

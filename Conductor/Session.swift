@@ -29,9 +29,6 @@ final class AccountState: Identifiable {
     /// How many issues each cached list's query matched when it was last counted, by the same cache name, so a
     /// list opens with its count in its first frame rather than "50+ issues".
     @ObservationIgnored var listCounts: [String: Int] = [:]
-    /// Every issue in memory, for search suggestions: the lists put every row they fetch, and launch every cached
-    /// first page, in `peek`.
-    var knownIssues: [Issue] { Array(peek.values) }
     /// Each board as it was last drawn, by project key, so a board window reopens without a disk read and decode.
     @ObservationIgnored var boardSnapshots: [String: BoardStore.Snapshot] = [:]
     @ObservationIgnored private var linkTypesCache: [LinkType]?
@@ -43,7 +40,7 @@ final class AccountState: Identifiable {
     @ObservationIgnored var editMetaByWorkflow: [String: EditMeta] = [:]
     @ObservationIgnored private var warming: Set<String> = []
 
-    static func workflowKey(_ i: Issue) -> String {
+    nonisolated static func workflowKey(_ i: Issue) -> String {
         "\(i.fields.project?.key ?? "")|\(i.fields.issuetype.id)|\(i.fields.status.id)"
     }
 
@@ -153,6 +150,18 @@ final class AccountState: Identifiable {
 
         // Icons and avatars, into the disk and memory caches, so no row or page ever draws a placeholder first.
         warmLabel = String(localized: "Fetching icons…")
+        for url in Self.imageURLs(issues, projects: projects, me: me) where !DiskCache.hasImage(for: url) {
+            guard let data = try? await client.data(for: url) else { continue }
+            DiskCache.saveImage(data, for: url)
+            if let img = await DiskCache.decodeImage(data, maxPixels: 256) {
+                ImageCache.shared.setObject(img, forKey: url as NSURL)
+            }
+        }
+        warmProgress = 1
+    }
+
+    /// Every icon and avatar these issues, projects and the user draw.
+    nonisolated static func imageURLs(_ issues: [Issue], projects: [Project], me: JiraUser?) -> Set<URL> {
         var urls = Set<URL>()
         for i in issues {
             urls.formUnion(
@@ -165,14 +174,7 @@ final class AccountState: Identifiable {
         }
         for p in projects { if let u = p.avatar { urls.insert(u) } }
         if let u = me?.avatar { urls.insert(u) }
-        for url in urls where !DiskCache.hasImage(for: url) {
-            guard let data = try? await client.data(for: url) else { continue }
-            DiskCache.saveImage(data, for: url)
-            if let img = await DiskCache.decodeImage(data, maxPixels: 256) {
-                ImageCache.shared.setObject(img, forKey: url as NSURL)
-            }
-        }
-        warmProgress = 1
+        return urls
     }
 
     /// Full records of `keys` in one request, each saved as `issue-KEY` for the issue page and kept row-sized as a
@@ -305,6 +307,7 @@ final class AccountState: Identifiable {
         }
         await catalog
         error = nil
+        LaunchProbe.once("account.loaded")
         // The account is usable now; the lists, boards and the warm pass fill the cache behind it. Judged before the
         // lists start, since they prefetch details of their own.
         warmIsFirst = prefetched.isEmpty && lists.isEmpty
@@ -529,7 +532,9 @@ final class Session {
     /// Accounts and their caches are read before the first frame, so the window opens showing the last session's
     /// sidebar and list rather than a spinner; the network checks them afterwards in `restore`.
     init() {
-        stored = Keychain.load()
+        LaunchProbe.once("session.init")
+        stored = Self.launchAccounts.take() ?? Keychain.load()
+        LaunchProbe.once("keychain.read")
         #if DEBUG
             // Dev convenience: CONDUCTOR_SITE/EMAIL/TOKEN (and _2, _3…) sign in without the form. They are merged
             // into the Keychain and saved, so a build run from Xcode without them finds the same accounts: every
@@ -555,14 +560,73 @@ final class Session {
         // window keeps its spinner until the first one answers, rather than showing the sign-in form to someone
         // who is signed in.
         isRestoring = Keychain.isLocked || (states.isEmpty && !stored.isEmpty)
+        LaunchProbe.once("session.ready")
+    }
+
+    /// The Keychain's accounts as `prepare` read them, for `init`.
+    private static var launchAccounts: [Account]?
+    /// Each account's cache as `prepare` decoded it, by account id; `preparing` is busy until every one has landed.
+    /// Joined through a lock: the main run loop never turns during launch, so a hop to the main actor would wait.
+    private nonisolated static let prepared = Mutex<[UUID: CachedAccount]>([:])
+    private nonisolated static let preparing = DispatchGroup()
+    /// The whole list `prepare` decodes beside the caches, by account: its file name and rows (see `launchWhole`).
+    private nonisolated static let wholes = Mutex<[UUID: (String, [Issue])]>([:])
+    private nonisolated static let decodingWhole = DispatchGroup()
+
+    /// Account `id`'s whole list `name` as `prepare` decoded it, once. The list that opens on a place past its first
+    /// page waits for it for its first frame, the window built meanwhile; with `init` waiting, it held the window.
+    nonisolated static func launchWhole(_ name: String, account id: UUID) -> [Issue]? {
+        decodingWhole.wait()
+        return wholes.withLock { $0[id]?.0 == name ? $0.removeValue(forKey: id)?.1 : nil }
+    }
+
+    /// Reads the Keychain and decodes every account's cache on other threads, from `ConductorApp.init`: SwiftUI
+    /// makes the session some 40 ms later, and `init` takes what is done by then and waits for the rest. Behind each
+    /// decode, still off the main thread, the icons its rows draw and the page the preview showed at quit.
+    static func prepare() {
+        let accounts = Keychain.load()
+        launchAccounts = accounts
+        let previewed = IssueDetailStore.lastPreviewed
+        // The list shown last, when its place is past its first page (see `ScrollMemory`): its whole list too, account
+        // by account, so that its first frame stands on the row.
+        decodingWhole.enter()
+        DispatchQueue.global(qos: .userInitiated).async {
+            defer { decodingWhole.leave() }
+            guard let last = ScrollMemory.stored().first, last.deep else { return }
+            let name = IssueListStore.wholeName(last.list.jql)
+            let mine = accounts.filter { last.list.accounts.contains($0.id) }
+            DispatchQueue.concurrentPerform(iterations: mine.count) { i in
+                guard let issues: [Issue] = DiskCache.load(account: mine[i], name: name) else { return }
+                wholes.withLock { $0[mine[i].id] = (name, issues) }
+            }
+        }
+        for account in accounts {
+            preparing.enter()
+            DispatchQueue.global(qos: .userInitiated).async {
+                let c = CachedAccount(account)
+                prepared.withLock { $0[account.id] = c }
+                preparing.leave()
+                ImageCache.warm(
+                    AccountState.imageURLs(Array(c.lists.values.joined()), projects: c.projects, me: c.me))
+                // Only for an account that shows at once: one waiting on the network would open on an older page.
+                if let previewed, previewed.accountID == account.id, c.me != nil {
+                    IssueDetailStore.seed(previewed, account: account, cached: c)
+                }
+            }
+        }
     }
 
     /// Makes a state per account from what is on disk and queues each for its network check.
     private func adopt(_ accounts: [Account]) {
-        // One thread per account: each reads a dozen small files and its recent lists.
+        Self.preparing.wait()
+        let ready = Self.prepared.withLock { p in
+            defer { p = [:] }
+            return p
+        }
+        // One thread per account not decoded yet: each reads a dozen small files and its recent lists.
         let cached = Mutex([CachedAccount?](repeating: nil, count: accounts.count))
         DispatchQueue.concurrentPerform(iterations: accounts.count) { i in
-            let c = CachedAccount(accounts[i])
+            let c = ready[accounts[i].id] ?? CachedAccount(accounts[i])
             cached.withLock { $0[i] = c }
         }
         for (account, c) in zip(accounts, cached.withLock { $0 }) {
@@ -618,6 +682,7 @@ final class Session {
                 unreachable[account.id] = failure?.localizedDescription ?? String(localized: "Unknown error")
             }
         }
+        LaunchProbe.once("restore.done")
         // Restore never writes the Keychain: a read that failed (a rebuilt dev binary is a different app to the
         // Keychain) would otherwise save an empty list and wipe every account. Add and remove save for themselves.
     }

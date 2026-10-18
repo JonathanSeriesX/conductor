@@ -12,14 +12,20 @@ struct ConductorApp: App {
     @Environment(\.openWindow) private var openWindow
 
     init() {
+        LaunchProbe.install()
         // Windows come back after ⌘Q whatever the system-wide "Close windows when quitting" setting says.
         UserDefaults.standard.set(true, forKey: "NSQuitAlwaysKeepsWindows")
+        LaunchProbe.once("defaults.set")
+        // The account caches decode on other threads while SwiftUI sets itself up.
+        Session.prepare()
+        LaunchProbe.once("prepare.done")
         MenuClickThrough.install()
         PopoverFocusReturn.install()
         Shortcuts.guardTyping()
         BinUndo.install()
         AttachmentOpener.installQuickLookCopy()
         _ = Self.probe
+        LaunchProbe.once("installs.done")
     }
 
     var body: some Scene {
@@ -177,6 +183,7 @@ struct RootView: View {
 
     var body: some View {
         Group {
+            let _ = LaunchProbe.tick("root.body")
             if session.isRestoring {
                 ZStack {
                     Backdrop()
@@ -266,6 +273,8 @@ struct RootView: View {
             if new != nil { previewedOnce = true }
             storedSelection =
                 new.flatMap { try? JSONEncoder().encode($0) }.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+            // For the next launch, which builds this page early. Here, not on the preview's disappear: ⌘Q runs that.
+            IssueDetailStore.lastPreviewed = new
         }
         // The system's value can arrive late, as the list's; only until something has been previewed here.
         .onChange(of: storedSelection) { if !previewedOnce { restoreSelection() } }

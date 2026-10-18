@@ -625,7 +625,9 @@ private struct HostedEditor: View {
             return
         }
         // Disk on this thread, as `RemoteImage` reads it: the avatar is there in the row's first frame.
-        if let data = DiskCache.imageDataNow(for: url), let img = NSImage(data: data) {
+        if let data = DiskCache.imageDataNow(for: url),
+            let img = ImageCache.svg(data) ?? NSImage(data: data)
+        {
             ImageCache.shared.setObject(img, forKey: url as NSURL)
             picture(img)
             return

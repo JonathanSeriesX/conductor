@@ -285,9 +285,14 @@ struct JiraClient: Sendable {
         return c.count
     }
 
+    /// The most rows one search page brings with the list's fields: Cloud stops at 100, Server at 1,000.
+    var largestPage: Int { server ? 1000 : 100 }
+
     /// Server pages by offset; its `nextPageToken` is the next offset, so callers page the same way.
-    func search(jql: String, nextPageToken: String? = nil, fields: String? = nil) async throws -> SearchPage {
-        var q = ["jql": jql, "maxResults": "50", "fields": fields ?? listFields]
+    func search(jql: String, nextPageToken: String? = nil, fields: String? = nil, maxResults: Int = 50) async throws
+        -> SearchPage
+    {
+        var q = ["jql": jql, "maxResults": "\(maxResults)", "fields": fields ?? listFields]
         if server {
             let start = Int(nextPageToken ?? "") ?? 0
             q["startAt"] = "\(start)"
@@ -300,6 +305,37 @@ struct JiraClient: Sendable {
         }
         if let nextPageToken { q["nextPageToken"] = nextPageToken }
         return try await get("search/jql", query: q)
+    }
+
+    /// The keys a query matches, in its order, up to `limit`, and whether it matches more: a list's rows and their
+    /// order without the rows. Asked for keys alone, Cloud serves 5,000 a request, Server 1,000.
+    func keys(jql: String, limit: Int) async throws -> (keys: [String], more: Bool) {
+        struct Page: Decodable {
+            struct Key: Decodable { let key: String }
+            let issues: [Key]
+            let nextPageToken: String?
+            let isLast: Bool?
+            let total: Int?
+        }
+        var (keys, token) = ([String](), nil as String?)
+        while keys.count < limit {
+            var q = ["jql": jql, "fields": "key", "maxResults": "\(min(server ? 1000 : 5000, limit - keys.count))"]
+            if server {
+                q["startAt"] = "\(keys.count)"
+                let page: Page = try await get("search", query: q)
+                keys += page.issues.map(\.key)
+                guard !page.issues.isEmpty, keys.count < page.total ?? 0 else { return (keys, false) }
+            } else {
+                if let token { q["nextPageToken"] = token }
+                let page: Page = try await get("search/jql", query: q)
+                keys += page.issues.map(\.key)
+                guard page.isLast != true, let next = page.nextPageToken, !page.issues.isEmpty else {
+                    return (keys, false)
+                }
+                token = next
+            }
+        }
+        return (Array(keys.prefix(limit)), true)
     }
 
     /// Every change on the issue's History tab, newest first.

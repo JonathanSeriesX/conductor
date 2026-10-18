@@ -63,14 +63,22 @@ enum DiskCache {
         await Task.detached(priority: .userInitiated) { load(T.self, account: account, name: name) }.value
     }
 
-    static func save(_ value: some Encodable, account: Account, name: String) {
+    /// `asOf` dates the file (its modification date) to when what it holds was current, rather than when it was written.
+    static func save(_ value: some Encodable, account: Account, name: String, asOf: Date? = nil) {
         guard let data = try? JSONEncoder().encode(value) else { return }
-        try? data.write(to: file(account, name), options: .atomic)
+        let url = file(account, name)
+        try? data.write(to: url, options: .atomic)
+        if let asOf { try? FileManager.default.setAttributes([.modificationDate: asOf], ofItemAtPath: url.path) }
+    }
+
+    /// When `name` was written, or the date it was saved as of.
+    static func modified(account: Account, name: String) -> Date? {
+        try? file(account, name).resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
     }
 
     /// Encodes and writes in the background; a cache never needs to wait for the disk.
-    static func saveAsync(_ value: some Encodable & Sendable, account: Account, name: String) {
-        queue.async { save(value, account: account, name: name) }
+    static func saveAsync(_ value: some Encodable & Sendable, account: Account, name: String, asOf: Date? = nil) {
+        queue.async { save(value, account: account, name: name, asOf: asOf) }
     }
 
     /// Every background write in order, so a quick second save of a file never lands before the first.
