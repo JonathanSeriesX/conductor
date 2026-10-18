@@ -443,7 +443,7 @@ struct CreateIssueView: View {
         .task(id: m.state?.id) {
             guard let st = m.state else { return }
             let c = st.client
-            let (now, fresh) = st.memo("labels") { try await c.labels() }
+            let (now, fresh) = st.memo("labels", once: true) { try await c.labels() }
             if let now { allLabels = now }
             if let list = await fresh.value { allLabels = list }
         }

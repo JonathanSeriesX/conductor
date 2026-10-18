@@ -48,7 +48,7 @@ final class IssueDetailStore {
         } ?? []
     }
 
-    /// Every label on the site, fetched once per page for the labels editor.
+    /// Every label on the site for the labels editor, fetched once a session (`memo(once:)`).
     var allLabels: [String] = []
     /// Full records of the subtasks, children, parent and linked issues, for what their refs lack (the assignee).
     var related: [String: Issue] = [:]
@@ -261,7 +261,7 @@ final class IssueDetailStore {
             state.warm("assignable-\(project)") { try await client.assignableUsers(project: project, query: "") }
         }
         if full, allLabels.isEmpty, canEdit("labels") {
-            let (now, fresh) = state.memo("labels") { try await client.labels() }
+            let (now, fresh) = state.memo("labels", once: true) { try await client.labels() }
             if let now, holds(state, key) { update(\.allLabels, now) }
             if let list = await fresh.value, holds(state, key) { update(\.allLabels, list) }
         }

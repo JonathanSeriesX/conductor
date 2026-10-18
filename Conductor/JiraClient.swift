@@ -390,13 +390,24 @@ struct JiraClient: Sendable {
         }
         let unknown = wanted.subtracting(names.keys)
         if !unknown.isEmpty {
-            await withTaskGroup(of: JiraUser?.self) { group in
-                for id in unknown { group.addTask { try? await get("user", query: ["username": id]) } }
-                for await u in group { if let u { names[u.accountId] = u.displayName } }
+            await withTaskGroup(of: (String, String)?.self) { group in
+                for id in unknown {
+                    group.addTask {
+                        // Kept under the username asked, which the mark carries (Jira's own may differ in case).
+                        // A username Jira refuses (a deleted or renamed user) keeps itself as its name, so it is
+                        // asked once a run, not on every page; offline, the next page asks again.
+                        do {
+                            let u: JiraUser = try await get("user", query: ["username": id])
+                            return (id, u.displayName)
+                        } catch { return error.isOffline || error.isCancelled ? nil : (id, id) }
+                    }
+                }
+                for await r in group { if let r { names[r.0] = r.1 } }
             }
         }
         guard !wanted.isEmpty else { return issues }
-        Self.mentionNames.withLock { [names] in $0[host] = names }
+        // Merged, not replaced: pages named at once (a prefetch completes eight) would drop each other's names.
+        Self.mentionNames.withLock { [names] in $0[host, default: [:]].merge(names) { _, new in new } }
         return issues.map { i in
             var i = i
             i.fields.description = i.fields.description?.namingMentions(names)
@@ -420,7 +431,7 @@ struct JiraClient: Sendable {
             return i
         }
     }
-    /// Display names by username, per Server host, for the whole run.
+    /// Display names by username, per Server host, for the whole run; one Jira could not return maps to itself.
     private static let mentionNames = Mutex<[String: [String: String]]>([:])
 
     /// Server: each issue's epic, read from its epic-link field as a bare key, gets its summary, status and type,

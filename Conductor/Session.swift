@@ -397,21 +397,29 @@ final class AccountState: Identifiable {
 
     /// A value kept in memory and on disk under `name`: what is known already comes back at once (nil the first
     /// time) and `fresh` resolves when the network answers (nil when it fails), so a picker or window opens full
-    /// and corrects itself behind.
-    func memo<T: Codable & Sendable>(_ name: String, fetch: @escaping @Sendable () async throws -> T)
-        -> (now: T?, fresh: Task<T?, Never>)
-    {
+    /// and corrects itself behind. `once`: one fetch a session that every later call shares, for what every page
+    /// wants and that barely changes (the site's labels); a failed one is asked again by the next call.
+    func memo<T: Codable & Sendable>(
+        _ name: String, once: Bool = false, fetch: @escaping @Sendable () async throws -> T
+    ) -> (now: T?, fresh: Task<T?, Never>) {
         let now = memos[name] as? T ?? DiskCache.load(T.self, account: account, name: name)
         if let now { memos[name] = now }
+        if once, let shared = fetches[name] as? Task<T?, Never> { return (now, shared) }
         let fresh = Task<T?, Never> { @MainActor in
-            guard let value = try? await fetch() else { return nil }
+            guard let value = try? await fetch() else {
+                fetches[name] = nil
+                return nil
+            }
             memos[name] = value
             DiskCache.saveAsync(value, account: account, name: name)
             return value
         }
+        if once { fetches[name] = fresh }
         return (now, fresh)
     }
     @ObservationIgnored private var memos: [String: Any] = [:]
+    /// `memo(once:)`'s fetch by name, for the session.
+    @ObservationIgnored private var fetches: [String: Any] = [:]
 
     /// `memo` once a session, in the background, for a picker that should open full the first time.
     func warm<T: Codable & Sendable>(_ name: String, fetch: @escaping @Sendable () async throws -> T) {
@@ -433,7 +441,7 @@ final class AccountState: Identifiable {
         return fresh
     }
 
-    /// Active and future sprints of a project's scrum boards, fetched once per session.
+    /// Active and future sprints of a project's scrum boards, fetched once per session, also when Jira refuses.
     /// What this Mac already knows, memory then disk, without asking Jira: for a page that must not wait.
     func cachedSprints(project: String) async -> [Sprint] {
         if let cached = sprintsByProject[project] { return cached }
@@ -453,7 +461,13 @@ final class AccountState: Identifiable {
 
     @discardableResult
     private func fetchSprints(project: String) async -> [Sprint] {
-        guard let boards = try? await client.boards(project: project) else { return sprintsByProject[project] ?? [] }
+        let boards: [Board]
+        do { boards = try await client.boards(project: project) } catch {
+            // Jira's no stands for the session (a Data Center project without a board answers one), so a page
+            // does not ask again on every open; offline, the next page does.
+            if !error.isOffline, !error.isCancelled { sprintsByProject[project] = sprintsByProject[project] ?? [] }
+            return sprintsByProject[project] ?? []
+        }
         let tasks = boards.filter { $0.type == "scrum" }.map { b in
             Task { @MainActor in (try? await self.client.sprints(board: b.id)) ?? [] }
         }
