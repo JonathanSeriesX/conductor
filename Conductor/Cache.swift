@@ -136,7 +136,9 @@ enum DiskCache {
     /// Decodes off the main thread; big attachments are shrunk so scrolling a description stays smooth.
     static func decodeImage(_ data: Data, maxPixels: Int = 1600) async -> NSImage? {
         await Task.detached(priority: .userInitiated) { () -> NSImage? in
-            guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return NSImage(data: data) }
+            // An SVG (Jira's icons) is no ImageIO source: asking it for a thumbnail logs an error pair and fails.
+            guard let source = CGImageSourceCreateWithData(data as CFData, nil), CGImageSourceGetCount(source) > 0
+            else { return NSImage(data: data) }
             let options: [CFString: Any] = [
                 kCGImageSourceCreateThumbnailFromImageAlways: true,
                 kCGImageSourceThumbnailMaxPixelSize: maxPixels,
