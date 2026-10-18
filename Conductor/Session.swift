@@ -427,6 +427,20 @@ final class AccountState: Identifiable {
         _ = memo(name, fetch: fetch)
     }
 
+    /// `memo(once:)` for a window that must show before anything is decoded: a value not in memory yet is read from
+    /// disk off the main thread first, rather than inside `memo`. A busy site's create screens and labels run to
+    /// hundreds of kilobytes, and each New Issue window asked Jira again for all of them (CON-244).
+    func memoOnce<T: Codable & Sendable>(
+        _ name: String, fetch: @escaping @Sendable () async throws -> T
+    ) async -> (now: T?, fresh: Task<T?, Never>) {
+        if memos[name] == nil, let disk = await DiskCache.loadAsync(T.self, account: account, name: name),
+            memos[name] == nil
+        {
+            memos[name] = disk
+        }
+        return memo(name, once: true, fetch: fetch)
+    }
+
     func linkTypes() async -> [LinkType] {
         if let linkTypesCache { return linkTypesCache }
         if let disk: [LinkType] = await DiskCache.loadAsync(account: account, name: "linkTypes") {

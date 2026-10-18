@@ -109,7 +109,7 @@ struct ConductorApp: App {
         // A window of its own, not a sheet: the list and other issues stay usable while an issue is written.
         WindowGroup("New Issue", id: "create", for: CreateRequest.self) { $request in
             if let request {
-                CreateIssueView(request: request).environment(session)
+                CreateIssueView(request: request, session: session).environment(session)
             }
         }
         .windowResizability(.contentSize)

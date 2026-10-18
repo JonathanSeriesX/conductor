@@ -34,6 +34,46 @@ final class CreateIssueModel {
     var isWorking = false
     var isLoadingMeta = false
 
+    /// The form as the window's first frame shows it, so the window lays itself out once rather than again when its
+    /// task fills it a frame later (CON-244): the draft's project (a window reopened, or restored after a relaunch),
+    /// else the request's, else the one used last time, else a starred one, else the first; then the draft itself.
+    init(request: CreateRequest, session: Session) {
+        let saved = Drafts.shared.creates.first { $0.id == request.id }
+        let last = UserDefaults.standard.string(forKey: "lastCreateProject")
+        if let saved, let id = saved.accountID, let st = session.state(id),
+            let p = st.projects.first(where: { $0.key == saved.projectKey })
+        {
+            choice = ProjectChoice(project: p, accountID: st.id)
+        } else if let id = request.accountID, let st = session.state(id),
+            let p = st.projects.first(where: { $0.key == request.projectKey })
+        {
+            choice = ProjectChoice(project: p, accountID: st.id)
+        } else if let last, let st = session.states.first(where: { last.hasPrefix("\($0.id)|") }),
+            let p = st.projects.first(where: { "\(st.id)|\($0.key)" == last })
+        {
+            choice = ProjectChoice(project: p, accountID: st.id)
+        } else if let st = session.states.first(where: { !$0.starredProjects.isEmpty }),
+            let p = st.starredProjects.first
+        {
+            choice = ProjectChoice(project: p, accountID: st.id)
+        } else if let st = session.states.first, let p = st.projects.first {
+            choice = ProjectChoice(project: p, accountID: st.id)
+        }
+        state = choice.flatMap { session.state($0.accountID) }
+        parentKey = request.parentKey ?? ""
+        if let saved {
+            // The type is kept by `loadTypes` as long as the project still offers it.
+            type = saved.type
+            summary = saved.summary
+            text = saved.text
+            mentions = saved.mentions
+            assignee = saved.assignee
+            priority = saved.priority
+            labels = saved.labels
+            parentKey = saved.parentKey
+        }
+    }
+
     /// Fields this window knows how to fill.
     private static let handled: Set<String> = [
         "project", "issuetype", "summary", "description", "assignee", "priority", "labels", "parent", "reporter",
@@ -63,11 +103,13 @@ final class CreateIssueModel {
             && !isWorking && !isLoadingMeta
     }
 
-    /// The project's issue types, from the account's cache at once and from the network behind it.
+    /// The project's issue types, from the account's cache at once and from the network behind it, once a session:
+    /// every later window opens on the same answer.
     func loadTypes(_ st: AccountState) async {
         guard let p = project else { return }
         let (c, key) = (st.client, p.key)
-        let (now, fresh) = st.memo("createmeta-\(key)") { try await c.createIssueTypes(project: key) }
+        let (now, fresh) = await st.memoOnce("createmeta-\(key)") { try await c.createIssueTypes(project: key) }
+        guard project?.key == key else { return }  // another project was picked during the disk read
         isLoadingMeta = now == nil
         if let now { await setTypes(now, st) }
         if let list = await fresh.value, project?.key == key { await setTypes(list, st) }
@@ -96,9 +138,10 @@ final class CreateIssueModel {
             return
         }
         let (c, key, typeID) = (st.client, p.key, t.id)
-        let (now, fresh) = st.memo("createmeta-\(key)-\(typeID)") {
+        let (now, fresh) = await st.memoOnce("createmeta-\(key)-\(typeID)") {
             try await c.createFields(project: key, issueType: typeID)
         }
+        guard type?.id == typeID else { return }  // another type was picked during the disk read
         if let now { setFields(now) } else { isLoadingMeta = true }
         if let list = await fresh.value {
             if type?.id == typeID { setFields(list) }
@@ -141,7 +184,7 @@ struct CreateIssueView: View {
     @Environment(Session.self) private var session
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openWindow) private var openWindow
-    @State private var m = CreateIssueModel()
+    @State private var m: CreateIssueModel
     @State private var showAssign = false
     @State private var showParent = false
     @State private var labelDraft = ""
@@ -152,6 +195,13 @@ struct CreateIssueView: View {
     @FocusState private var summaryFocused: Bool
     @State private var showClone = false
     private var parentKey: String? { request.parentKey }
+
+    /// `session` fills the form before the first frame; the environment's is not there yet.
+    init(request: CreateRequest, session: Session) {
+        self.request = request
+        _m = State(initialValue: CreateIssueModel(request: request, session: session))
+    }
+
     private var hasDraft: Bool { !m.summary.isEmpty || !m.text.isEmpty }
     /// The form as the drafts store keeps it; written on every change, read back when the window opens.
     private var draft: CreateDraft {
@@ -175,18 +225,13 @@ struct CreateIssueView: View {
             HStack {
                 Text(parentKey == nil ? "New Issue" : "New Subtask of \(parentKey!)").font(.title2.weight(.semibold))
                 Spacer()
-                Picker("Project", selection: $m.choice) {
-                    // A tag for the nil the window opens with, until onAppear picks a project.
-                    if m.choice == nil { Text("Project").tag(ProjectChoice?.none) }
-                    ForEach(session.states) { st in
-                        Section(session.states.count > 1 ? st.title : "") {
-                            ForEach(st.projects) { p in
-                                Text(p.name).tag(Optional(ProjectChoice(project: p, accountID: st.id)))
-                            }
-                        }
+                ProjectPopUp(
+                    choice: $m.choice,
+                    sections: session.states.map { st in
+                        .init(
+                            title: st.title, choices: st.projects.map { ProjectChoice(project: $0, accountID: st.id) })
                     }
-                }
-                .labelsHidden()
+                )
                 .frame(maxWidth: 260)
                 .disabled(parentKey != nil)
             }
@@ -272,10 +317,14 @@ struct CreateIssueView: View {
                     // Room for a name, so the columns after it stay put when "Unassigned" becomes one.
                     .frame(minWidth: 180, alignment: .leading)
                 }
-                if m.has("priority"), !m.priorities.isEmpty {
+                // Assumed with the other usual fields, Default alone until the screen's priorities arrive: the row
+                // stands at its full height from the first frame instead of growing when they land (CON-244).
+                if m.has("priority") {
                     field("Priority") {
                         Picker("Priority", selection: $m.priority) {
                             Text("Default").tag(Optional<Priority>.none)
+                            // A draft's priority, tagged until the list holding it arrives (`setFields` drops it then).
+                            if let p = m.priority, !m.priorities.contains(p) { Text(p.name).tag(Optional(p)) }
                             ForEach(m.priorities, id: \.id) { p in Text(p.name).tag(Optional(p)) }
                         }
                         .labelsHidden().frame(maxWidth: 160, alignment: .leading)
@@ -395,45 +444,11 @@ struct CreateIssueView: View {
             if hasDraft { Drafts.shared.set(d) } else { Drafts.shared.removeCreate(request.id) }
         }
         .task {
-            let last = UserDefaults.standard.string(forKey: "lastCreateProject")
-            let saved = Drafts.shared.creates.first { $0.id == request.id }
-            // The draft's project (a window reopened, or restored after a relaunch), else the request's, else the one
-            // used last time, else a starred one, else the first.
-            if let saved, let id = saved.accountID, let st = session.state(id),
-                let p = st.projects.first(where: { $0.key == saved.projectKey })
-            {
-                m.choice = ProjectChoice(project: p, accountID: st.id)
-            } else if let id = request.accountID, let st = session.state(id),
-                let p = st.projects.first(where: { $0.key == request.projectKey })
-            {
-                m.choice = ProjectChoice(project: p, accountID: st.id)
-            } else if let last, let st = session.states.first(where: { last.hasPrefix("\($0.id)|") }),
-                let p = st.projects.first(where: { "\(st.id)|\($0.key)" == last })
-            {
-                m.choice = ProjectChoice(project: p, accountID: st.id)
-            } else if let st = session.states.first(where: { !$0.starredProjects.isEmpty }),
-                let p = st.starredProjects.first
-            {
-                m.choice = ProjectChoice(project: p, accountID: st.id)
-            } else if let st = session.states.first, let p = st.projects.first {
-                m.choice = ProjectChoice(project: p, accountID: st.id)
-            }
-            m.parentKey = parentKey ?? ""
-            if let saved {
-                // The type is kept by `loadTypes` as long as the project still offers it.
-                m.type = saved.type
-                m.summary = saved.summary
-                m.text = saved.text
-                m.mentions = saved.mentions
-                m.assignee = saved.assignee
-                m.priority = saved.priority
-                m.labels = saved.labels
-                m.parentKey = saved.parentKey
-            }
-            syncState()
+            // The project and the draft are in place from `init`.
+            let reopened = Drafts.shared.creates.contains { $0.id == request.id }
             if let st = m.state { await m.loadTypes(st) }
             // After the types, which the clone picks from; a draft already holds the clone, maybe edited since.
-            if saved == nil, let key = request.cloneKey { clone(key) }
+            if !reopened, let key = request.cloneKey { clone(key) }
         }
         .onChange(of: m.choice) {
             syncState()
@@ -443,15 +458,16 @@ struct CreateIssueView: View {
         .task(id: m.state?.id) {
             guard let st = m.state else { return }
             let c = st.client
-            let (now, fresh) = st.memo("labels", once: true) { try await c.labels() }
+            let (now, fresh) = await st.memoOnce("labels") { try await c.labels() }
             if let now { allLabels = now }
             if let list = await fresh.value { allLabels = list }
         }
-        // The assignee popover opens on this list from memory rather than after its own request.
+        // The assignee popover opens on this list from memory rather than after its own request; one request a
+        // session per project, not one per window.
         .task(id: m.project?.key) {
             guard let st = m.state, let key = m.project?.key else { return }
             let c = st.client
-            _ = st.memo("assignable-\(key)") { try await c.assignableUsers(project: key, query: "") }
+            _ = await st.memoOnce("assignable-\(key)") { try await c.assignableUsers(project: key, query: "") }
         }
         // A fixed field loses its error.
         .onChange(of: m.summary) { m.error = nil }
@@ -512,6 +528,77 @@ struct CreateIssueView: View {
                 dismiss()
                 openWindow(id: "issue", value: IssueTarget(accountID: st.id, key: created.key))
             } catch { m.error = error.localizedDescription }
+        }
+    }
+}
+
+/// The Project pop-up as AppKit's own. SwiftUI's Picker built and measured a Text per project of every account on
+/// each layout pass, twice per window: most of a New Issue window's opening on a site of many projects (CON-244).
+/// Menu items are not laid out until the menu opens. One section per account, titled when there are several.
+private struct ProjectPopUp: NSViewRepresentable {
+    @Binding var choice: ProjectChoice?
+    let sections: [Projects]
+    struct Projects: Equatable {
+        let title: String
+        let choices: [ProjectChoice]
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeNSView(context: Context) -> NSPopUpButton {
+        let b = NSPopUpButton(frame: .zero, pullsDown: false)
+        b.target = context.coordinator
+        b.action = #selector(Coordinator.picked(_:))
+        b.setAccessibilityLabel(String(localized: "Project"))
+        return b
+    }
+
+    func updateNSView(_ b: NSPopUpButton, context: Context) {
+        let c = context.coordinator
+        c.choice = $choice
+        b.isEnabled = context.environment.isEnabled
+        // The menu is rebuilt only when the projects change, or the placeholder comes or goes.
+        if c.sections != sections || c.placeholder != (choice == nil) {
+            c.sections = sections
+            c.placeholder = choice == nil
+            let menu = NSMenu()
+            // A row for the nil the window opens with when no project could be picked for it.
+            if choice == nil { menu.addItem(withTitle: String(localized: "Project"), action: nil, keyEquivalent: "") }
+            for (i, s) in sections.enumerated() {
+                if i > 0 { menu.addItem(.separator()) }
+                if sections.count > 1 { menu.addItem(.sectionHeader(title: s.title)) }
+                for p in s.choices {
+                    let item = NSMenuItem(title: p.project.name, action: nil, keyEquivalent: "")
+                    item.representedObject = p
+                    menu.addItem(item)
+                }
+            }
+            b.menu = menu
+            c.size = nil
+        }
+        // The search over the items only when the shown one is not the choice already.
+        if b.selectedItem == nil || b.selectedItem?.representedObject as? ProjectChoice != choice {
+            b.select(
+                choice == nil ? b.item(at: 0) : b.itemArray.first { $0.representedObject as? ProjectChoice == choice })
+            c.size = nil
+        }
+    }
+
+    /// As wide as AppKit makes the pop-up (its widest item), measured once per menu and selection, within the proposal.
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView b: NSPopUpButton, context: Context) -> CGSize? {
+        let size = context.coordinator.size ?? b.intrinsicContentSize
+        context.coordinator.size = size
+        return CGSize(width: min(size.width, proposal.width ?? size.width), height: size.height)
+    }
+
+    @MainActor final class Coordinator: NSObject {
+        var choice: Binding<ProjectChoice?> = .constant(nil)
+        var sections: [Projects]?
+        var placeholder = false
+        var size: CGSize?
+
+        @objc func picked(_ sender: NSPopUpButton) {
+            if let p = sender.selectedItem?.representedObject as? ProjectChoice { choice.wrappedValue = p }
         }
     }
 }

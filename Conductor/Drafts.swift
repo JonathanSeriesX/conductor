@@ -57,6 +57,9 @@ final class Drafts {
     }
 
     func removeCreate(_ id: UUID) {
+        // An empty form calls this on every change from its first frame: a removal of nothing still wrote the
+        // defaults and had the File menu, which reads `creates`, rebuild itself a few times per window (CON-244).
+        guard creates.contains(where: { $0.id == id }) else { return }
         creates.removeAll { $0.id == id }
         Self.save(creates, "createDrafts")
     }
