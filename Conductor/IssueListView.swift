@@ -1152,13 +1152,21 @@ struct IssueListView: View {
     }
 
     /// → unfolds the selected parent's subtasks, ← folds them, as in an outline (the other way round right to left).
+    /// ← on a subtask goes to its parent, as in the Finder's list view, and the next ← folds it. The row is the one
+    /// `step` moves from: `selection` reads as of the pass that made this handler.
     private func fold(open: Bool) -> Bool {
-        guard selection.count == 1, let sel = selection.first,
-            let d = displayRows.first(where: { $0.row.target == sel }), !d.children.isEmpty,
-            expanded.contains(d.id) != open
+        let current = cursor.map { [$0] } ?? selection
+        let rows = displayRows
+        guard current.count == 1, let sel = current.first, let i = rows.firstIndex(where: { $0.row.target == sel })
         else { return false }
-        withAnimation(.snappy(duration: 0.25)) { expanded.formSymmetricDifference([d.id]) }
-        return true
+        let d = rows[i]
+        if !d.children.isEmpty, expanded.contains(d.id) != open {
+            withAnimation(.snappy(duration: 0.25)) { expanded.formSymmetricDifference([d.id]) }
+            return true
+        }
+        // Subtasks follow their parent (see `DisplayRow.nest`): it is the nearest row above that sits less deep.
+        guard !open, d.depth > 0, let p = rows[..<i].lastIndex(where: { $0.depth < d.depth }) else { return false }
+        return step(by: p - i, plain: true, repeating: false)
     }
 
     /// There is something to save once the list differs from every sidebar entry, built-in, saved or project.
