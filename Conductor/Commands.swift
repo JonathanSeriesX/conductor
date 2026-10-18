@@ -289,7 +289,7 @@ struct IssueWindow: View {
             if !navigating { trail = [] }  // another row was picked: that is a new start, not a step
             navigating = false
         }
-        .background(WindowCascader())
+        .background(WindowCascader(target: target))
         // Opened (a link, Spotlight, Open in New Window) or shown again after a close: the main window's preview
         // lets the same issue go. Steps along this window's trail are not openings and leave the preview alone.
         .onAppear { if !embedded { session.announceWindow(target) } }
@@ -345,12 +345,21 @@ func keyItems(_ keys: [String]) -> [NSItemProvider] {
 /// Offsets a new issue window from the one opened before it, as document windows do. SwiftUI puts every
 /// window of a group at the same spot. A window the system restored keeps its own frame.
 private struct WindowCascader: NSViewRepresentable {
+    /// The issue the window shows, for `IssueWindows`: this view knows the window and the issue both.
+    let target: IssueTarget
     func makeNSView(context: Context) -> Cascader { Cascader() }
-    func updateNSView(_ view: Cascader, context: Context) {}
+    func updateNSView(_ view: Cascader, context: Context) { view.target = target }
 
     final class Cascader: NSView {
         private var done = false
+        var target: IssueTarget? { didSet { if target != oldValue { register() } } }
+        /// An issue window of its own, not the main window's preview column.
+        private func register() {
+            guard let window, let target, window.identifier?.rawValue.hasPrefix("issue") == true else { return }
+            IssueWindows.show(target, in: window)
+        }
         override func viewDidMoveToWindow() {
+            register()
             guard !done, let window, let id = window.identifier?.rawValue, id.hasPrefix("issue") else { return }
             done = true
             let others = NSApp.windows.filter {
@@ -362,5 +371,30 @@ private struct WindowCascader: NSViewRepresentable {
                     window.cascadeTopLeft(from: NSPoint(x: last.frame.minX, y: last.frame.maxY)))
             }
         }
+    }
+}
+
+/// Every issue window by the issue it shows, so a request raises the window there is rather than opening a second:
+/// a link that launched the app found the restored window up but not yet known to SwiftUI by its value, and its
+/// title not set yet (CON-249). A second window for an issue that has one closes itself, the first coming forward.
+@MainActor enum IssueWindows {
+    private struct Weak { weak var window: NSWindow? }
+    private static var shown: [IssueTarget: Weak] = [:]
+
+    static func window(for target: IssueTarget) -> NSWindow? {
+        shown[target]?.window.flatMap { $0.isVisible ? $0 : nil }
+    }
+
+    /// `window` shows `target` now (a step along its trail moves it to another issue).
+    static func show(_ target: IssueTarget, in window: NSWindow) {
+        shown = shown.filter { $0.value.window != nil && $0.value.window !== window }
+        if let other = self.window(for: target), other !== window {
+            DispatchQueue.main.async {
+                other.makeKeyAndOrderFront(nil)
+                window.close()
+            }
+            return
+        }
+        shown[target] = Weak(window: window)
     }
 }

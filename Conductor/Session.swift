@@ -512,6 +512,9 @@ final class Session {
     var createIssueRequested = false
     var navigationRequest: ListFilters?
     var pendingOpen: IssueTarget?
+    /// AppKit has put back the last session's windows. A link that launches the app waits for it: opened before, it
+    /// found no restored window of its issue to raise and made a second (CON-249).
+    private(set) var windowsRestored = false
     /// The issue a window of its own just opened or came back with, and a count so the same one twice still
     /// counts: a main window previewing it lets it go, as a double-click does.
     private(set) var windowOpened: (target: IssueTarget, count: Int)?
@@ -588,6 +591,10 @@ final class Session {
         // window keeps its spinner until the first one answers, rather than showing the sign-in form to someone
         // who is signed in.
         isRestoring = Keychain.isLocked || (states.isEmpty && !stored.isEmpty)
+        // Posted also when there was nothing to restore; the session exists before restoration starts.
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.didFinishRestoringWindowsNotification, object: nil, queue: .main
+        ) { [weak self] _ in MainActor.assumeIsolated { self?.windowsRestored = true } }
         LaunchProbe.once("session.ready")
     }
 

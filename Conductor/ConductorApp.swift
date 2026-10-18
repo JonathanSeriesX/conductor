@@ -258,6 +258,7 @@ struct RootView: View {
         }
         .onChange(of: session.states.count) { restoreOnce() }
         .onChange(of: session.isRestoring) { restoreOnce() }
+        .onChange(of: session.windowsRestored) { restoreOnce() }
         .onChange(of: filters) { old, new in
             // Another list: the preview would otherwise show an issue that is not in it. A search typed or cleared
             // is not another list: the open issue stays, so Escape clears the search first and the selection next.
@@ -357,9 +358,17 @@ struct RootView: View {
         return nil
     }
 
-    /// Requests from Spotlight, notifications and links land in an issue window.
+    /// Requests from Spotlight, notifications and links land in an issue window. A link that launched the app ran
+    /// before the restored windows were up and opened a second window of an issue that had one (CON-249): at launch
+    /// the request waits in `pendingOpen` until AppKit has restored them (`restoreOnce` runs it then), and a window
+    /// already showing the issue comes forward (`IssueWindows`) rather than through `openWindow`.
     private func open(_ target: IssueTarget) {
-        openWindow(id: "issue", value: target)
+        guard session.windowsRestored else { return }
+        if let w = IssueWindows.window(for: target) {
+            w.makeKeyAndOrderFront(nil)
+        } else {
+            openWindow(id: "issue", value: target)
+        }
         session.pendingOpen = nil
         NSApp.activate()
     }
