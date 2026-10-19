@@ -626,7 +626,9 @@ final class IssueListStore {
     private func show(_ new: [ListRow], animated: Bool = false, keep: Bool = true) {
         unshown = false
         let (new, stale) = Self.keeping(keep ? kept : [], of: rows, in: new)
+        let gone = stale.subtracting(self.stale)
         if stale != self.stale { self.stale = stale }  // unchanged, nothing reading it redraws
+        if !gone.isEmpty { Task { await refetch(gone) } }
         guard
             new.count != rows.count
                 || zip(new, rows).contains(where: { $0 !== $1 && ($0.id != $1.id || $0.issue != $1.issue) })
@@ -635,6 +637,21 @@ final class IssueListStore {
             withAnimation(.smooth(duration: 0.35)) { rows = new }
         } else {
             rows = new
+        }
+    }
+
+    /// The rows `ids` names, kept greyed though a reload no longer brings them (see `keeping`), as Jira has them now,
+    /// by key: the edit that took them out of the list was the preview's (Issue › Change Status), which reaches no
+    /// row, so the greyed row went on showing the issue from before it, "To Do" and "5 days ago" (CON-265).
+    private func refetch(_ ids: Set<String>) async {
+        for group in Dictionary(grouping: rows.filter { ids.contains($0.id) }, by: \.state.id).values {
+            let st = group[0].state
+            let keys = group.map { "\"\($0.issue.key)\"" }.joined(separator: ",")
+            guard let page = try? await Self.fetch(jql: "issuekey in (\(keys))", state: st, cache: false) else {
+                continue
+            }
+            let fresh = Dictionary(page.issues.map { ($0.key, $0) }, uniquingKeysWith: { a, _ in a })
+            edit({ $0.state === st && ids.contains($0.id) && fresh[$0.issue.key] != nil }) { $0 = fresh[$0.key]! }
         }
     }
 
