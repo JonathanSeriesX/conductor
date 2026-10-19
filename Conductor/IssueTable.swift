@@ -665,6 +665,18 @@ extension IssueTable {
                 case .remove(let rows):
                     items = items.indices.filter { !rows.contains($0) }.map { items[$0] }
                     outline.removeItems(at: rows, inParent: nil, withAnimation: gone)
+                case .move(let from, let to)
+                where before[items[from].id]?.intersects(outline.visibleRect) == true
+                    && outline.rect(ofRow: from).minY - outline.rect(ofRow: to).minY > outline.visibleRect.height:
+                    // A row in sight that passes more than a screen of rows (edited far down, it sorts to the top)
+                    // fades out as a removed row does while the rows above glide into its place, and goes in there
+                    // unseen: moved, its view had nowhere in sight to glide to and was gone after one torn frame
+                    // (CON-253). A row stepping up a few places still glides, as does each row that one coming down
+                    // from far above passes, one place up.
+                    let row = items.remove(at: from)
+                    outline.removeItems(at: [from], inParent: nil, withAnimation: gone)
+                    items.insert(row, at: to)
+                    outline.insertItems(at: [to], inParent: nil, withAnimation: come)
                 case .move(let from, let to):
                     items.insert(items.remove(at: from), at: to)
                     outline.moveItem(at: from, inParent: nil, to: to, inParent: nil)
@@ -996,7 +1008,11 @@ extension IssueTable {
         private var margins: (top: CGFloat, bottom: CGFloat) = (0, 0)
 
         /// The anchor as the window stands, of the rows that keep their places in `new` (see `staying`; all of them when
-        /// nil).
+        /// nil), and of those the ones still at the same row when there are any: an edit that sends a row from the
+        /// window to the top shifts the rows it passes and leaves the rows under it where they were, so those hold the
+        /// window, the rows above the edited one glide down into its place and nothing else moves. Held on the top row,
+        /// the window followed the shift, the edited row's place stayed a hole and every row under it glided up
+        /// (CON-253). Rows come in above the window (a page, a refresh) leave none at its row: any that kept its place.
         private func anchor(keeping new: [String]? = nil) -> Anchor? {
             guard let outline, let sv = outline.enclosingScrollView, !items.isEmpty else { return nil }
             let n = outline.numberOfRows
@@ -1004,7 +1020,11 @@ extension IssueTable {
             let clip = outline.convert(sv.contentView.bounds, from: sv.contentView)
             let range = outline.rows(in: clip)
             let rows = range.location..<min(NSMaxRange(range), items.count)
-            let keep = new.map { Self.staying(rows, of: items.map(\.id), in: $0) }
+            let keep = new.map { new in
+                let stay = Self.staying(rows, of: items.map(\.id), in: new)
+                let still = stay.filter { id in rowOf[id].map { $0 < new.count && new[$0] == id } == true }
+                return still.isEmpty ? stay : still
+            }
             let visible = rows.compactMap { i -> (id: String, frame: NSRect)? in
                 guard keep?.contains(items[i].id) ?? true else { return nil }
                 return (items[i].id, outline.rect(ofRow: i))
