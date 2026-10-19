@@ -912,6 +912,11 @@ struct IssueListView: View {
         .toolbar(removing: .title)
         .background(ToolbarRelayout())
         .searchable(text: $filters.text, placement: .toolbar, prompt: "Search, JQL, or paste a Jira link")
+        // A prompt wider than the field (German, or the window at its 1100 pt minimum) ends in "…" rather than being
+        // cut mid-word (CON-270): the toolbar field takes its line break mode from outside `.searchable`, and keeps it
+        // as SwiftUI updates it. Text truncates at the tail anyway, and the rows are hosted apart, so nothing else
+        // changes.
+        .truncationMode(.tail)
         .searchFocused($searchFocused)
         .searchSuggestions {
             // With nothing typed the list is the recent searches, and says so. Nothing at all (not even an
