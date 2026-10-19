@@ -222,19 +222,25 @@ final class IssueDetailStore {
             async let kids = full ? client.search(jql: client.childrenJQL([key]) + " ORDER BY created ASC") : nil
             async let types = full ? state.linkTypes() : nil
             let fresh = try await i.value
+            let moves = try? await t
+            let meta = try? await m
+            // Compared off the main thread (QA-101 has 250 comment trees, an edit screen runs to hundreds of KB) and
+            // put in place in one step: Jira's copy lands a moment after the page shows, often mid-scroll, and the
+            // page renders once for whatever changed.
+            let (old, oldMeta) = (issue, editMeta)
+            let (sameIssue, sameMeta) = await Task.detached(priority: .userInitiated) {
+                (old == fresh, meta == nil || meta == oldMeta)
+            }.value
             guard holds(state, key) else { return }
-            update(\.issue, fresh)
+            if !sameIssue { issue = fresh }
             LaunchProbe.once("issue.fresh")
             DiskCache.saveAsync(fresh, account: state.account, name: "issue-\(key)")
             Spotlight.index([fresh], host: state.host)
-            if let fresh = try? await t, holds(state, key) {
-                update(\.transitions, fresh)
-                if let i = issue { state.learnTransitions(fresh, of: i) }
+            if let moves {
+                update(\.transitions, moves)
+                state.learnTransitions(moves, of: fresh)
             }
-            if let fresh = try? await m, holds(state, key) {
-                update(\.editMeta, fresh)
-                if let i = issue { state.learnEditMeta(fresh, of: i) }
-            }
+            if let meta, !sameMeta { editMeta = meta }
             if full {
                 if let page = try? await kids, holds(state, key) {
                     update(\.children, page.issues.filter { !$0.fields.issuetype.isSubtask })
@@ -243,6 +249,7 @@ final class IssueDetailStore {
                 if let list = await types { update(\.linkTypes, list) }
                 prefetchRelated(state)
             }
+            if let meta { await state.learnEditMeta(meta, of: fresh) }
         } catch {
             guard holds(state, key) else { return }
             if (error as? JiraError)?.status == 404 {
@@ -417,8 +424,8 @@ struct IssueDetailView: View {
     @State private var replyMentions: [String: String] = [:]
     @State private var showAssign = false
     @State private var showLabels = false
-    /// Too near the bottom of the window for the labels editor to open below its row.
-    @State private var labelsLow = false
+    /// Too near the bottom of the window for the labels editor to open below its row: see `LabelsSide`.
+    @State private var labelsSide = LabelsSide()
     /// Scrolls what a key acts on into view first: see `PageReveal`.
     @State private var pageReveal = PageReveal()
     @State private var showLink = false
@@ -434,8 +441,6 @@ struct IssueDetailView: View {
     @FocusState private var descriptionFocused: Bool
     @FocusState private var commentFocused: Bool
     @State private var commentRequest = 0
-    /// Content is under the toolbar: the preview column then draws the toolbar's band.
-    @State private var scrolled = false
     /// The issue on screen: the previous one stays until the next has loaded, and its folds go with it.
     private var shownKey: String { store.issue?.key ?? key }
     /// Folded cards and work-log groups, per issue, as this Mac remembers them.
@@ -456,9 +461,6 @@ struct IssueDetailView: View {
     /// The load this page's own write would trigger: `perform` has refreshed the issue already.
     @State private var ownLoad = ""
     @Environment(\.scenePhase) private var scenePhase
-    private var loadID: String {
-        "\(target.accountID)|\(key)|\(session.reloadTick)|\(session.writeTicks[key] ?? 0)"
-    }
 
     var body: some View {
         Group {
@@ -494,13 +496,7 @@ struct IssueDetailView: View {
                 Task { await store.load(jira, key: key) }
             }
         }
-        .onChange(of: session.lastChange?.count) {
-            if let c = session.lastChange, c.targets.contains(target) { store.apply(c) }
-        }
-        // A write to this issue in another window bumps its tick, so this page follows it.
-        .task(id: loadID) {
-            if let jira, !store.holds(jira, key) || loadID != ownLoad { await store.load(jira, key: key) }
-        }
+        .background(PageLoader(target: target, store: store, ownLoad: $ownLoad))
         // The same view serves one issue after another (a fresh view would take the toolbar with it for a frame).
         .onChange(of: target) { old, _ in
             commitSummary(of: old)
@@ -629,8 +625,7 @@ struct IssueDetailView: View {
                 .background(PageKeys(standalone: !embedded, reveal: pageReveal))
             }
             // The toolbar has no background, so blur what scrolls under it instead of letting buttons sit on text.
-            .softScrollEdge(band: embedded ? scrolled : nil)
-            .modifier(ScrolledWatch(on: embedded, scrolled: $scrolled))
+            .modifier(ScrolledWatch(on: embedded))
             // When the next issue is on screen, not when it was asked for: the previous one stays until then. By
             // its id too: the same key on another site is another issue.
             .onChange(of: store.issue.map { "\($0.id)|\($0.key)" }) { pageReveal.toTop() }
@@ -814,9 +809,12 @@ struct IssueDetailView: View {
             } else {
                 Text("No description").foregroundStyle(.tertiary)
             }
-            // Labels close the description, as tags close a post. A click edits them.
+            // Labels close the description, as tags close a post. A click edits them. Shown while the edit screen is
+            // still unknown, as Due is: for a type and status not seen before, the row arrived a moment late.
             let labels = issue.fields.labels ?? []
-            if !labels.isEmpty || store.canEdit("labels") {
+            if !labels.isEmpty || store.canEdit("labels") || store.editMeta == nil {
+                // Read so the page renders as the editor opens, and takes the side the row is on then.
+                let _ = showLabels
                 Button {
                     showLabels = true
                 } label: {
@@ -846,9 +844,9 @@ struct IssueDetailView: View {
                 .onGeometryChange(for: Bool.self) { p in
                     (p.bounds(of: .scrollView)?.maxY ?? .infinity) - p.size.height < 360
                 } action: {
-                    labelsLow = $0
+                    labelsSide.low = $0
                 }
-                .popover(isPresented: $showLabels, arrowEdge: labelsLow ? .top : .bottom) {
+                .popover(isPresented: $showLabels, arrowEdge: labelsSide.low ? .top : .bottom) {
                     LabelsEditor(labels: labels, suggestions: store.allLabels) { new in
                         showLabels = false
                         run { try await $0.editIssue(key, fields: ["labels": .array(new.map(JSONValue.string))]) }
@@ -2123,21 +2121,55 @@ private enum PageTarget: Hashable {
     case fields
 }
 
-/// Whether content has scrolled under the toolbar, for the preview column's band. A window does without: watched,
-/// the scroll position ran through SwiftUI's graph on every frame of a scroll.
+/// The soft edge under the toolbar, and in the preview column the toolbar's band once content has scrolled under it.
+/// A window does without the watch: watched, the scroll position ran through SwiftUI's graph on every frame of a
+/// scroll. The flag is this modifier's own state: as the page's, the first scroll from the top re-rendered the page.
 private struct ScrolledWatch: ViewModifier {
     let on: Bool
-    @Binding var scrolled: Bool
+    @State private var scrolled = false
     @ViewBuilder func body(content: Content) -> some View {
         if on {
-            content.onScrollGeometryChange(for: Bool.self) {
+            content.softScrollEdge(band: scrolled).onScrollGeometryChange(for: Bool.self) {
                 $0.contentOffset.y + $0.contentInsets.top > 1
             } action: {
                 scrolled = $1
             }
         } else {
-            content
+            content.softScrollEdge()
         }
+    }
+}
+
+/// Whether the labels row is too near the window's bottom for its editor to open below it. A class, as `PageReveal`
+/// is: as state it flipped while the row passed mid-scroll, and every flip re-rendered the page.
+@MainActor private final class LabelsSide {
+    var low = false
+}
+
+/// Loads the page, and again for Refresh or a write to its issue in any window; takes a change announced from
+/// elsewhere. A view of its own, as `IssueKeyMonitor` is: read by the page's body, `writeTicks` and `lastChange`
+/// re-rendered every open page on every write to any issue.
+private struct PageLoader: View {
+    let target: IssueTarget
+    let store: IssueDetailStore
+    @Binding var ownLoad: String
+    @Environment(Session.self) private var session
+    @Environment(\.jira) private var jira
+    private var loadID: String {
+        "\(target.accountID)|\(target.key)|\(session.reloadTick)|\(session.writeTicks[target.key] ?? 0)"
+    }
+
+    var body: some View {
+        Color.clear
+            .onChange(of: session.lastChange?.count) {
+                if let c = session.lastChange, c.targets.contains(target) { store.apply(c) }
+            }
+            // A write to this issue in another window bumps its tick, so this page follows it.
+            .task(id: loadID) {
+                if let jira, !store.holds(jira, target.key) || loadID != ownLoad {
+                    await store.load(jira, key: target.key)
+                }
+            }
     }
 }
 

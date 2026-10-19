@@ -1,4 +1,5 @@
 import SwiftUI
+import Synchronization
 
 /// One save on the issue's History tab: who, when, and the fields it changed.
 struct ChangeGroup: Codable, Hashable, Sendable, Identifiable {
@@ -77,6 +78,20 @@ extension ChangeGroup.Item {
     /// reads inline marks only, so the block marks go first: headings and quotes become plain lines, list and task
     /// items "• ", a table row its cells; code fences, rules and blank lines go. Images come out as their name.
     static func fromWiki(_ wiki: String) -> AttributedString {
+        if let hit = parsed.withLock({ $0[wiki] }) { return hit }
+        let out = parse(wiki)
+        parsed.withLock {
+            if $0.count >= 2000 { $0 = [:] }  // ponytail: a cap, not an LRU; a few hundred saves fit many times over
+            $0[wiki] = out
+        }
+        return out
+    }
+
+    /// Each text parsed once: a pass of the History window asked for every value four to six times (the noise filter
+    /// twice, then the row), and a parse runs a dozen regular expressions over the whole text.
+    private static let parsed = Mutex<[String: AttributedString]>([:])
+
+    private static func parse(_ wiki: String) -> AttributedString {
         // Cloud writes a mention here by account id, which no reader knows.
         let text = wiki.replacingOccurrences(of: #"\[~accountid:[^\]]+\]"#, with: "@…", options: .regularExpression)
         var mentions: [String: String] = [:]

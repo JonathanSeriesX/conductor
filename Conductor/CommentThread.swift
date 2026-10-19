@@ -119,6 +119,9 @@ private struct HostedEditor: View {
     private var editorHeight: CGFloat = 0
     private var observers: [NSObjectProtocol] = []
     private var idle: Task<Void, Never>?
+    /// When the page last scrolled, and the wait for it to stand still: see `heightChanged`.
+    private var scrolled: CFTimeInterval = 0
+    private var settling: Task<Void, Never>?
     private let measurer = TextMeasurer()
 
     override var isFlipped: Bool { true }
@@ -129,11 +132,19 @@ private struct HostedEditor: View {
         replyingTo: String?, editor: @escaping (Comment, FocusState<Bool>.Binding) -> AnyView,
         replier: @escaping (String, FocusState<Bool>.Binding) -> AnyView
     ) {
+        // Laid out again only for a change here: the page updates the thread on every keystroke in its editors, and
+        // each update had the whole page laid out again around it. (The client is the account's and never changes.)
+        var changed = meID != self.meID
         self.meID = meID
         if attachments != self.attachments {
             self.attachments = attachments
-            strings = [:]
-            heights = heights.mapValues { (-1, $0.height) }
+            // Only text that shows a file changes with the files: a step to an issue with other attachments threw
+            // every comment's text and height away.
+            for (id, s) in strings where s.comment.body.showsFiles {
+                strings[id] = nil
+                if let h = heights[id] { heights[id] = (-1, h.height) }
+            }
+            changed = true
         }
         if comments != source || newestFirst != self.newestFirst {
             source = comments
@@ -141,6 +152,7 @@ private struct HostedEditor: View {
             let threads = Comment.threads(comments, newestFirst: newestFirst)
             self.comments = threads.map(\.comment)
             roots = threads.map(\.root)
+            changed = true
         }
         if editingID != self.editingID || replyingTo != self.replyingTo {
             self.editingID = editingID
@@ -148,8 +160,10 @@ private struct HostedEditor: View {
             editorHost?.view.removeFromSuperview()
             editorHost = nil
             editorHeight = 0
+            changed = true
         }
         replyIndex = replyingTo.flatMap { roots.lastIndex(of: $0) }
+        let editorWas = editorHeight
         if let editingID, let i = self.comments.firstIndex(where: { $0.id == editingID }) {
             let c = self.comments[i]
             updateEditor(width: textWidth(i)) { editor(c, $0) }
@@ -157,6 +171,7 @@ private struct HostedEditor: View {
             updateEditor(width: width - Self.textInset) { replier(replyingTo, $0) }
             if let v = editorHost?.view, v.superview !== self { addSubview(v) }
         }
+        guard changed || editorHeight != editorWas else { return }
         recomputeTops()
         invalidateIntrinsicContentSize()
         needsLayout = true
@@ -275,10 +290,23 @@ private struct HostedEditor: View {
                 heights[id] = nil
             }
             recomputeTops()
-            invalidateIntrinsicContentSize()
+            heightChanged()
             needsLayout = true
         }
         return nil
+    }
+
+    /// Tells SwiftUI the thread's height changed: at once, or while the page scrolls, once it has stood still for
+    /// 100 ms. Rows measured as they scrolled in, an image landing, and the idle measuring's end each had the whole
+    /// page laid out again mid-glide; meanwhile the rows are placed from `tops`, past the thread's old frame if need be.
+    private func heightChanged() {
+        guard CACurrentMediaTime() - scrolled < 0.1 else { return invalidateIntrinsicContentSize() }
+        guard settling == nil else { return }
+        settling = Task { [weak self] in
+            while let self, CACurrentMediaTime() - self.scrolled < 0.1 { try? await Task.sleep(for: .milliseconds(50)) }
+            self?.settling = nil
+            self?.invalidateIntrinsicContentSize()
+        }
     }
 
     /// Measures the rows not yet measured at this width, a few milliseconds per turn of the run loop, so the
@@ -299,7 +327,7 @@ private struct HostedEditor: View {
             }
             guard let self, changed, !Task.isCancelled else { return }
             self.recomputeTops()
-            self.invalidateIntrinsicContentSize()
+            self.heightChanged()
             self.needsLayout = true
         }
     }
@@ -330,7 +358,12 @@ private struct HostedEditor: View {
             observers.append(
                 NotificationCenter.default.addObserver(
                     forName: NSView.boundsDidChangeNotification, object: clip, queue: nil
-                ) { [weak self] _ in MainActor.assumeIsolated { self?.placeRows() } })
+                ) { [weak self] _ in
+                    MainActor.assumeIsolated {
+                        self?.scrolled = CACurrentMediaTime()
+                        self?.placeRows()
+                    }
+                })
         }
         for name in [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification] {
             observers.append(
@@ -384,7 +417,7 @@ private struct HostedEditor: View {
         }
         if changed {
             recomputeTops()
-            invalidateIntrinsicContentSize()
+            heightChanged()
         }
         let est = estimate
         let rtl = userInterfaceLayoutDirection == .rightToLeft
@@ -985,6 +1018,10 @@ struct DescriptionText: NSViewRepresentable {
     /// Expands opened by a click, by their place in the document; new text starts with every one closed.
     private var expanded: Set<String> = []
     private var loading: Set<URL> = []
+    /// When the text was last built, and whether a build waits on it: images that land together build it once in
+    /// 100 ms, where each built and measured the whole description again.
+    private var built: CFTimeInterval = 0
+    private var buildPending = false
     /// Measured apart from the live layout: SwiftUI probes several widths and only sets the frame it settles on.
     private let measurer = TextMeasurer()
     private var heights: [CGFloat: CGFloat] = [:]
@@ -1004,6 +1041,7 @@ struct DescriptionText: NSViewRepresentable {
 
     private func render() {
         guard let shown else { return }
+        built = CACurrentMediaTime()
         let text = ADFAttributed.render(shown.node, attachments: shown.attachments, expanded: expanded) { [weak self] in
             self?.image(for: $0)
         }
@@ -1046,10 +1084,39 @@ struct DescriptionText: NSViewRepresentable {
             let image = await load(url, 1600)
             guard let self else { return }
             loading.remove(url)
-            if image != nil { render() }
+            if image != nil { imageLanded() }
         }
         return nil
     }
+
+    private func imageLanded() {
+        guard !buildPending else { return }
+        let wait = built + 0.1 - CACurrentMediaTime()
+        guard wait > 0 else { return render() }
+        buildPending = true
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(wait))
+            guard let self else { return }
+            buildPending = false
+            render()
+        }
+    }
+
+    #if DEBUG
+        /// With CONDUCTOR_FRAMES set, each draw of the description on stderr: the dirty strip's height, the whole
+        /// text's, and the time the draw took, to line up with the late ticks while a page scrolls.
+        override func draw(_ dirtyRect: NSRect) {
+            guard Self.logDraws else { return super.draw(dirtyRect) }
+            let start = CACurrentMediaTime()
+            super.draw(dirtyRect)
+            FileHandle.standardError.write(
+                String(
+                    format: "DRAW description %.0f of %.0f pt %.1f ms\n", dirtyRect.height, bounds.height,
+                    (CACurrentMediaTime() - start) * 1000
+                ).data(using: .utf8)!)
+        }
+        private static let logDraws = ProcessInfo.processInfo.environment["CONDUCTOR_FRAMES"] != nil
+    #endif
 
     func preview(_ a: Attachment) { onPreview(a) }
     func toggleTask(_ id: String) { onToggleTask?(id) }
@@ -1060,6 +1127,11 @@ struct DescriptionText: NSViewRepresentable {
 }
 
 // MARK: - ADF → attributed string
+
+extension ADFNode {
+    /// Shows one of the issue's files (an image, a file chip): the only text that changes with the attachments.
+    fileprivate var showsFiles: Bool { type.hasPrefix("media") || (content ?? []).contains(where: \.showsFiles) }
+}
 
 /// The card's look as one attributed string for TextKit 1: the same fonts, colours and gaps; code, quotes, panels
 /// and tables as text blocks that draw their own backgrounds; images and rules as attachment cells.
@@ -1317,10 +1389,12 @@ struct DescriptionText: NSViewRepresentable {
         for (i, m) in (node.content ?? []).enumerated() {
             if i > 0 { s.append(NSAttributedString(string: " ", attributes: [.font: font, .kern: 4])) }
             if let a = attachments.first(where: { $0.filename == m.attr("alt") }) {
+                let natural = NSSize(width: m.attrs?["width"]?.number ?? 0, height: m.attrs?["height"]?.number ?? 0)
                 s.append(
                     Self.clickable(
                         (a.mimeType ?? "").hasPrefix("image/")
-                            ? ImageCell(attachment: a, picture: image(a)) as FileCell : FileChipCell(a)))
+                            ? ImageCell(attachment: a, picture: image(a), natural: natural) as FileCell
+                            : FileChipCell(a)))
             } else {
                 let att = NSTextAttachment()
                 att.attachmentCell = ChipCell(m.attr("alt") ?? String(localized: "Attached media"))
@@ -1623,33 +1697,28 @@ extension NSImage {
     var file: Attachment { get }
 }
 
-/// An inline image: fitted into 520 by 360 points (or the line's width), rounded; a grey box until it has loaded.
+/// An inline image: fitted into 520 by 360 points (or the line's width), rounded; a grey box until it has loaded, as
+/// large as the picture will be when the document records its size, so the text under it stays where it is.
 final class ImageCell: NSTextAttachmentCell, FileCell {
     let file: Attachment
     let picture: NSImage?
+    /// The picture's size in pixels as the document records it (a media node's width and height); zero when not.
+    let natural: NSSize
 
-    init(attachment: Attachment, picture: NSImage?) {
+    init(attachment: Attachment, picture: NSImage?, natural: NSSize = .zero) {
         self.file = attachment
         self.picture = picture
+        self.natural = natural
         super.init(imageCell: nil)
     }
     required init(coder: NSCoder) { fatalError() }
 
     nonisolated private func size(forWidth w: CGFloat) -> NSSize {
-        guard let picture, picture.size.width > 0, picture.size.height > 0 else {
-            return NSSize(width: min(240, w), height: 140)
-        }
-        let k = min(w / picture.size.width, 360 / picture.size.height)
-        return NSSize(width: floor(picture.size.width * k), height: floor(picture.size.height * k))
+        let s = picture?.size ?? natural
+        guard s.width > 0, s.height > 0 else { return NSSize(width: min(240, w), height: 140) }
+        let k = min(w / s.width, 360 / s.height)
+        return NSSize(width: floor(s.width * k), height: floor(s.height * k))
     }
-
-    /// The picture without its colour, for an inactive window: made on the first draw that needs it.
-    private lazy var grey: NSImage? = picture.flatMap { p in
-        guard let cg = p.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
-        let ci = CIImage(cgImage: cg).applyingFilter("CIColorControls", parameters: [kCIInputSaturationKey: 0])
-        return Self.context.createCGImage(ci, from: ci.extent).map { NSImage(cgImage: $0, size: p.size) }
-    }
-    private static let context = CIContext()
 
     override func cellSize() -> NSSize { size(forWidth: 520) }
 
@@ -1664,10 +1733,23 @@ final class ImageCell: NSTextAttachmentCell, FileCell {
         NSGraphicsContext.saveGraphicsState()
         NSBezierPath(roundedRect: cellFrame, xRadius: 10, yRadius: 10).addClip()
         if let picture {
-            let dim = (controlView as? CommentTextView)?.active == false
-            (dim ? grey ?? picture : picture).draw(
-                in: cellFrame, from: .zero, operation: .sourceOver, fraction: dim ? 0.6 : 1, respectFlipped: true,
-                hints: nil)
+            let draw = { (op: NSCompositingOperation) in
+                picture.draw(in: cellFrame, from: .zero, operation: op, fraction: 1, respectFlipped: true, hints: nil)
+            }
+            if (controlView as? CommentTextView)?.active == false, let cg = NSGraphicsContext.current?.cgContext {
+                // Grey for an inactive window: the colour taken out by a grey fill in the saturation blend, cut back to
+                // the picture's own shape, the whole at 60 %. A grey copy through Core Image cost the main thread
+                // every picture on the page at once as a window opened in front.
+                cg.setAlpha(0.6)
+                cg.beginTransparencyLayer(in: cellFrame, auxiliaryInfo: nil)
+                draw(.sourceOver)
+                NSColor.gray.setFill()
+                cellFrame.fill(using: .saturation)
+                draw(.destinationIn)
+                cg.endTransparencyLayer()
+            } else {
+                draw(.sourceOver)
+            }
         } else {
             NSColor.quaternaryLabelColor.withAlphaComponent(0.04).setFill()
             cellFrame.fill()

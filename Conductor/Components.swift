@@ -199,7 +199,9 @@ struct RemoteImage: View {
         .task(id: url) {
             guard let url, image == nil else { return }
             guard let client = session.client(for: url), let data = try? await client.data(for: url) else { return }
-            var decoded = fit ? nil : ImageCache.svg(data)
+            var decoded: NSImage?
+            // Rasterized off the main thread: a new icon's dozen bitmaps cost a page's scroll a frame.
+            if !fit { decoded = await Task.detached(priority: .userInitiated) { ImageCache.svg(data) }.value }
             if decoded == nil { decoded = await DiskCache.decodeImage(data, maxPixels: 256) }
             guard let img = decoded else { return }
             DiskCache.saveImage(data, for: url)
@@ -986,14 +988,11 @@ final class PageKeyView: NSView {
     }
 
     /// The page's top at the toolbar's inset, where it rests, in the update that shows the next issue: no frame of it
-    /// at the last one's scroll position, as `ScrollViewProxy.scrollTo` left.
+    /// at the last one's scroll position, as `ScrollViewProxy.scrollTo` left. Through the animator, at once: set on the
+    /// clip, a glide of the arrow keys still running carried the next issue on to where the last one was headed.
     func toTop() {
         guard let sv = enclosingScrollView else { return }
-        let clip = sv.contentView
-        let y = -sv.contentInsets.top
-        guard abs(clip.bounds.minY - y) >= 0.5 else { return }
-        clip.setBoundsOrigin(NSPoint(x: clip.bounds.minX, y: y))
-        sv.reflectScrolledClipView(clip)
+        sv.glide(to: -sv.contentInsets.top, animated: false)
     }
 
     /// `rect` is in the page's coordinates. See `PageReveal`.

@@ -77,10 +77,12 @@ final class AccountState: Identifiable {
     }
 
     /// The edit screen an issue page just fetched, kept for every issue sharing its workflow: the next one opens
-    /// with it, and a field added to the screen today reaches them all.
-    func learnEditMeta(_ meta: EditMeta, of i: Issue) {
+    /// with it, and a field added to the screen today reaches them all. Compared off the main thread: an edit screen
+    /// runs to hundreds of KB, and the page had just compared it with its own.
+    func learnEditMeta(_ meta: EditMeta, of i: Issue) async {
         let k = Self.workflowKey(i)
-        guard editMetaByWorkflow[k] != meta else { return }
+        let known = editMetaByWorkflow[k]
+        guard await Task.detached(priority: .userInitiated, operation: { known != meta }).value else { return }
         editMetaByWorkflow[k] = meta
         DiskCache.saveAsync(editMetaByWorkflow, account: account, name: "workflows-editmeta")
     }
