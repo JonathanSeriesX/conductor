@@ -1046,6 +1046,30 @@ struct IssueListView: View {
                 selection = []
             }
         }
+        // Escape while the Recent Searches strip shows never reaches the window's key monitors (`RootView.escape`):
+        // the strip takes it below them (AppKit's suggestions dismissal interaction) and only closes, so the field
+        // kept the keyboard and ↓ did nothing (CON-259). Such an Escape is known by its effect: the strip went with
+        // rows still to show (typing that matches nothing empties it first), this list's field kept the keyboard,
+        // the app is in front, and no key press or click of the app's own (a pick, ↩, a click elsewhere) came just
+        // before. It then does what Escape does in the field: the text clears and the list takes the keyboard.
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didChangeOcclusionStateNotification)) { n in
+            guard searchFocused, !suggestions.isEmpty, let strip = n.object as? NSWindow, !strip.isVisible,
+                NSStringFromClass(type(of: strip)).contains("Suggestions"), NSApp.isActive,
+                NSEvent.pressedMouseButtons == 0, let tv = NSApp.keyWindow?.firstResponder as? NSTextView,
+                tv.isFieldEditor, tv.delegate is NSSearchField
+            else { return }
+            if let e = NSApp.currentEvent, [.keyDown, .leftMouseDown, .leftMouseUp, .rightMouseDown].contains(e.type),
+                e.window === strip || ProcessInfo.processInfo.systemUptime - e.timestamp < 0.25
+            {
+                return
+            }
+            // A turn later: the strip goes inside SwiftUI's own update.
+            DispatchQueue.main.async {
+                if !filters.text.isEmpty { filters.text = "" }
+                searchFocused = false
+                NSApp.keyWindow?.focusList()
+            }
+        }
         .onChange(of: session.focusSearchRequested) { _, on in
             if on {
                 searchFocused = true
