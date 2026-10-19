@@ -267,6 +267,14 @@ private struct InactiveDim: ViewModifier {
     return relativeDayFormatter.localizedString(for: day, relativeTo: today)
 }
 
+/// When a comment, a change or a Bin entry was made: within today the minutes and hours ("3 hours ago"), on any other
+/// day `relativeDay`, so an age reads as the list row says it. `.relative(presentation: .named)` counts calendar weeks
+/// and read a change from 9 days back as "2 weeks ago" ("vor 2 Wochen") beside the list's "9 days ago".
+@MainActor func relativeTime(_ date: Date) -> String {
+    Calendar.current.isDateInToday(date)
+        ? relativeDayFormatter.localizedString(for: date, relativeTo: .now) : relativeDay(date)
+}
+
 @MainActor private let relativeDayFormatter: RelativeDateTimeFormatter = {
     let f = RelativeDateTimeFormatter()
     f.dateTimeStyle = .named

@@ -136,7 +136,7 @@ struct HistoryView: View {
                             Avatar(user: g.author, size: 18)
                             Text(g.author?.displayName ?? String(localized: "Jira")).font(.callout.weight(.semibold))
                             Spacer()
-                            Text(g.created.formatted(.relative(presentation: .named))).font(.caption)
+                            Text(relativeTime(g.created)).font(.caption)
                                 .foregroundStyle(.tertiary).help(g.created.formatted())
                         }
                         ForEach(Array(g.items.filter { !$0.isNoise }.enumerated()), id: \.offset) { _, item in

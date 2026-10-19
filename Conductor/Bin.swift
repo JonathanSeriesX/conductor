@@ -210,7 +210,7 @@ struct BinView: View {
                             Text(item.detail).font(.callout).foregroundStyle(.secondary).lineLimit(2)
                         }
                         Spacer()
-                        Text(item.date.formatted(.relative(presentation: .named))).font(.caption)
+                        Text(relativeTime(item.date)).font(.caption)
                             .foregroundStyle(.tertiary).help(item.date.formatted())
                         if restoring.contains(item.id) {
                             ProgressView().controlSize(.small)

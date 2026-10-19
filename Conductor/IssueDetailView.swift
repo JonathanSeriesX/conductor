@@ -1166,7 +1166,7 @@ struct IssueDetailView: View {
         }
         if let c = issue.fields.created { field("Created") { Text(c.formatted(date: .abbreviated, time: .shortened)) } }
         if let u = issue.fields.updated {
-            field("Updated") { Text(u.formatted(.relative(presentation: .named))).help(u.formatted()) }
+            field("Updated") { Text(relativeTime(u)).help(u.formatted()) }
         }
     }
 

@@ -608,7 +608,7 @@ private struct HostedEditor: View {
     func show(_ c: Comment, text: NSAttributedString?, buttons: Bool, reply: Bool, editor: NSView?) {
         comment = c
         name.stringValue = c.author?.displayName ?? String(localized: "Unknown")
-        date.stringValue = c.created.formatted(.relative(presentation: .named))
+        date.stringValue = relativeTime(c.created)
         date.toolTip = c.created.formatted()
         edited.isHidden = !(c.updated.timeIntervalSince(c.created) > 60)
         editButton.isHidden = !buttons
