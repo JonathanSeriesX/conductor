@@ -570,7 +570,26 @@ extension IssueTable {
             restore(place)
             // Again once the rows in the window are measured: near the end, their stand-ins cut the place short.
             restore(place)
+            revealSelection()
             keepSoon()  // the list shown last is the first place (see `Session.prepare`)
+        }
+
+        /// The one selected row, out of the window as the list opens (another order of the same list put it 2,000 pt
+        /// down, CON-266), glides into view with room around it, as ↓ brings a row in (`IssueListView.step`) and as
+        /// Mail keeps the selected message in sight. The window then holds it, not the end it opened on.
+        private func revealSelection() {
+            guard let p = parent, p.selection.count == 1, let t = p.selection.first, let outline,
+                let sv = outline.enclosingScrollView, case let id = "\(t.accountID)|\(t.key)", let i = rowOf[id],
+                i < p.rows.count
+            else { return }
+            let (row, clip) = (outline.rect(ofRow: i), outline.convert(sv.contentView.bounds, from: sv.contentView))
+            guard row.minY < clip.minY + sv.contentInsets.top || row.maxY > clip.maxY else { return }
+            pinnedToEnd = false
+            sv.reveal(
+                { [weak self] in
+                    guard let self, let outline = self.outline, let j = self.rowOf[id] else { return nil }
+                    return sv.contentView.convert(outline.rect(ofRow: j), from: outline)
+                }, room: 12, animated: true)
         }
 
         /// `keep`, once the window has stood still a moment.
