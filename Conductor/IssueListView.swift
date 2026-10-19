@@ -1036,6 +1036,15 @@ struct IssueListView: View {
             var sameButText = old
             sameButText.text = new.text
             if sameButText != new { searchFocused = false }
+            // The issue of a key search that found nothing (`QA-9999` ↩) was never a row: it goes with the search, or
+            // the preview went on saying "Can't find" over the list the search gave back (CON-268). A key it found is
+            // a row and stays, as an issue picked before the search does (see `RootView`'s onChange of the filters).
+            let key = old.text.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+            if old.isKey, new.text.isEmpty, !selection.isEmpty, selection.allSatisfy({ $0.key == key }),
+                !store.rows.contains(where: { selection.contains($0.target) })
+            {
+                selection = []
+            }
         }
         .onChange(of: session.focusSearchRequested) { _, on in
             if on {
