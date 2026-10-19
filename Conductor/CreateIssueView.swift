@@ -274,6 +274,12 @@ struct CreateIssueView: View {
                 .textFieldStyle(.plain)
                 .focused($summaryFocused)
                 .lineLimit(1...3)
+                // The text's height, never what the window has left: from 1...3 lines the field takes any height
+                // from one line up, the window does not grow for a field that can still shrink, and a wrapped summary
+                // got 1.5 lines. The field editor draws past its frame but the unfocused cell draws only lines that
+                // fit whole, so line 2 vanished on leaving the field, in any script (CON-257). Rigid, as the
+                // description's editor is, the field grows the window instead.
+                .fixedSize(horizontal: false, vertical: true)
                 .padding(10)
                 // The padding is part of the field: a click anywhere in the box focuses it.
                 .background {
