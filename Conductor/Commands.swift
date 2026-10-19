@@ -371,7 +371,8 @@ func keyItems(_ keys: [String]) -> [NSItemProvider] {
 }
 
 /// Offsets a new issue window from the one opened before it, as document windows do. SwiftUI puts every
-/// window of a group at the same spot. A window the system restored keeps its own frame.
+/// window of a group at the same spot. A window the system restored keeps its frame: its content can come up after
+/// a launch link's window, which then lay on it and pushed it along (CON-256).
 private struct WindowCascader: NSViewRepresentable {
     /// The issue the window shows, for `IssueWindows`: this view knows the window and the issue both.
     let target: IssueTarget
@@ -379,17 +380,13 @@ private struct WindowCascader: NSViewRepresentable {
     func updateNSView(_ view: Cascader, context: Context) { view.target = target }
 
     final class Cascader: NSView {
-        private var done = false
         var target: IssueTarget? { didSet { if target != oldValue { register() } } }
-        /// An issue window of its own, not the main window's preview column.
+        override func viewDidMoveToWindow() { register() }
+        /// An issue window of its own, not the main window's preview column; placed once, when first registered.
         private func register() {
-            guard let window, let target, window.identifier?.rawValue.hasPrefix("issue") == true else { return }
-            IssueWindows.show(target, in: window)
-        }
-        override func viewDidMoveToWindow() {
-            register()
-            guard !done, let window, let id = window.identifier?.rawValue, id.hasPrefix("issue") else { return }
-            done = true
+            guard let window, let target, window.identifier?.rawValue.hasPrefix("issue") == true,
+                IssueWindows.show(target, in: window)
+            else { return }
             let others = NSApp.windows.filter {
                 $0 !== window && $0.isVisible && $0.identifier?.rawValue.hasPrefix("issue") == true
             }
@@ -408,21 +405,33 @@ private struct WindowCascader: NSViewRepresentable {
 @MainActor enum IssueWindows {
     private struct Weak { weak var window: NSWindow? }
     private static var shown: [IssueTarget: Weak] = [:]
+    /// The windows AppKit put back at launch; nil while it is still putting them back.
+    private static var restored: [Weak]?
+
+    /// From `NSApplication.didFinishRestoringWindowsNotification`: every window up by then is a restored one.
+    static func restorationFinished() { restored = NSApp.windows.map { Weak(window: $0) } }
+    private static func isRestored(_ window: NSWindow) -> Bool { restored?.contains { $0.window === window } ?? true }
 
     static func window(for target: IssueTarget) -> NSWindow? {
         shown[target]?.window.flatMap { $0.isVisible ? $0 : nil }
     }
 
-    /// `window` shows `target` now (a step along its trail moves it to another issue).
-    static func show(_ target: IssueTarget, in window: NSWindow) {
+    /// `window` shows `target` now (a step along its trail moves it to another issue). True when it is a new window
+    /// that stays, to be placed: not restored, not shown before, not a second window of its issue.
+    static func show(_ target: IssueTarget, in window: NSWindow) -> Bool {
+        let first = !shown.values.contains { $0.window === window }
         shown = shown.filter { $0.value.window != nil && $0.value.window !== window }
         if let other = self.window(for: target), other !== window {
+            // A restored window coming up after a launch link's second window stays, unmoved (CON-256).
+            let (keep, drop) = first && isRestored(window) && !isRestored(other) ? (window, other) : (other, window)
+            shown[target] = Weak(window: keep)
             DispatchQueue.main.async {
-                other.makeKeyAndOrderFront(nil)
-                window.close()
+                keep.makeKeyAndOrderFront(nil)
+                drop.close()
             }
-            return
+            return false
         }
         shown[target] = Weak(window: window)
+        return first && !isRestored(window)
     }
 }

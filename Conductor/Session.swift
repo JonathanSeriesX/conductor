@@ -595,7 +595,12 @@ final class Session {
         // Posted also when there was nothing to restore; the session exists before restoration starts.
         NotificationCenter.default.addObserver(
             forName: NSApplication.didFinishRestoringWindowsNotification, object: nil, queue: .main
-        ) { [weak self] _ in MainActor.assumeIsolated { self?.windowsRestored = true } }
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                IssueWindows.restorationFinished()
+                self?.windowsRestored = true
+            }
+        }
         LaunchProbe.once("session.ready")
     }
 
