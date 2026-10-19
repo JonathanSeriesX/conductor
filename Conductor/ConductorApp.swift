@@ -41,15 +41,18 @@ struct ConductorApp: App {
         Shortcuts.guardTyping()
         BinUndo.install()
         AttachmentOpener.installQuickLookCopy()
-        // No window tabs: no window here is one to tab, and AppKit's tab items (Show Tab Bar in View, the tab
-        // commands in Window) each brought a separator beside SwiftUI's, two lines in both menus.
-        NSWindow.allowsAutomaticWindowTabbing = false
         // SwiftUI draws a separator at both edges of every command group and merges none with its neighbours' or
-        // AppKit's, so each group boundary showed two lines, an empty group one at a menu's end. Hidden as a menu
+        // AppKit's, so each group boundary showed two lines, an empty group one at a menu's end, and AppKit's own tab items bring theirs. Hidden as a menu
         // begins tracking, before its submenus show; a hidden item leaves the accessibility tree too.
         NotificationCenter.default.addObserver(
             forName: NSMenu.didBeginTrackingNotification, object: nil, queue: .main
         ) { _ in MainActor.assumeIsolated { if let m = NSApp.mainMenu { Self.hideDoubledSeparators(in: m) } } }
+        // The Window menu's window list and the tab commands are AppKit's, added as the menu opens, after tracking
+        // began: a menu that gains an item is gone over again (hiding an item changes it, adds none, so this ends).
+        NotificationCenter.default.addObserver(forName: NSMenu.didAddItemNotification, object: nil, queue: .main) {
+            nonisolated(unsafe) let menu = $0.object as? NSMenu  // on the main queue; NSMenu is not Sendable
+            MainActor.assumeIsolated { if let menu, menu.supermenu != nil { Self.hideDoubledSeparators(in: menu) } }
+        }
         _ = Self.probe
         LaunchProbe.once("installs.done")
     }
