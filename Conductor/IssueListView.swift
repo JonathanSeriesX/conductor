@@ -91,17 +91,21 @@ final class IssueListStore {
     private var kept: Set<IssueTarget> = []
     /// Keys with a write on its way to Jira.
     var pending: Set<String> = []
-    /// The row under the pointer, the one with tooltips. Read by the rows themselves, never the list's body.
-    var hovered: String?
+    /// The row under the pointer, the one with tooltips. Not watched: read by every row, a pointer crossing one row's
+    /// border redrew them all; the table shows the two rows it changes again (see `IssueTable.Coordinator.hover`).
+    @ObservationIgnored var hovered: String?
     /// One account's share of the list: its rows so far and where its next page starts.
     private struct Page {
         let state: AccountState
-        var rows: [ListRow]
+        var rows: [ListRow] { didSet { ids = nil } }
         /// The part of the list (see `ListFilters.jqlParts`) the next page comes from, and the page's token.
         var part = 0
         var token: String?
         /// How many of `rows` this load fetched; the rest are the last load's, kept below them (see `fetchPage`).
-        var fetched = 0
+        var fetched = 0 { didSet { ids = nil } }
+        /// The ids of the rows fetched, as the last page left them; nil once anything else changed the rows. Made anew
+        /// from the rows for every page, a long download hashed every row fetched so far again each page.
+        var ids: Set<String>?
         /// More rows to load: a next page, or a part not started. A page not fetched yet (cached, or kept from the
         /// last load) is taken to have more when it is a full page, so the merge holds the same rows back.
         var more: Bool
@@ -242,25 +246,26 @@ final class IssueListStore {
 
     /// Takes a change announced from elsewhere (a card moved on a board): the row shows it before any reload.
     func apply(_ c: Session.IssueChange) {
-        edit { row, issue in
-            guard c.targets.contains(row.target) else { return }
+        edit({ c.targets.contains($0.target) }) { issue in
             if let fresh = c.issue { if fresh.key == issue.key { issue = fresh } } else { c.change?(&issue) }
         }
     }
 
     /// Changes the rows' copies of `keys` at once, ahead of Jira's answer.
     func patch(_ keys: [String], _ change: (inout Issue) -> Void) {
-        edit { row, issue in if keys.contains(issue.key) { change(&issue) } }
+        edit({ keys.contains($0.issue.key) }, change)
     }
 
     /// Changes issues in place, on screen and in the pages behind the screen, keeping their order until the next
-    /// load re-sorts. A row left equal is not reassigned: nothing redraws for a change that reached no row.
-    private func edit(_ change: (ListRow, inout Issue) -> Void) {
+    /// load re-sorts. A row left equal is not reassigned: nothing redraws for a change that reached no row. Only the
+    /// rows `picks` names are copied and compared: every row's whole issue, the screen's and again the pages', made
+    /// an edit two of the passes that took 11 ms on 2,500 rows (see `IssueTable.Coordinator.RowKey`).
+    private func edit(_ picks: (ListRow) -> Bool, _ change: (inout Issue) -> Void) {
         func run(_ rows: inout [ListRow]) -> Bool {
             var changed = false
-            for i in rows.indices {
+            for i in rows.indices where picks(rows[i]) {
                 var issue = rows[i].issue
-                change(rows[i], &issue)
+                change(&issue)
                 guard issue != rows[i].issue else { continue }
                 rows[i] = ListRow(issue: issue, state: rows[i].state)
                 changed = true
@@ -728,10 +733,12 @@ final class IssueListStore {
         } else {
             // A row a page brings again (it moved down the list since the page above it came) counts once.
             let above = first ? [] : Array(now.rows.prefix(p.fetched))
-            let ids = Set(above.map(\.id))
+            var ids = first ? [] : (now.fetched == p.fetched ? now.ids : nil) ?? Set(above.map(\.id))
             let fetched = above + new.filter { !ids.contains($0.id) }
-            pages[id]!.rows = Self.refreshed(now.rows, fetched: fetched, more: more)
+            ids.formUnion(new.map(\.id))
+            pages[id]!.rows = Self.refreshed(now.rows, fetched: fetched, more: more, keys: ids)
             pages[id]!.fetched = fetched.count
+            pages[id]!.ids = ids
             (pages[id]!.part, pages[id]!.token) = (page.part, page.token)
             pages[id]!.more = more
         }
@@ -743,9 +750,10 @@ final class IssueListStore {
     /// less any the fresh pages already hold; none once the list has no more. Each fresh row the old ones had only
     /// further down (an edited issue gone to the top) or never had pushes one of them past the page's end: that row
     /// stays too, or the row above an edited one vanished until the next page brought it back.
-    static func refreshed(_ old: [ListRow], fetched: [ListRow], more: Bool) -> [ListRow] {
+    /// `keys`: the ids of `fetched`, when the caller has them.
+    static func refreshed(_ old: [ListRow], fetched: [ListRow], more: Bool, keys: Set<String>? = nil) -> [ListRow] {
         guard more else { return fetched }
-        let keys = Set(fetched.map(\.id))
+        let keys = keys ?? Set(fetched.map(\.id))
         let covered = Set(old.prefix(fetched.count).map(\.id))
         let pushed = fetched.count { !covered.contains($0.id) }
         return fetched + old.dropFirst(fetched.count - pushed).filter { !keys.contains($0.id) }
@@ -818,9 +826,9 @@ struct IssueListView: View {
         let refresh: Int
     }
     /// What the clear button goes back to: the sidebar entry the list came from, or the bare project; the search
-    /// and the sort order stay. It shows only once the chips differ from that.
-    private var cleared: ListFilters {
-        var f = session.preset(matching: filters)?.filters ?? ListFilters()
+    /// and the sort order stay. It shows only once the chips differ from that. `preset`: the one the list came from.
+    private func cleared(_ preset: Preset?) -> ListFilters {
+        var f = preset?.filters ?? ListFilters()
         f.account = filters.account
         f.project = filters.project
         f.text = filters.text
@@ -830,6 +838,13 @@ struct IssueListView: View {
 
     var body: some View {
         let _ = LaunchProbe.tick("list.body")
+        // The sidebar entry the list came from, found here once a pass (and by `title(for:)` once more): each look
+        // builds every entry of every account, reading the Hide Done default for each, and the title, the clear
+        // button and Save Filter looked six times on every arrow press.
+        let preset = session.preset(matching: filters)
+        let cleared = self.cleared(preset)
+        let canSave = canSaveFilter(preset)
+        let title = session.title(for: filters)
         IssueRows(
             store: store, selection: $selection, expanded: $expanded,
             previewFocused: $previewFocused, subtitle: $shownSubtitle, chips: chipsHeight,
@@ -857,7 +872,7 @@ struct IssueListView: View {
         )
         .modifier(FollowsOtherWindows(store: store, selection: $selection, opened: $opened))
         .safeAreaInset(edge: .top, spacing: 0) {
-            chips.onGeometryChange(for: CGFloat.self) {
+            chips(cleared: cleared).onGeometryChange(for: CGFloat.self) {
                 $0.size.height
             } action: {
                 chipsHeight = $0
@@ -867,7 +882,7 @@ struct IssueListView: View {
         .focusedSceneValue(
             \.listActions,
             ListActions(
-                saveFilter: canSaveFilter
+                saveFilter: canSave
                     ? {
                         filterName = ""
                         savingFilter = true
@@ -876,7 +891,7 @@ struct IssueListView: View {
                 sort: $filters.sort
             )
         )
-        .navigationTitle(session.title(for: filters))  // the Window menu; the toolbar draws its own, with the sort
+        .navigationTitle(title)  // the Window menu; the toolbar draws its own, with the sort
         .toolbar(removing: .title)
         .background(ToolbarRelayout())
         .searchable(text: $filters.text, placement: .toolbar, prompt: "Search, JQL, or paste a Jira link")
@@ -908,7 +923,7 @@ struct IssueListView: View {
         .toolbar(id: "list") {
             ToolbarItem(id: "title") {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(session.title(for: filters)).font(.headline)
+                    Text(title).font(.headline)
                     HStack(spacing: 4) {
                         if !shownSubtitle.isEmpty { Text(verbatim: "\(shownSubtitle) ·") }
                         Menu {
@@ -961,7 +976,7 @@ struct IssueListView: View {
                     Label("Save Filter", systemImage: "bookmark")
                 }
                 .help("Keep these filters and search in the sidebar (⌘S)")
-                .disabled(!canSaveFilter)
+                .disabled(!canSave)
             }
         }
         .alert("Save Filter", isPresented: $savingFilter) {
@@ -1183,14 +1198,15 @@ struct IssueListView: View {
     }
 
     /// There is something to save once the list differs from every sidebar entry, built-in, saved or project.
-    private var canSaveFilter: Bool {
+    /// `preset`: the one the list came from.
+    private func canSaveFilter(_ preset: Preset?) -> Bool {
         guard filters.isActive else { return false }
         if !filters.text.isEmpty { return true }
         var projectRow = ListFilters()
         projectRow.account = filters.account
         projectRow.project = filters.project
         // A few accounts picked on an All Accounts entry still light it up, but make a list of their own.
-        return (session.preset(matching: filters).map { $0.filters.accounts != filters.accounts } ?? true)
+        return (preset.map { $0.filters.accounts != filters.accounts } ?? true)
             && filters != projectRow
     }
 
@@ -1231,7 +1247,12 @@ struct IssueListView: View {
         let name: String
         let title: String
         let active: Bool
-        let items: [ChipItem]
+        /// Made when the menu opens: the list's body runs on every arrow press, and the Assignee chip's items ran to
+        /// 500 people, an item and a closure each, every time.
+        let items: () -> [ChipItem]
+        init(id: String, name: String, title: String, active: Bool, items: @autoclosure @escaping () -> [ChipItem]) {
+            (self.id, self.name, self.title, self.active, self.items) = (id, name, title, active, items)
+        }
     }
 
     /// The people the Assignee chip offers inside one account: the site's, else, where the site hides them, the
@@ -1336,31 +1357,12 @@ struct IssueListView: View {
                     ChipItem(s.title, selected: filters.status == s) { filters.status = s }
                 }))
         let assigneeSet = filters.assignee != .any || filters.assignedTo != nil
-        let menu = Self.assigneeMenu(people, chosen: filters.assignedTo)
         list.append(
             Chip(
                 id: "assignee", name: String(localized: "Assignee"),
                 title: filters.assignedTo?.name ?? filters.assignee.title,
                 active: assigneeSet,
-                items: ListFilters.Assignee.allCases.map { a in
-                    ChipItem(a.title, selected: filters.assignedTo == nil && filters.assignee == a) {
-                        filters.assignee = a
-                        filters.assignedTo = nil
-                    }
-                }
-                    + (menu.listed.isEmpty && !menu.picker ? [] : [ChipItem.separator])
-                    + menu.listed.map { p in
-                        ChipItem(p.name, selected: filters.assignedTo?.id == p.id) {
-                            filters.assignee = .any
-                            filters.assignedTo = p
-                        }
-                    }
-                    + (menu.picker
-                        ? [
-                            ChipItem(String(localized: "Choose person…"), selected: false) {
-                                choosingUnder = assigneeSet ? "assignee" : "add"
-                            }
-                        ] : [])))
+                items: assigneeItems(set: assigneeSet)))
         list.append(
             Chip(
                 id: "reporter", name: String(localized: "Reporter"), title: filters.reporter.title,
@@ -1389,8 +1391,33 @@ struct IssueListView: View {
         return list
     }
 
+    /// The Assignee chip's menu: its built-ins, then its people (see `assigneeMenu`). `set`: the chip filters, so
+    /// Choose person…'s picker hangs from it rather than from Filter.
+    private func assigneeItems(set: Bool) -> [ChipItem] {
+        let menu = Self.assigneeMenu(people, chosen: filters.assignedTo)
+        return ListFilters.Assignee.allCases.map { a in
+            ChipItem(a.title, selected: filters.assignedTo == nil && filters.assignee == a) {
+                filters.assignee = a
+                filters.assignedTo = nil
+            }
+        }
+            + (menu.listed.isEmpty && !menu.picker ? [] : [ChipItem.separator])
+            + menu.listed.map { p in
+                ChipItem(p.name, selected: filters.assignedTo?.id == p.id) {
+                    filters.assignee = .any
+                    filters.assignedTo = p
+                }
+            }
+            + (menu.picker
+                ? [
+                    ChipItem(String(localized: "Choose person…"), selected: false) {
+                        choosingUnder = set ? "assignee" : "add"
+                    }
+                ] : [])
+    }
+
     /// Only the filters that are set get a chip; the rest wait under one Filter chip, so the column stays narrow.
-    private var chips: some View {
+    private func chips(cleared: ListFilters) -> some View {
         let all = chipList
         let more = all.filter { !$0.active }
         // A key or raw JQL ignores the chips: they go grey like an inactive window's, still legible.
@@ -1408,7 +1435,7 @@ struct IssueListView: View {
                         FilterChip(
                             id: "add", title: String(localized: "Filter"), symbol: "plus", active: false,
                             menus: chipMenus,
-                            items: more.map { ChipItem($0.name, children: $0.items) }
+                            items: { more.map { ChipItem($0.name, children: $0.items()) } }
                         )
                         .help("Add a filter")
                         .popover(isPresented: choosing("add"), arrowEdge: .bottom) { personPicker }
@@ -1589,7 +1616,7 @@ private struct IssueRows: View {
                     above: i > 0 && selection.contains(shown[i - 1].row.target),
                     below: i + 1 < shown.count && selection.contains(shown[i + 1].row.target),
                     expanded: expanded.contains(d.id), pending: store.pending.contains(row.issue.key),
-                    stale: store.stale.contains(row.id), store: store,
+                    stale: store.stale.contains(row.id), tips: store.hovered == d.id,
                     toggle: d.children.isEmpty
                         ? nil : { withAnimation(.snappy(duration: 0.25)) { expanded.formSymmetricDifference([d.id]) } }
                 )
@@ -1697,8 +1724,8 @@ struct SiteBadge: View {
     }
 }
 
-/// A list row and what the list knows about it. A view of its own, so the row under the pointer is read here and a
-/// pointer move redraws rows, not the list; compared as a value, so an update leaves the rows it did not change be.
+/// A list row and what the list knows about it. A view of its own, compared as a value, so an update leaves the rows
+/// it did not change be.
 struct ListRowView: View, Equatable {
     let d: DisplayRow
     /// The account tag shows: a list of several accounts.
@@ -1715,15 +1742,19 @@ struct ListRowView: View, Equatable {
     let pending: Bool
     /// Out of this list since the last reload.
     let stale: Bool
-    let store: IssueListStore
+    /// Under the pointer: the one row with tooltips (see `help(_:tips:)`).
+    let tips: Bool
     /// Not compared: it only flips `expanded`, which is, and it is there exactly when `d` has children.
     let toggle: (() -> Void)?
 
     nonisolated static func == (a: Self, b: Self) -> Bool {
-        a.d.row.issue == b.d.row.issue && a.d.row.state === b.d.row.state && a.d.depth == b.d.depth
+        // The same row is the same issue (a `ListRow` never changes): no whole issue compared for each row shown, on
+        // every update.
+        (a.d.row === b.d.row || a.d.row.issue == b.d.row.issue && a.d.row.state === b.d.row.state)
+            && a.d.depth == b.d.depth
             && a.d.children.count == b.d.children.count && a.site == b.site && a.sort == b.sort
             && a.selected == b.selected && a.emphasized == b.emphasized && a.above == b.above && a.below == b.below
-            && a.expanded == b.expanded && a.pending == b.pending && a.stale == b.stale && a.store === b.store
+            && a.expanded == b.expanded && a.pending == b.pending && a.stale == b.stale && a.tips == b.tips
     }
 
     var body: some View {
@@ -1731,7 +1762,7 @@ struct ListRowView: View, Equatable {
         IssueRow(
             issue: row.issue, site: site ? (row.state.title, row.state.color) : nil, date: sort.date(of: row.issue),
             dayOnly: sort.field == .due, depth: d.depth, folded: d.children.count, expanded: expanded, toggle: toggle,
-            pending: pending, tips: store.hovered == d.id
+            pending: pending, tips: tips
         )
         .opacity(stale ? 0.45 : 1)
         // The table's own highlight, grey without focus, is off: the rows paint theirs.
@@ -1996,11 +2027,12 @@ struct ChipItem {
 @MainActor
 final class ChipMenuController: NSObject, NSMenuDelegate {
     private var anchors: [String: NSView] = [:]
-    private var items: [String: [ChipItem]] = [:]
+    /// Each chip's items, made as its menu opens.
+    private var items: [String: () -> [ChipItem]] = [:]
     private var openID: String?
     private var actions: [NSMenuItem: () -> Void] = [:]
 
-    func register(_ id: String, view: NSView, items: [ChipItem]) {
+    func register(_ id: String, view: NSView, items: @escaping () -> [ChipItem]) {
         anchors[id] = view
         self.items[id] = items
     }
@@ -2011,7 +2043,7 @@ final class ChipMenuController: NSObject, NSMenuDelegate {
     }
 
     private func open(_ id: String) {
-        guard let anchor = anchors[id], let list = items[id] else { return }
+        guard let anchor = anchors[id], let list = items[id]?() else { return }
         actions = [:]
         let menu = build(list)
         menu.delegate = self
@@ -2070,7 +2102,7 @@ struct FilterChip: View {
     /// False while a key or raw JQL search ignores the chips: set, but not lit.
     var enabled = true
     let menus: ChipMenuController
-    let items: [ChipItem]
+    let items: () -> [ChipItem]
     @Environment(\.appearsActive) private var appearsActive
 
     var body: some View {
@@ -2164,13 +2196,20 @@ struct NativeSelectionOff: NSViewRepresentable {
         }
         override func mouseEntered(with event: NSEvent) { pointerMoved() }
         override func mouseMoved(with event: NSEvent) { pointerMoved() }
-        override func mouseExited(with event: NSEvent) { hover?(nil) }
+        override func mouseExited(with event: NSEvent) { hovered(nil) }
 
         private func pointerMoved() {
             guard let table, let window = table.window else { return }
             let p = table.convert(window.mouseLocationOutsideOfEventStream, from: nil)
             let row = table.visibleRect.contains(p) ? table.row(at: p) : -1
-            hover?(row >= 0 ? row : nil)
+            hovered(row >= 0 ? row : nil)
+        }
+
+        /// The list learns the row under the pointer first, then the table shows the row it left and the one it is on
+        /// again, the tooltips moved.
+        private func hovered(_ row: Int?) {
+            hover?(row)
+            (table as? IssueOutline)?.coordinator?.hover(row)
         }
 
         /// The table is a sibling subtree: the nearest ancestor with one below it, short of the split view that
@@ -2232,7 +2271,7 @@ struct NativeSelectionOff: NSViewRepresentable {
 private struct ChipAnchor: NSViewRepresentable {
     let id: String
     let menus: ChipMenuController
-    let items: [ChipItem]
+    let items: () -> [ChipItem]
     func makeNSView(context: Context) -> NSView { NSView() }
     func updateNSView(_ view: NSView, context: Context) { menus.register(id, view: view, items: items) }
 }

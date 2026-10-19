@@ -337,6 +337,14 @@ extension IssueTable {
             var crumb = false
             var depth = 0
             var folds = false
+            /// The row measured, not compared: a `ListRow` never changes, so the same one at the same depth and folds
+            /// has the same key, and `holds` stops there without building one for every row of every sweep.
+            var row: ListRow?
+
+            static func == (a: Self, b: Self) -> Bool {
+                (a.summary, a.updated, a.viewed, a.crumb, a.depth, a.folds)
+                    == (b.summary, b.updated, b.viewed, b.crumb, b.depth, b.folds)
+            }
         }
 
         var parent: IssueTable?
@@ -461,7 +469,7 @@ extension IssueTable {
                 summary: d.row.issue.fields.summary, updated: d.row.issue.fields.updated,
                 viewed: d.row.issue.fields.lastViewed,
                 crumb: d.depth == 0 && d.row.issue.fields.issuetype.isSubtask && d.row.issue.fields.parent != nil,
-                depth: d.depth, folds: !d.children.isEmpty)
+                depth: d.depth, folds: !d.children.isEmpty, row: d.row)
         }
 
         /// The list the rows are of (see `IssueTable.list`).
@@ -483,14 +491,18 @@ extension IssueTable {
             }
             parent = p
             guard let outline else { return }
+            var relaid = false
             if let r = p.rows.first.map({ _ in p.content(0) }), [r.site, r.sort] != layout {
                 layout = [r.site, r.sort]
                 heights = heights.mapValues { ($0.key, -1, $0.height) }
+                relaid = true
             }
             // The same rows as last time (an arrow press, a hover): no pass building and comparing every row's id.
             let same =
                 p.footer == lastRows?.footer && p.rows.count == lastRows?.rows.count
-                && zip(p.rows, lastRows?.rows ?? []).allSatisfy { $0.row === $1.row && $0.depth == $1.depth }
+                && zip(p.rows, lastRows?.rows ?? []).allSatisfy {
+                    $0.row === $1.row && $0.depth == $1.depth && $0.children.count == $1.children.count
+                }
             lastRows = (p.rows, p.footer)
             let new = same ? [] : ids(p)
             applying = true
@@ -501,15 +513,22 @@ extension IssueTable {
             }
             if opening, !p.rows.isEmpty {
                 open(same ? items.map(\.id) : new)
-            } else if !same, new != items.map(\.id) {
-                // The window holds on to its rows, or to the end, as rows come, go and move around it; End before the
-                // list was whole stays on the spinner at the end and lands on the last row with the rest.
-                let a = anchor(keeping: new)
-                // Rows that change places out of sight go in at once: animated, the window glided with them to stay
-                // on its anchor, never quite in step.
-                let seen = !items.isEmpty && shown(items.map(\.id), on: a) != shown(new, on: a)
-                measureBefore(new, anchor: a)
-                apply(new, duration: seen ? duration : nil, anchor: a)
+            } else if !same, case let k = Self.common(items.map(\.id), new), k < max(items.count, new.count) {
+                if !pinnedToEnd, !settled, underWindow(k) {
+                    // A page landing under the window: nothing in it or above it moves, so there is no anchor to hold,
+                    // no glide to see and no row to measure ahead, and the rows above stay out of every pass (a
+                    // dozen passes over every row, each page, while the reader scrolled on).
+                    apply(new, duration: nil, anchor: nil, from: k)
+                } else {
+                    // The window holds on to its rows, or to the end, as rows come, go and move around it; End before
+                    // the list was whole stays on the spinner at the end and lands on the last row with the rest.
+                    let a = anchor(keeping: new)
+                    // Rows that change places out of sight go in at once: animated, the window glided with them to
+                    // stay on its anchor, never quite in step.
+                    let seen = !items.isEmpty && shown(items.map(\.id), on: a) != shown(new, on: a)
+                    measureBefore(new, anchor: a)
+                    apply(new, duration: seen ? duration : nil, anchor: a, from: k)
+                }
             }
             if p.complete { settled = true }
             // The count landed, or End let go, with the same rows: the room under them follows.
@@ -524,8 +543,9 @@ extension IssueTable {
             }
             measureVisible()
             // The rows off screen once a fold or a glide has run, so that telling the table their heights does not retile
-            // it mid-animation.
-            measureRest(after: duration)
+            // it mid-animation. Only for what moves heights: started again on every update (an arrow press, the count,
+            // the last row shown), the sweep went through every row again, 2 ms a frame.
+            if !same || relaid || outline.bounds.width != measuredWidth { measureRest(after: duration) }
             let want = selected(p)
             if outline.selectedRowIndexes != want { outline.selectRowIndexes(want, byExtendingSelection: false) }
         }
@@ -589,12 +609,14 @@ extension IssueTable {
 
         /// Takes the table to `new` in place: rows that stay keep their views and heights, and a row that moved glides
         /// to its new place when the change is animated, as the List's did. The data source follows each step, and the
-        /// window goes back on `anchor` with the rows, over the same animation.
-        private func apply(_ new: [String], duration: Double?, anchor: Anchor?) {
+        /// window goes back on `anchor` with the rows, over the same animation. The first `k` rows are the table's
+        /// already.
+        private func apply(_ new: [String], duration: Double?, anchor: Anchor?, from k: Int = 0) {
             guard let outline else { return }
+            let old = items.map(\.id)
             // Hundreds of rows changing places (a whole list sorted anew) go in at once: step by step, each move cost
             // a pass over the rows, the table's and ours.
-            guard let steps = Self.steps(from: items.map(\.id), to: new, moves: 100) else {
+            guard let steps = Self.steps(from: old, to: new, moves: 100) else {
                 items = new.map(item)
                 outline.reloadData()
                 askAll()
@@ -633,24 +655,25 @@ extension IssueTable {
                 }
             }
             outline.endUpdates()
-            askAll()
+            askAll(from: k)
             restore(anchor, animated: duration != nil)
             NSAnimationContext.endGrouping()
-            forget(keeping: new)
+            forget(keeping: new, from: k, last: old)
         }
 
-        /// Has the table ask for the heights of the rows it has not asked for yet. Until it asks, it lays a row out at an
-        /// estimate of its own, and whenever it asked (a change to the rows, a scroll) every row below moved: the rows
-        /// above the window, the window with them.
-        private func askAll() {
+        /// Has the table ask for the heights of the rows it has not asked for yet, from row `k` (the rows above it it
+        /// has). Until it asks, it lays a row out at an estimate of its own, and whenever it asked (a change to the
+        /// rows, a scroll) every row below moved: the rows above the window, the window with them.
+        private func askAll(from k: Int = 0) {
             guard let outline else { return }
-            for (i, item) in items.enumerated() where told[item.id] == nil { _ = outline.rect(ofRow: i) }
+            for i in k..<items.count where told[items[i].id] == nil { _ = outline.rect(ofRow: i) }
         }
 
-        /// Lets the rows not in `new` go: their items, heights and views set aside.
-        private func forget(keeping new: [String]) {
-            let keep = Set(new)
-            for id in byID.keys where !keep.contains(id) {
+        /// Lets the rows not in `new` go: their items, heights and views set aside. Past row `k`, of the rows `last`
+        /// (the table's before the change) had there: the rows above are the same in both.
+        private func forget(keeping new: [String], from k: Int = 0, last: [String] = []) {
+            let keep = Set(new[k...])
+            for id in k == 0 ? Array(byID.keys) : Array(last[k...]) where !keep.contains(id) {
                 byID[id] = nil
                 told[id] = nil
                 if let old = heights.removeValue(forKey: id), old.key != nil {
@@ -670,15 +693,16 @@ extension IssueTable {
 
         /// What takes the rows `old` to `new`: the rows `new` lacks go at once, then in `new`'s order each row that stays
         /// moves to its place and each run of new rows goes in at once, a page landing as one insert. Nil past `limit`
-        /// moves.
+        /// moves. The rows both start with are left out of every set: a page landing under thousands hashed them all.
         nonisolated static func steps(from old: [String], to new: [String], moves limit: Int = .max) -> [Step]? {
-            let keep = Set(new)
+            let p = common(old, new)
+            let keep = Set(new[p...])
             var steps: [Step] = []
-            let removed = IndexSet(old.indices.filter { !keep.contains(old[$0]) })
+            let removed = IndexSet(old.indices.dropFirst(p).filter { !keep.contains(old[$0]) })
             if !removed.isEmpty { steps.append(.remove(removed)) }
-            var rows = old.filter(keep.contains)
-            let staying = Set(rows)
-            var (j, moves) = (0, 0)
+            var rows = Array(old[..<p]) + old[p...].filter(keep.contains)
+            let staying = Set(rows[p...])
+            var (j, moves) = (p, 0)
             while j < new.count {
                 if j < rows.count, rows[j] == new[j] {
                     j += 1
@@ -697,6 +721,13 @@ extension IssueTable {
                 }
             }
             return steps
+        }
+
+        /// How many rows `a` and `b` start with alike.
+        nonisolated static func common(_ a: [String], _ b: [String]) -> Int {
+            var k = 0
+            while k < min(a.count, b.count), a[k] == b[k] { k += 1 }
+            return k
         }
 
         private func item(_ id: String) -> Item {
@@ -964,6 +995,12 @@ extension IssueTable {
                 settled: settled, visible: visible)
         }
 
+        /// Row `k` starts under the window: the rows in it and above it are the first `k`.
+        private func underWindow(_ k: Int) -> Bool {
+            guard k > 0, let outline, let sv = outline.enclosingScrollView else { return false }
+            return outline.rect(ofRow: k - 1).maxY >= outline.convert(sv.contentView.bounds, from: sv.contentView).maxY
+        }
+
         /// The rows of `order` in the window once it stands on `anchor` (at the top without one), by the rows' heights.
         private func shown(_ order: [String], on anchor: Anchor?) -> [String] {
             guard let sv = outline?.enclosingScrollView else { return [] }
@@ -1064,11 +1101,23 @@ extension IssueTable {
                 y += holds(i, id, width) ? heights[id]!.height : take(i, id, width, keep: true)
                 i += 1
             }
-            // Rows set up ahead that the table did not take go back to the spares.
-            for (id, v) in prepared where !(first..<i).contains(rowOf[id] ?? -1) {
+            // Rows set up ahead that the table did not take go back to the spares, but at the list's ends.
+            for (id, v) in prepared where !(first..<i).contains(rowOf[id] ?? -1) && !atEnds(rowOf[id]) {
                 prepared[id] = nil
                 if spare.count < 40 { spare.append(v) }
             }
+        }
+
+        /// Row `i` is within two screens of the list's top or of its last row: Home and End jump to a screen short of
+        /// there (see `glide`) and the table asks for a screen of rows at once. Their views keep their rows (see
+        /// `didRemove`), so those come back as they were: as pooled views, each set up anew, the frames after Home
+        /// came 45–53 ms apart.
+        private func atEnds(_ i: Int?) -> Bool {
+            guard let i, let outline, let clip = outline.enclosingScrollView?.contentView, i < items.count else {
+                return false
+            }
+            let (row, reach) = (outline.rect(ofRow: i), 2 * clip.bounds.height)
+            return row.minY < reach || row.maxY > outline.rect(ofRow: items.count - 1).maxY - reach
         }
 
         /// Before the table takes `new`: its rows that will be in the window, on `anchor` as `restore` puts it back, by
@@ -1108,17 +1157,20 @@ extension IssueTable {
             defer { measuring = false }
             let width = outline.bounds.width
             measuredWidth = width
-            let rows = parent?.rows ?? []
-            for (i, item) in items.enumerated() {
-                let key = i < rows.count ? Self.key(rows[i]) : RowKey()
-                if let had = heights[item.id], had.width == width, had.key == key { continue }
+            for (i, item) in items.enumerated() where !holds(i, item.id, width) {
                 take(i, item.id, width, keep: false)
             }
             note()
         }
 
         private func holds(_ i: Int, _ id: String, _ width: CGFloat) -> Bool {
-            heights[id]?.key == rowKey(i) && heights[id]?.width == width
+            guard let had = heights[id], had.width == width, let key = had.key else { return false }
+            guard let p = parent, i < p.rows.count else { return key == RowKey() }
+            let d = p.rows[i]
+            if key.row === d.row, key.depth == d.depth, key.folds == !d.children.isEmpty { return true }
+            guard key == Self.key(d) else { return false }
+            heights[id]?.key?.row = d.row  // a new row of the same content (a list opened again): found above next time
+            return true
         }
 
         /// Row `i` measured now: in the view the table shows it in; else, with `keep`, in one set aside for when the
@@ -1172,6 +1224,25 @@ extension IssueTable {
             lastInWindow = shown
         }
 
+        /// The row whose cell was shown last as the one under the pointer, by id.
+        private var tipped: String?
+
+        /// The pointer is over row `row`, or none: the row it left and the one it is on take their cells again, the
+        /// tooltips moved (see `ListRowView.tips`). The others are left be: read by every row, the hover redrew them
+        /// all at each row border the pointer crossed.
+        func hover(_ row: Int?) {
+            let id = row.flatMap { items.indices.contains($0) ? items[$0].id : nil }
+            guard id != tipped, let outline else { return }
+            for each in [tipped, id] {
+                guard let each, let i = rowOf[each],
+                    let view = outline.rowView(atRow: i, makeIfNecessary: false) as? IssueTableRow,
+                    view.rowID == each, let c = cell(i)
+                else { continue }
+                view.show(c, id: each)
+            }
+            tipped = id
+        }
+
         // MARK: Data source and delegate
 
         func outlineView(_ outlineView: NSOutlineView, numberOfChildrenOfItem item: Any?) -> Int {
@@ -1215,8 +1286,12 @@ extension IssueTable {
         func outlineView(_ outlineView: NSOutlineView, didRemove rowView: NSTableRowView, forRow row: Int) {
             // A row deleted (-1) during an animated `apply` (`before` is filled then) can still be fading out on screen:
             // its view is not used again, or another row's content came up in it there.
-            guard row >= 0 || before.isEmpty, let v = rowView as? IssueTableRow, spare.count < 40 else { return }
-            spare.append(v)
+            guard row >= 0 || before.isEmpty, let v = rowView as? IssueTableRow else { return }
+            if let id = v.rowID, prepared[id] == nil, atEnds(rowOf[id]) {
+                prepared[id] = v
+            } else if spare.count < 40 {
+                spare.append(v)
+            }
         }
 
         func outlineView(_ outlineView: NSOutlineView, shouldSelectItem item: Any) -> Bool {
