@@ -370,9 +370,10 @@ func keyItems(_ keys: [String]) -> [NSItemProvider] {
     keys.isEmpty ? [] : [NSItemProvider(object: keys.joined(separator: " ") as NSString)]
 }
 
-/// Offsets a new issue window from the one opened before it, as document windows do. SwiftUI puts every
-/// window of a group at the same spot. A window the system restored keeps its frame: its content can come up after
-/// a launch link's window, which then lay on it and pushed it along (CON-256).
+/// Offsets a new issue window from the one opened before it, as document windows do. SwiftUI puts a new window of a
+/// group where the last one opened, closed or not, so it could land exactly on another (CON-260). A window the
+/// system restored keeps its frame: its content can come up after a launch link's window, which then lay on it and
+/// pushed it along (CON-256).
 private struct WindowCascader: NSViewRepresentable {
     /// The issue the window shows, for `IssueWindows`: this view knows the window and the issue both.
     let target: IssueTarget
@@ -390,10 +391,18 @@ private struct WindowCascader: NSViewRepresentable {
             let others = NSApp.windows.filter {
                 $0 !== window && $0.isVisible && $0.identifier?.rawValue.hasPrefix("issue") == true
             }
-            guard let last = others.max(by: { $0.orderedIndex > $1.orderedIndex }) else { return }
-            if abs(last.frame.origin.x - window.frame.origin.x) < 2, abs(last.frame.maxY - window.frame.maxY) < 2 {
-                window.setFrameTopLeftPoint(
-                    window.cascadeTopLeft(from: NSPoint(x: last.frame.minX, y: last.frame.maxY)))
+            let covered = {
+                others.first {
+                    abs($0.frame.minX - window.frame.minX) < 2 && abs($0.frame.maxY - window.frame.maxY) < 2
+                }
+            }
+            // From the window it would cover, else the frontmost, until it covers none. Bounded: at the screen's
+            // edge the cascade starts over and can come back to a covered spot.
+            var from = covered() ?? others.min(by: { $0.orderedIndex < $1.orderedIndex })
+            for _ in others {
+                guard let f = from?.frame else { break }
+                window.setFrameTopLeftPoint(window.cascadeTopLeft(from: NSPoint(x: f.minX, y: f.maxY)))
+                from = covered()
             }
         }
     }
