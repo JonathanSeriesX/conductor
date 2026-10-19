@@ -1,6 +1,8 @@
 import SwiftUI
 
 struct LoginView: View {
+    /// Adds an account to those signed in: the sidebar's sheet, or the window Settings opens. `dismiss` closes
+    /// either on Cancel and Add, never the main window.
     var isSheet = false
     @Environment(Session.self) private var session
     @Environment(\.dismiss) private var dismiss

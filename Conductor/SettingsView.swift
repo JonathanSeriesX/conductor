@@ -78,6 +78,7 @@ private struct GeneralSettings: View {
 /// Who is signed in, with the sidebar's Sign Out and Add Account in one place.
 private struct AccountSettings: View {
     @Environment(Session.self) private var session
+    @Environment(\.openWindow) private var openWindow
     @State private var signingOut: AccountState?
 
     var body: some View {
@@ -95,7 +96,9 @@ private struct AccountSettings: View {
                         Button("Sign Out…") { signingOut = st }
                     }
                 }
-                Button("Add Account…") { session.addAccountRequested = true }
+                // A window of its own in front of Settings: a sheet on the main window opened behind it (CON-272).
+                // Signed out, the sign-in card is that window, and signing in there brings the main window.
+                Button("Add Account…") { openWindow(id: session.isSignedIn ? "addAccount" : "login") }
             }
         }
         .formStyle(.grouped)

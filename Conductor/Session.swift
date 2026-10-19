@@ -547,7 +547,6 @@ final class Session {
         writeTicks[key, default: 0] += 1
         listTick += 1
     }
-    var addAccountRequested = false
     /// What the list window showed last, so one opened afresh (⌘0) continues there. In memory only: a fresh
     /// launch follows the "Open at launch" setting instead.
     var lastFilters: ListFilters?

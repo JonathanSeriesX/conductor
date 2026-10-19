@@ -476,12 +476,6 @@ struct SidebarView: View {
             if f == bare { openWindow(id: "board", value: BoardTarget(accountID: id, projectKey: key)) }
         }
         .sheet(isPresented: $showAddAccount) { LoginView(isSheet: true) }
-        .onChange(of: session.addAccountRequested) { _, on in
-            if on {
-                showAddAccount = true
-                session.addAccountRequested = false
-            }
-        }
         .alert("Rename Account", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
             TextField("Name", text: $newTitle)
             Button("Rename") {

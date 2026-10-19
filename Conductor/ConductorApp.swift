@@ -144,6 +144,17 @@ struct ConductorApp: App {
         // Not in the Window menu: SwiftUI listed the sign-in card there as "Conductor", a second main window.
         .commandsRemoved()
 
+        // Settings › Add Account…: the sidebar's add-account card as a window of its own, which closes itself on Add
+        // or Cancel and leaves the main window as it is (CON-272). A half-typed card is not worth bringing back.
+        Window("Add Account", id: "addAccount") {
+            LoginView(isSheet: true).environment(session)
+        }
+        .windowStyle(.hiddenTitleBar)
+        .windowResizability(.contentSize)
+        .defaultPosition(.center)
+        .restorationBehavior(.disabled)
+        .commandsRemoved()
+
         Settings {
             SettingsView().environment(session)
         }
