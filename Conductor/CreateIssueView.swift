@@ -12,6 +12,8 @@ struct CreateRequest: Hashable, Codable {
     var accountID: UUID?
     var projectKey: String?
     var parentKey: String?
+    /// The parent's hierarchy level: 1 for an epic, whose children are standard issues; nil for subtasks.
+    var parentLevel: Int?
     var cloneKey: String?
 }
 
@@ -30,6 +32,8 @@ final class CreateIssueModel {
     var priority: Priority?
     var labels: [String] = []
     var parentKey = ""
+    /// See `CreateRequest.parentLevel`.
+    let parentLevel: Int
     var error: String?
     var isWorking = false
     var isLoadingMeta = false
@@ -38,6 +42,7 @@ final class CreateIssueModel {
     /// task fills it a frame later (CON-244): the draft's project (a window reopened, or restored after a relaunch),
     /// else the request's, else the one used last time, else a starred one, else the first; then the draft itself.
     init(request: CreateRequest, session: Session) {
+        parentLevel = request.parentLevel ?? 0
         let saved = Drafts.shared.creates.first { $0.id == request.id }
         let last = UserDefaults.standard.string(forKey: "lastCreateProject")
         if let saved, let id = saved.accountID, let st = session.state(id),
@@ -120,7 +125,10 @@ final class CreateIssueModel {
         if types != list { types = list }
         let before = type?.id
         if !types.contains(where: { $0.id == type?.id }) {
-            let candidates = types.filter { parentKey.isEmpty ? !$0.isSubtask : $0.isSubtask }
+            // A child sits one level under its parent: a subtask under a standard issue, a task under an epic.
+            let candidates = types.filter {
+                parentKey.isEmpty ? !$0.isSubtask : ($0.hierarchyLevel ?? ($0.isSubtask ? -1 : 0)) == parentLevel - 1
+            }
             // Task is the everyday default; Epic is rarely what someone means by ⌘N.
             type =
                 candidates.first { $0.name.caseInsensitiveCompare("Task") == .orderedSame }
@@ -195,6 +203,10 @@ struct CreateIssueView: View {
     @FocusState private var summaryFocused: Bool
     @State private var showClone = false
     private var parentKey: String? { request.parentKey }
+    private var title: LocalizedStringKey {
+        guard let parentKey else { return "New Issue" }
+        return m.parentLevel >= 1 ? "New Child Issue of \(parentKey)" : "New Subtask of \(parentKey)"
+    }
 
     /// `session` fills the form before the first frame; the environment's is not there yet.
     init(request: CreateRequest, session: Session) {
@@ -223,7 +235,7 @@ struct CreateIssueView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
-                Text(parentKey == nil ? "New Issue" : "New Subtask of \(parentKey!)").font(.title2.weight(.semibold))
+                Text(title).font(.title2.weight(.semibold))
                 Spacer()
                 ProjectPopUp(
                     choice: $m.choice,
@@ -426,8 +438,9 @@ struct CreateIssueView: View {
         .padding(22)
         .frame(width: 640)
         .background(Backdrop())
+        .background(NoCloseFade())
         .writingToolsBehavior(.disabled)  // macOS 27 pins a Siri button beside every text view otherwise
-        .navigationTitle(parentKey == nil ? "New Issue" : "New Subtask of \(parentKey!)")
+        .navigationTitle(title)
         // Signed out of every account, with or without a draft: there is nothing to create an issue in.
         .task(id: [session.isRestoring, session.isSignedIn]) {
             if !session.isRestoring, !session.isSignedIn { dismiss() }
@@ -536,6 +549,18 @@ struct CreateIssueView: View {
             } catch { m.error = error.localizedDescription }
         }
     }
+}
+
+/// Takes the window's open and close animations away. While this window faded out after ⌘W, a request for the app's
+/// window list, which Accessibility clients send as the keyboard moves to another window, waited about 550 ms on the
+/// window server, and the main thread with it: the window behind took the keyboard nearly a second after the key
+/// (CON-280). An issue window's fade held such a request 100 ms at most.
+private struct NoCloseFade: NSViewRepresentable {
+    final class Probe: NSView {
+        override func viewDidMoveToWindow() { window?.animationBehavior = .none }
+    }
+    func makeNSView(context: Context) -> Probe { Probe() }
+    func updateNSView(_ view: Probe, context: Context) {}
 }
 
 /// The Project pop-up as AppKit's own. SwiftUI's Picker built and measured a Text per project of every account on

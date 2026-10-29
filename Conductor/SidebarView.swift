@@ -119,10 +119,29 @@ struct ListFilters: Hashable, Codable {
                 case .status: "status"
                 }
             }
+            /// Where a pick of this field starts: due dates earliest first, statuses yet to do first, types A to Z,
+            /// everything else newest or highest first.
+            var startsDescending: Bool { ![.due, .status, .type].contains(self) }
+            /// A direction in this field's own words, for the sort menu; the header keeps its arrow.
+            func direction(descending d: Bool) -> String {
+                switch self {
+                case .updated, .created, .viewed:
+                    d ? String(localized: "Newest first") : String(localized: "Oldest first")
+                case .due: d ? String(localized: "Latest first") : String(localized: "Earliest first")
+                case .priority, .key: d ? String(localized: "Highest first") : String(localized: "Lowest first")
+                case .type: d ? String(localized: "Z to A") : String(localized: "A to Z")
+                case .status: d ? String(localized: "Completed first") : String(localized: "Yet To Do first")
+                }
+            }
         }
         var field: Field = .updated
         var descending = true
-        var clause: String { "\(field.jql) \(descending ? "DESC" : "ASC")" }
+        /// Statuses go To Do, In Progress, Done (`Status.compare`) rather than in the site's own order, which is
+        /// any order at all. Server cannot sort by category: `JiraClient.serverJQL` drops it there.
+        var clause: String {
+            let d = descending ? "DESC" : "ASC"
+            return field == .status ? "statusCategory \(d), status \(d)" : "\(field.jql) \(d)"
+        }
 
         /// The date a row shows at its trailing edge: the one the list is sorted by, else when it was created.
         func date(of i: Issue) -> Date? {
@@ -165,26 +184,21 @@ struct ListFilters: Hashable, Codable {
                 // Jira's priority ids count up from the highest, so "priority DESC" is the lowest id first.
                 let (pa, pb) = (Int(a.fields.priority?.id ?? "") ?? .max, Int(b.fields.priority?.id ?? "") ?? .max)
                 r = pa == pb ? .orderedSame : pa < pb ? .orderedDescending : .orderedAscending
-            case .type:
-                // Epic, then standard, then subtask under DESC; by name within a level.
-                // ponytail: Jira's "ORDER BY issuetype" follows the site's issue-type sequence, which a one-account
-                // list shows as Jira sent it; only a merge of several accounts uses these levels.
-                let (ta, tb) = (a.fields.issuetype, b.fields.issuetype)
-                let (la, lb) = (ta.hierarchyLevel ?? 0, tb.hierarchyLevel ?? 0)
-                r =
-                    la != lb
-                    ? (la < lb ? .orderedAscending : .orderedDescending) : ta.name.localizedStandardCompare(tb.name)
+            // By name, as Jira orders them, Cloud and Server alike.
+            case .type: r = a.fields.issuetype.name.localizedStandardCompare(b.fields.issuetype.name)
             case .key: r = a.key.localizedStandardCompare(b.key)
-            case .status:
-                // To Do, then In Progress, then Done, as a board reads; by name within each.
-                let rank = ["new": 0, "indeterminate": 1, "done": 2]
-                let (sa, sb) = (a.fields.status, b.fields.status)
-                let (ra, rb) = (rank[sa.statusCategory.key] ?? 1, rank[sb.statusCategory.key] ?? 1)
-                r =
-                    ra != rb
-                    ? (ra < rb ? .orderedAscending : .orderedDescending) : sa.name.localizedStandardCompare(sb.name)
+            case .status: r = Conductor.Status.compare(a.fields.status, b.fields.status)
             }
             return r
+        }
+
+        /// An issue's subtasks or children in this order. They come in an order of their own (Jira's rank, the
+        /// creation date), which ties keep: Swift's sort is stable, where `areInOrder` breaks ties by key.
+        func ordered<T>(_ items: [T], by compare: (T, T) -> ComparisonResult) -> [T] {
+            items.sorted {
+                let r = compare($0, $1)
+                return descending ? r == .orderedDescending : r == .orderedAscending
+            }
         }
     }
 

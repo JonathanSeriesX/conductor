@@ -329,7 +329,7 @@ struct PriorityIcon: View {
 
 struct GlassCard<Content: View>: View {
     var title: LocalizedStringKey?
-    /// "• 1 task", "• 1d 7h logged", the title's size in a regular weight, after it: a figure that belongs to the title.
+    /// "• 1 task", "• 1d 7h logged", after the title in the control's style: a figure that belongs to the title.
     var detail: String?
     /// A control after the detail, in the hint's size: "• newest first ↓".
     var accessory: AnyView?
@@ -337,10 +337,12 @@ struct GlassCard<Content: View>: View {
     var hint: String?
     /// Set for a card that folds away: a chevron at the title's trailing end, and a click on the title, fold it.
     var collapsed: Binding<Bool>?
+    /// "No work logged": a card with nothing in it is its title alone, with this where a chevron would be.
+    var empty: LocalizedStringKey?
     @ViewBuilder var content: Content
 
     var body: some View {
-        Foldable(collapsed: collapsed, gap: title == nil ? 0 : 12) {
+        Foldable(collapsed: collapsed, gap: title == nil || empty != nil ? 0 : 12) {
             if let title {
                 HStack(spacing: 3) {
                     // The gap before the bullet equals the space after it. On one baseline: centred on the title, the
@@ -350,11 +352,14 @@ struct GlassCard<Content: View>: View {
                     HStack(alignment: .firstTextBaseline, spacing: 3) {
                         Text(title).font(.headline).foregroundStyle(.secondary).fixedSize()
                         if let detail {
-                            Text(verbatim: detail).font(.headline.weight(.regular)).foregroundStyle(.secondary)
-                                .fixedSize()
+                            Text(verbatim: detail).font(.subheadline).foregroundStyle(.secondary).fixedSize()
                         }
                         if let accessory { accessory.fixedSize() }
                         if let hint { Text(hint).keyHint(.subheadline).lineLimit(1) }
+                        if let empty {
+                            Spacer(minLength: 8)
+                            Text(empty).font(.subheadline).foregroundStyle(.tertiary).fixedSize()
+                        }
                     }
                     if let collapsed {
                         Spacer(minLength: 8)
@@ -366,7 +371,7 @@ struct GlassCard<Content: View>: View {
             // Its own glass container: glass (the composer's Comment button) is drawn by the nearest one, and the
             // page's ignored the fold's clip and opacity, so the button hung below the card while it folded.
             // Several views in `content` sit 12 apart, leading.
-            GlassGroup(spacing: 0) { VStack(alignment: .leading, spacing: 12) { content } }
+            if empty == nil { GlassGroup(spacing: 0) { VStack(alignment: .leading, spacing: 12) { content } } }
         }
         .padding(18)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -841,6 +846,15 @@ enum Folds {
     static func save(_ folded: Set<String>) {
         // ponytail: an unbounded list in defaults; 1000 folded sections is a few tens of kilobytes.
         UserDefaults.standard.set(Array(folded.prefix(1000)), forKey: key)
+    }
+}
+
+/// The orders of issues' subtasks or children that someone changed from Status, yet to do first, by issue key: JSON
+/// in the "childSorts" default, which every window reads through @AppStorage, so a change in one never undoes another's.
+enum ChildSorts {
+    static let standard = ListFilters.Sort(field: .status, descending: false)
+    static func decode(_ data: Data) -> [String: ListFilters.Sort] {
+        (try? JSONDecoder().decode([String: ListFilters.Sort].self, from: data)) ?? [:]
     }
 }
 

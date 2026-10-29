@@ -126,12 +126,23 @@ final class JQLTests: XCTestCase {
             try issue("ES-3", priority: "3", updated: t, type: "Epic", level: 1),
             try issue("ES-4", priority: "3", updated: t),
         ]
-        XCTAssertEqual(
-            types.sorted(by: ListFilters.Sort(field: .type, descending: true).areInOrder).map(\.key),
-            ["ES-3", "ES-4", "ES-2", "ES-1"], "DESC is epic, then standard (by name), then subtask")
+        // Jira, Cloud and Data Center alike: ORDER BY issuetype ASC gave Bug, Epic, Story, Sub-task, Task.
         XCTAssertEqual(
             types.sorted(by: ListFilters.Sort(field: .type, descending: false).areInOrder).map(\.key),
-            ["ES-1", "ES-2", "ES-4", "ES-3"])
+            ["ES-2", "ES-3", "ES-1", "ES-4"], "A to Z by name")
+        XCTAssertEqual(
+            types.sorted(by: ListFilters.Sort(field: .type, descending: true).areInOrder).map(\.key),
+            ["ES-4", "ES-1", "ES-3", "ES-2"])
+    }
+
+    /// Statuses sort as a board reads on Cloud; Data Center refuses "ORDER BY statusCategory", so it gets status alone.
+    func testStatusSortAsksForTheCategoryWhereJiraCanSortByIt() {
+        var f = ListFilters()
+        f.sort = .init(field: .status, descending: false)
+        XCTAssertTrue(f.jql.hasSuffix("ORDER BY statusCategory ASC, status ASC"), f.jql)
+        XCTAssertEqual(JiraClient.serverJQL(f.jql), f.jql.replacingOccurrences(of: "statusCategory ASC, ", with: ""))
+        XCTAssertEqual(JiraClient.serverJQL("a ORDER BY statusCategory DESC, status DESC"), "a ORDER BY status DESC")
+        XCTAssertEqual(JiraClient.serverJQL("a ORDER BY updated DESC"), "a ORDER BY updated DESC")
     }
 
     /// A merged list waits only for the others' rows that tie with the slowest account's last one: that account's
@@ -806,6 +817,11 @@ final class FilterAndDurationTests: XCTestCase {
         let todo = try issue("A-2", "new", "To Do")
         let doing = try issue("A-3", "indeterminate", "In Progress")
         XCTAssertEqual([done, doing, todo].sorted(by: sort.areInOrder).map(\.key), ["A-2", "A-3", "A-1"])
+        // Children: yet to do first by default, and ties keep Jira's order rather than going by key ("A-10" < "A-9").
+        let (open10, open9) = (try issue("A-10", "new", "Open"), try issue("A-9", "new", "Open"))
+        XCTAssertEqual(
+            ChildSorts.standard.ordered([done, open10, doing, open9], by: ChildSorts.standard.compare).map(\.key),
+            ["A-10", "A-9", "A-3", "A-1"])
     }
 
     @MainActor func testLinkPickerOffersBothDirectionsUnlessIdentical() {

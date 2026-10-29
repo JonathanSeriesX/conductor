@@ -2191,18 +2191,23 @@ struct FilterChip: View {
 /// The sort order as menu items: the View menu and the toolbar's "sorted by" show the same.
 struct SortMenuItems: View {
     @Binding var sort: ListFilters.Sort
+    var fields = ListFilters.Sort.Field.allCases
 
     var body: some View {
-        ForEach(ListFilters.Sort.Field.allCases, id: \.self) { f in
-            // A field starts in its natural direction: due dates soonest first, everything else newest or highest first.
+        ForEach(fields, id: \.self) { f in
             Toggle(
                 f.title,
                 isOn: Binding(
-                    get: { sort.field == f }, set: { if $0 { sort = .init(field: f, descending: f != .due) } }))
+                    get: { sort.field == f },
+                    set: { if $0 { sort = .init(field: f, descending: f.startsDescending) } }))
         }
         Divider()
-        Toggle("Ascending", isOn: Binding(get: { !sort.descending }, set: { if $0 { sort.descending = false } }))
-        Toggle("Descending", isOn: Binding(get: { sort.descending }, set: { if $0 { sort.descending = true } }))
+        // The field's own direction first.
+        ForEach([sort.field.startsDescending, !sort.field.startsDescending], id: \.self) { d in
+            Toggle(
+                sort.field.direction(descending: d),
+                isOn: Binding(get: { sort.descending == d }, set: { if $0 { sort.descending = d } }))
+        }
     }
 }
 

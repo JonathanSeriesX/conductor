@@ -7,3 +7,6 @@ build-tests/
 .dev.env
 .env
 qa/
+images/
+landing*
+launch.json

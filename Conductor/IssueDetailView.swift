@@ -450,8 +450,24 @@ struct IssueDetailView: View {
         Binding(
             get: { folded.contains(id) },
             set: { on in
-                withAnimation(.smooth(duration: 0.25)) { if on { folded.insert(id) } else { folded.remove(id) } }
-                Folds.save(folded)
+                // From the disk, not this window's copy: another window may have folded a card since this one opened,
+                // and saving the copy undid that.
+                var now = Folds.load()
+                if on { now.insert(id) } else { now.remove(id) }
+                withAnimation(.smooth(duration: 0.25)) { folded = now }
+                Folds.save(now)
+            })
+    }
+    /// Subtasks' and children's orders changed from the standard one, per issue: see `ChildSorts`.
+    // ponytail: unbounded, as Folds; a thousand changed orders is a few tens of kilobytes.
+    @AppStorage("childSorts") private var childSorts = Data()
+    private var childSort: Binding<ListFilters.Sort> {
+        Binding(
+            get: { ChildSorts.decode(childSorts)[shownKey] ?? ChildSorts.standard },
+            set: { s in
+                var all = ChildSorts.decode(childSorts)
+                all[shownKey] = s == ChildSorts.standard ? nil : s
+                childSorts = (try? JSONEncoder().encode(all)) ?? Data()
             })
     }
     /// The thread's order, the same on every issue.
@@ -648,18 +664,24 @@ struct IssueDetailView: View {
             }
         }
         if let subs = issue.fields.subtasks, !subs.isEmpty {
+            // No Key: a subtask is always in its parent's project, so its key runs with its creation date.
             GlassCard(
                 title: "Subtasks", detail: "• " + String(localized: "\(subs.count) tasks"),
+                accessory: subs.count > 1 ? sortMenu(ListFilters.Sort.Field.allCases.filter { $0 != .key }) : nil,
                 hint: hint(.subtask) { String(localized: "\($0) to add") },
                 collapsed: fold("\(shownKey)|subtasks")
-            ) { refs(subs) }
+            ) { refs(ordered(subs)) }
         }
         if !store.children.isEmpty {
+            // Key stays: an epic's children may come from other projects.
+            let sort = childSort.wrappedValue
             GlassCard(
                 title: "Child Issues", detail: "• " + String(localized: "\(store.children.count) issues"),
+                accessory: store.children.count > 1 ? sortMenu(ListFilters.Sort.Field.allCases) : nil,
+                hint: issue.isEpic ? hint(.subtask) { String(localized: "\($0) to add") } : nil,
                 collapsed: fold("\(shownKey)|children")
             ) {
-                children(store.children)
+                children(sort.ordered(store.children, by: sort.compare))
             }
         }
         if let links = issue.fields.issuelinks, !links.isEmpty {
@@ -674,15 +696,10 @@ struct IssueDetailView: View {
         let logs = issue.fields.worklog?.worklogs ?? []
         GlassCard(
             title: "Work Log", detail: worklogTotals(issue, logs),
-            hint: hint(.logWork) { String(localized: "\($0) to log") }
+            hint: hint(.logWork) { String(localized: "\($0) to log") },
+            empty: logs.isEmpty && !store.isPartial ? "No work logged" : nil
         ) {
-            if store.isPartial {
-                DelayedSpinner()
-            } else if logs.isEmpty {
-                Text("No work logged").foregroundStyle(.tertiary)
-            } else {
-                worklogs(logs)
-            }
+            if store.isPartial { DelayedSpinner() } else { worklogs(logs) }
         }
     }
 
@@ -1291,6 +1308,35 @@ struct IssueDetailView: View {
         }
     }
 
+    /// The subtasks in the card's order. Each ref carries its status; the other fields come from the full records,
+    /// and until every one has arrived the subtasks stay in Jira's order.
+    private func ordered(_ subs: [IssueRef]) -> [IssueRef] {
+        let (sort, records) = (childSort.wrappedValue, store.related)
+        if sort.field == .status {
+            return sort.ordered(subs) { Status.compare($0.fields.status, $1.fields.status) }
+        }
+        guard subs.allSatisfy({ records[$0.key] != nil }) else { return subs }
+        return sort.ordered(subs) { sort.compare(records[$0.key]!, records[$1.key]!) }
+    }
+
+    /// "• sorted by status ↓", the list's own control, for this issue's subtasks or children.
+    private func sortMenu(_ fields: [ListFilters.Sort.Field]) -> AnyView {
+        let sort = childSort
+        return AnyView(
+            Menu {
+                SortMenuItems(sort: sort, fields: fields)
+            } label: {
+                HStack(spacing: 2) {
+                    Text(verbatim: "• " + String(localized: "sorted by \(sort.wrappedValue.field.headerTitle)"))
+                    Image(systemName: sort.wrappedValue.descending ? "arrow.down" : "arrow.up")
+                        .font(.caption2.weight(.bold))
+                }
+                .font(.subheadline).foregroundStyle(.secondary).contentShape(.rect)
+            }
+            .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize()
+            .help("Sort order"))
+    }
+
     private func children(_ issues: [Issue]) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             ForEach(issues) { i in
@@ -1606,9 +1652,13 @@ struct IssueDetailView: View {
             Button {
                 perform(.subtask)
             } label: {
-                Label("Create Subtask…", systemImage: "plus.square.on.square")
+                if store.issue?.isEpic == true {
+                    Label("Create Child Issue…", systemImage: "plus.square.on.square")
+                } else {
+                    Label("Create Subtask…", systemImage: "plus.square.on.square")
+                }
             }
-            .help("Create subtask (⇧⌘N)")
+            .help(store.issue?.isEpic == true ? "Create child issue (⇧⌘N)" : "Create subtask (⇧⌘N)")
             .disabled(store.issue == nil)
         }
         ToolbarItem {
@@ -1676,6 +1726,7 @@ struct IssueDetailView: View {
             transitions: store.transitions,
             canEditSummary: store.canEdit("summary"),
             canEditDescription: store.canEdit("description"),
+            isEpic: issue.isEpic,
             isEditing: summaryDraft != nil || descriptionDraft != nil || editingCommentID != nil || replyingTo != nil,
             back: back,
             embedded: embedded,
@@ -1730,10 +1781,12 @@ struct IssueDetailView: View {
         case .link: showLink = true
         case .logWork: showLogWork = true
         case .subtask:
+            // On an epic, a task in it.
             openWindow(
                 id: "create",
                 value: CreateRequest(
-                    accountID: target.accountID, projectKey: store.issue?.fields.project?.key, parentKey: key))
+                    accountID: target.accountID, projectKey: store.issue?.fields.project?.key, parentKey: key,
+                    parentLevel: store.issue?.fields.issuetype.hierarchyLevel))
         case .clone:
             openWindow(
                 id: "create",

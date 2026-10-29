@@ -17,6 +17,8 @@ struct IssueActions {
     let transitions: [Transition]
     let canEditSummary: Bool
     let canEditDescription: Bool
+    /// ⇧⌘N then creates a child issue rather than a subtask.
+    let isEpic: Bool
     /// A summary, description or comment editor is open.
     let isEditing: Bool
     /// Set while the page can go back to the issue it came from.
@@ -37,7 +39,7 @@ extension IssueActions: Equatable {
     static func == (a: Self, b: Self) -> Bool {
         a.key == b.key && a.watching == b.watching && a.assignedToMe == b.assignedToMe
             && a.transitions == b.transitions && a.canEditSummary == b.canEditSummary
-            && a.canEditDescription == b.canEditDescription && a.isEditing == b.isEditing
+            && a.canEditDescription == b.canEditDescription && a.isEpic == b.isEpic && a.isEditing == b.isEditing
             && (a.back == nil) == (b.back == nil) && a.embedded == b.embedded
     }
 }
@@ -225,7 +227,7 @@ struct AppCommands: Commands {
             item("Attach Files…", .attach, "a", [.command, .option])
             item("Link Issue…", .link, "l", [.command, .shift])
             item("Log Work…", .logWork, "l", [.command, .option])
-            item("Create Subtask…", .subtask, "n", [.command, .shift])
+            item(issue?.isEpic == true ? "Create Child Issue…" : "Create Subtask…", .subtask, "n", [.command, .shift])
             Divider()
             item("Refresh Issue", .refresh, "r", [.command, .shift])
             item("Activity History", .history, "h", [.command, .option])

@@ -144,7 +144,7 @@ struct JiraClient: Sendable {
     }
     var detailFields: String {
         var f =
-            "summary,description,status,assignee,reporter,priority,issuetype,labels,created,updated,comment,attachment,project,parent,subtasks,issuelinks,worklog,timetracking,watches,duedate,components,fixVersions"
+            "summary,description,status,assignee,reporter,priority,issuetype,labels,created,updated,lastViewed,comment,attachment,project,parent,subtasks,issuelinks,worklog,timetracking,watches,duedate,components,fixVersions"
         if let sprintField { f += "," + sprintField }
         if let link = epics?.link { f += "," + link }
         for p in pointsFields { f += "," + p }
@@ -273,10 +273,19 @@ struct JiraClient: Sendable {
 
     func favouriteFilters() async throws -> [Filter] { try await get("filter/favourite") }
 
+    /// A list's JQL as Server takes it. Server refuses to sort by status category ("Not able to sort using field
+    /// 'statusCategory'"), which a list sorted by status asks for first (`ListFilters.Sort.clause`): there the list
+    /// goes by status alone, in the site's own order.
+    // ponytail: a Server list sorted by status follows that site order; a client-side sort would only hold for a
+    // list that is all loaded.
+    static func serverJQL(_ jql: String) -> String {
+        jql.replacingOccurrences(of: #"statusCategory (ASC|DESC), "#, with: "", options: .regularExpression)
+    }
+
     /// How many issues a query matches, give or take; enough for a progress bar.
     func approximateCount(jql: String) async throws -> Int {
         if server {
-            let page: SearchPage = try await get("search", query: ["jql": jql, "maxResults": "0"])
+            let page: SearchPage = try await get("search", query: ["jql": Self.serverJQL(jql), "maxResults": "0"])
             return page.total ?? 0
         }
         struct Body: Encodable { let jql: String }
@@ -294,6 +303,7 @@ struct JiraClient: Sendable {
     {
         var q = ["jql": jql, "maxResults": "\(maxResults)", "fields": fields ?? listFields]
         if server {
+            q["jql"] = Self.serverJQL(jql)
             let start = Int(nextPageToken ?? "") ?? 0
             q["startAt"] = "\(start)"
             let page: SearchPage = try await get("search", query: q)
@@ -321,6 +331,7 @@ struct JiraClient: Sendable {
         while keys.count < limit {
             var q = ["jql": jql, "fields": "key", "maxResults": "\(min(server ? 1000 : 5000, limit - keys.count))"]
             if server {
+                q["jql"] = Self.serverJQL(jql)
                 q["startAt"] = "\(keys.count)"
                 let page: Page = try await get("search", query: q)
                 keys += page.issues.map(\.key)

@@ -64,6 +64,17 @@ struct Status: Codable, Hashable, Sendable {
     let statusCategory: StatusCategory
 }
 
+extension Status {
+    /// To Do, then In Progress, then Done, as a board reads; by name within each.
+    static func compare(_ a: Status?, _ b: Status?) -> ComparisonResult {
+        let rank = ["new": 0, "indeterminate": 1, "done": 2]
+        let (ra, rb) = (rank[a?.statusCategory.key ?? ""] ?? 1, rank[b?.statusCategory.key ?? ""] ?? 1)
+        return ra != rb
+            ? (ra < rb ? .orderedAscending : .orderedDescending)
+            : (a?.name ?? "").localizedStandardCompare(b?.name ?? "")
+    }
+}
+
 struct Priority: Codable, Hashable, Sendable {
     let id: String
     let name: String
@@ -235,6 +246,8 @@ struct IssueRef: Codable, Hashable, Sendable, Identifiable {
 
 extension Issue {
     var isDone: Bool { fields.status.statusCategory.key == "done" }
+    /// An epic, or a level above one: its children are standard issues (or epics), not subtasks.
+    var isEpic: Bool { (fields.issuetype.hierarchyLevel ?? 0) >= 1 }
 
     /// How many subtasks are Done, out of all of them; nil when the issue has none.
     var subtaskProgress: (done: Int, total: Int)? {
