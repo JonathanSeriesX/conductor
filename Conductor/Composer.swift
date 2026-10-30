@@ -15,6 +15,8 @@ struct Composer: View {
     var focus: FocusState<Bool>.Binding?
     /// The owner's Save or Comment buttons, on the format bar's right, so nothing moves when editing starts.
     var actions: AnyView = AnyView(EmptyView())
+    /// False in an AppKit row, which passes no click outside its frame: there the suggestions take room under the box.
+    var floatingSuggestions = true
     @FocusState private var ownFocus: Bool
     @Environment(\.jira) private var jira
     @State private var candidates: [JiraUser] = []
@@ -45,9 +47,10 @@ struct Composer: View {
                     // was ignored inside the conditional.
                     .overlay(alignment: .top) {
                         Color.clear.frame(height: 0).overlay(alignment: .bottomLeading) {
-                            if !candidates.isEmpty { suggestions.padding(.bottom, 4) }
+                            if floatingSuggestions, !candidates.isEmpty { suggestions.padding(.bottom, 4) }
                         }
                     }
+                if !floatingSuggestions, !candidates.isEmpty { suggestions }
             }
             formatBar
             if let error { Text(error).font(.caption).foregroundStyle(.red) }
@@ -56,10 +59,10 @@ struct Composer: View {
             guard on else { return }
             tune()
         }
-        .onChange(of: text) { _, new in
-            // A trailing "@name" drives the suggestion list; anything else dismisses it. A name just accepted
-            // from the list (followed by its space) is complete and must not open the list again.
-            if let m = new.firstMatch(of: /@([\p{L}\p{N}][\p{L}\p{N} .'-]{0,30})$/),
+        .onChange(of: text) {
+            // An "@name" just before the caret drives the suggestion list; anything else dismisses it. A name just
+            // accepted from the list (followed by its space) is complete and must not open the list again.
+            if let m = text[..<range.lowerBound].firstMatch(of: /@([\p{L}\p{N}][\p{L}\p{N} .'-]{0,30})$/),
                 !mentions.keys.contains(where: { String(m.1).hasPrefix($0 + " ") || String(m.1) == $0 })
             {
                 query = String(m.1)
@@ -322,9 +325,11 @@ struct Composer: View {
     }
 
     private func accept(_ user: JiraUser) {
-        guard let r = text.range(of: "@" + query, options: .backwards) else { return }
+        guard let r = text.range(of: "@" + query, options: .backwards, range: text.startIndex..<range.lowerBound)
+        else { return }
         mentions[user.displayName] = user.accountId  // before the text change, so onChange knows the name is complete
-        let inserted = "@\(user.displayName) "
+        // Mid-text, a space already after the caret ends the name.
+        let inserted = "@\(user.displayName)" + (text[r.upperBound...].first == " " ? "" : " ")
         let start = text.distance(from: text.startIndex, to: r.lowerBound)
         text.replaceSubrange(r, with: inserted)
         candidates = []

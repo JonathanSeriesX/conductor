@@ -1516,7 +1516,7 @@ struct IssueDetailView: View {
                     Button("Save") { saveCommentEdit(c) }.glassButton(prominent: true)
                         .keyboardShortcut(focus.wrappedValue ? KeyboardShortcut(.return, modifiers: .command) : nil)
                         .disabled(editDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                })
+                }), floatingSuggestions: false
         )
         .environment(session)
         .environment(\.jira, jira)
@@ -1533,7 +1533,7 @@ struct IssueDetailView: View {
                     Button("Reply") { postReply(root) }.glassButton(prominent: true)
                         .keyboardShortcut(focus.wrappedValue ? KeyboardShortcut(.return, modifiers: .command) : nil)
                         .disabled(replyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.isWorking)
-                })
+                }), floatingSuggestions: false
         )
         .environment(session)
         .environment(\.jira, jira)
