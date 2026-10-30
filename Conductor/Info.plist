@@ -35,6 +35,19 @@
 	<false/>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.productivity</string>
+	<key>UTExportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.data</string>
+			</array>
+			<key>UTTypeDescription</key>
+			<string>Conductor account</string>
+			<key>UTTypeIdentifier</key>
+			<string>org.evgenii.conductor.account</string>
+		</dict>
+	</array>
 	<key>LSMinimumSystemVersion</key>
 	<string>15.0</string>
 </dict>

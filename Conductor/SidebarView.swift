@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// The one query behind the list. Every sidebar entry is a preset of it; the chips edit it in place.
 struct ListFilters: Hashable, Codable {
@@ -356,6 +357,7 @@ struct SidebarView: View {
     @Environment(Session.self) private var session
     @Environment(\.openWindow) private var openWindow
     @Environment(\.appearsActive) private var active
+    @Environment(\.colorScheme) private var colorScheme
     /// The list's filters. The row that lights up is the preset they came from, chips and sort aside.
     @Binding var filters: ListFilters
     @State private var showAddAccount = false
@@ -368,6 +370,11 @@ struct SidebarView: View {
     @State private var newTitle = ""
     @State private var signingOut: AccountState?
     @State private var updatingToken: Account?
+    /// The account being dragged: shut to its header until the drag ends, so it moves as one.
+    @State private var lifted: UUID?
+    /// Where a dragged account would land, while one is over the list.
+    @State private var accountDrop: AccountDrop.Target?
+    @State private var dropFrames = DropFrames()
 
     var body: some View {
         let selection = Binding<ListFilters?>(
@@ -404,6 +411,24 @@ struct SidebarView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .contentShape(.rect)
                     .onTapGesture { withAnimation { expandedBinding(st).wrappedValue.toggle() } }
+                    // The account moves as one, by its header, to a gap between accounts (`AccountDrop`): the List's
+                    // own move offered gaps between rows, inside other accounts too, and dropped somewhere else.
+                    .background {
+                        if session.states.count > 1 {
+                            HeaderDrag(id: st.id) { scale in
+                                let r = ImageRenderer(content: accountChip(st).environment(\.colorScheme, colorScheme))
+                                r.scale = scale
+                                return r.nsImage
+                            } lift: { up in
+                                withAnimation { lifted = up ? st.id : nil }
+                            }
+                        }
+                    }
+                    .onGeometryChange(for: CGRect.self) {
+                        $0.frame(in: .global)
+                    } action: {
+                        dropFrames.headers[st.id] = $0
+                    }
                     .contextMenu {
                         Button("Rename…", systemImage: "pencil") {
                             newTitle = st.title
@@ -435,8 +460,19 @@ struct SidebarView: View {
                     }
                 }
             }
-            // On macOS 26 a sidebar List moves whole sections with the system's drag, line and motion.
-            .onMove { from, to in withAnimation { session.moveAccounts(fromOffsets: from, toOffset: to) } }
+            // The end of the accounts, where a dragged account lands last. Only while dragging: it takes a row's room.
+            // From the lift on: one that came with the first update over the list was not there for it.
+            if lifted != nil || accountDrop != nil {
+                Section {
+                } header: {
+                    Color.clear.frame(height: 1)
+                        .onGeometryChange(for: CGRect.self) {
+                            $0.frame(in: .global)
+                        } action: {
+                            dropFrames.end = $0
+                        }
+                }
+            }
             ForEach(session.accounts.filter { session.unreachable[$0.id] != nil }, id: \.id) { account in
                 let error = session.unreachable[account.id]
                 Section(account.site.host() ?? String(localized: "Account")) {
@@ -454,6 +490,20 @@ struct SidebarView: View {
             }
         }
         .listStyle(.sidebar)
+        // The part in view: the title bar sits above it and the bottom bar below.
+        .onGeometryChange(for: CGRect.self) {
+            $0.frame(in: .global)
+        } action: {
+            dropFrames.list = $0
+        }
+        .onDrop(
+            of: [.conductorAccount], delegate: AccountDrop(session: session, frames: dropFrames, target: $accountDrop)
+        )
+        .overlay(alignment: .topLeading) {
+            if let y = accountDrop?.y {
+                InsertionLine().padding(.leading, 20).padding(.trailing, 11).offset(y: y - 3.5)
+            }
+        }
         .navigationTitle("Conductor")
         .navigationSplitViewColumnWidth(min: 200, ideal: 240)
         .bottomBar {
@@ -590,9 +640,20 @@ struct SidebarView: View {
         }
     }
 
+    /// A dragged account: its colour and name, as Settings lists it, in one piece.
+    private func accountChip(_ st: AccountState) -> some View {
+        Label {
+            Text(st.title)
+        } icon: {
+            Image(systemName: "circle.fill").foregroundStyle(st.color).imageScale(.small)
+        }
+        .padding(.horizontal, 10).padding(.vertical, 5)
+        .background(.background, in: .capsule)
+    }
+
     private func expandedBinding(_ st: AccountState) -> Binding<Bool> {
         Binding(
-            get: { !collapsed.contains(st.id) },
+            get: { !collapsed.contains(st.id) && lifted != st.id },
             set: { if $0 { collapsed.remove(st.id) } else { collapsed.insert(st.id) } })
     }
 
@@ -620,5 +681,197 @@ struct SidebarView: View {
                 session.createIssueRequested = true
             }
         }
+    }
+}
+
+/// Presses on an account's header, seen before the List gets them: a drag lifts the account, with its chip in hand
+/// and its id in a type of its own, so it drops only where `AccountDrop` takes it; a click goes on to the header. The
+/// List drags a section header only through its own move, and turns any other drag into a selection of rows.
+private struct HeaderDrag: NSViewRepresentable {
+    let id: UUID
+    let image: (_ scale: CGFloat) -> NSImage?
+    let lift: (Bool) -> Void
+
+    func makeNSView(context: Context) -> DragView { DragView() }
+    func updateNSView(_ view: DragView, context: Context) { view.drag = self }
+
+    final class DragView: NSView {
+        var drag: HeaderDrag?
+        private var down: NSPoint?
+        nonisolated(unsafe) private var monitor: Any?
+
+        deinit { if let monitor { NSEvent.removeMonitor(monitor) } }
+
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+        override func viewDidMoveToWindow() {
+            if let monitor { NSEvent.removeMonitor(monitor) }
+            monitor = nil
+            guard window != nil else { return }
+            monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseDragged, .leftMouseUp]) {
+                [weak self] e in
+                guard let self, e.window === self.window else { return e }
+                return self.handle(e)
+            }
+        }
+
+        private func handle(_ e: NSEvent) -> NSEvent? {
+            switch e.type {
+            case .leftMouseDown:
+                let plain = e.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty
+                down = plain && convert(bounds, to: nil).contains(e.locationInWindow) ? e.locationInWindow : nil
+                return e
+            case .leftMouseDragged:
+                guard let d = down, let drag else { return e }
+                // Short of a drag the List must not see it either: it would start selecting rows.
+                guard hypot(e.locationInWindow.x - d.x, e.locationInWindow.y - d.y) >= 4 else { return nil }
+                down = nil
+                let item = NSPasteboardItem()
+                item.setString(drag.id.uuidString, forType: .init(UTType.conductorAccount.identifier))
+                let dragging = NSDraggingItem(pasteboardWriter: item)
+                if let image = drag.image(window?.backingScaleFactor ?? 2) {
+                    // The chip's text over the header's, the pointer where it took hold.
+                    let at = convert(d, from: nil)
+                    dragging.setDraggingFrame(
+                        NSRect(origin: NSPoint(x: -10, y: at.y - image.size.height / 2), size: image.size),
+                        contents: image)
+                }
+                AccountDragSource.shared.begin(lift: drag.lift, scrolling: enclosingScrollView)
+                beginDraggingSession(with: [dragging], event: e, source: AccountDragSource.shared)
+                return nil
+            default:
+                down = nil
+                return e
+            }
+        }
+    }
+}
+
+/// The account drag's source. One that outlives the header it started from, which can scroll out of view and go, and
+/// scrolls the sidebar while the pointer is near its top or bottom, as the List does for its own drags.
+@MainActor private final class AccountDragSource: NSObject, NSDraggingSource {
+    static let shared = AccountDragSource()
+    private var lift: ((Bool) -> Void)?
+    private weak var scrollView: NSScrollView?
+    private var pointer: NSPoint?
+    private var timer: Timer?
+
+    func begin(lift: @escaping (Bool) -> Void, scrolling scrollView: NSScrollView?) {
+        (self.lift, self.scrollView) = (lift, scrollView)
+        lift(true)
+    }
+
+    func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext)
+        -> NSDragOperation
+    {
+        context == .withinApplication ? .move : []
+    }
+
+    func draggingSession(_ session: NSDraggingSession, movedTo screenPoint: NSPoint) {
+        pointer = screenPoint
+        guard timer == nil else { return }
+        // In the common modes: a drag runs the loop in its own, where a plain timer never fires.
+        let t = Timer(timeInterval: 1.0 / 60, repeats: true) { _ in MainActor.assumeIsolated { Self.shared.scroll() } }
+        RunLoop.main.add(t, forMode: .common)
+        timer = t
+    }
+
+    func draggingSession(_ session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) {
+        timer?.invalidate()
+        (timer, pointer) = (nil, nil)
+        lift?(false)
+        lift = nil
+    }
+
+    /// Within 24 points of an edge in view, or past it, the list scrolls that way, faster the further in.
+    private func scroll() {
+        guard let sv = scrollView, let w = sv.window, let doc = sv.documentView, let pointer else { return }
+        let clip = sv.contentView
+        let at = clip.convert(w.convertPoint(fromScreen: pointer), from: nil)
+        let b = clip.bounds
+        let i = clip.contentInsets
+        let top = b.minY + i.top + 24
+        let bottom = b.maxY - i.bottom - 24
+        let dy = at.y < top ? at.y - top : at.y > bottom ? at.y - bottom : 0
+        guard dy != 0, at.x >= b.minX, at.x <= b.maxX else { return }
+        let y = min(max(b.minY + dy / 4, -i.top), max(doc.frame.height - b.height + i.bottom, -i.top))
+        guard y != b.minY else { return }
+        clip.scroll(to: NSPoint(x: b.minX, y: y))
+        sv.reflectScrolledClipView(clip)
+    }
+}
+
+extension UTType {
+    fileprivate static let conductorAccount = UTType(exportedAs: "org.evgenii.conductor.account")
+}
+
+/// Where the account headers sit, to place a dragged account. A plain class: the frames change on every scroll, and
+/// the sidebar must not redraw for them.
+private final class DropFrames {
+    var list = CGRect.zero
+    var headers: [UUID: CGRect] = [:]
+    var end: CGRect?
+    /// From entering the list to the drop: SwiftUI sends one more update after the drop, which put the line back.
+    var inside = false
+}
+
+/// A dragged account lands in the gap between accounts nearest the pointer, in view: above a header or after the last
+/// account, so never inside another account, above All Accounts or below the unreachable ones.
+private struct AccountDrop: DropDelegate {
+    struct Target: Equatable {
+        /// Before `session.states[slot]`, or last at `states.count`.
+        var slot: Int
+        /// The line's height in the list: in the gap above the header.
+        var y: CGFloat
+    }
+
+    let session: Session
+    let frames: DropFrames
+    @Binding var target: Target?
+
+    func dropEntered(info: DropInfo) { frames.inside = true }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        guard frames.inside else { return nil }
+        let y = frames.list.minY + info.location.y
+        let gaps = (session.states.map { frames.headers[$0.id] } + [frames.end]).enumerated().compactMap { i, f in
+            f.map { (slot: i, y: $0.minY - 6) }
+        }
+        // A row out of view keeps the frame it had as it went, which lies outside the list: only those in it count.
+        let next = gaps.filter { $0.y >= frames.list.minY && $0.y <= frames.list.maxY }
+            .min { abs($0.y - y) < abs($1.y - y) }
+            .map { Target(slot: $0.slot, y: $0.y - frames.list.minY) }
+        if next != target { target = next }
+        return DropProposal(operation: next == nil ? .forbidden : .move)
+    }
+
+    func dropExited(info: DropInfo) {
+        frames.inside = false
+        target = nil
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        defer { (frames.inside, target) = (false, nil) }
+        guard let to = target?.slot, let item = info.itemProviders(for: [.conductorAccount]).first else { return false }
+        _ = item.loadDataRepresentation(for: .conductorAccount) { data, _ in
+            let id = data.flatMap { UUID(uuidString: String(decoding: $0, as: UTF8.self)) }
+            Task { @MainActor in
+                guard let from = session.states.firstIndex(where: { $0.id == id }) else { return }
+                withAnimation { session.moveAccounts(fromOffsets: [from], toOffset: to) }
+            }
+        }
+        return true
+    }
+}
+
+/// The line a sidebar draws where a dragged row will land.
+private struct InsertionLine: View {
+    var body: some View {
+        HStack(spacing: 0) {
+            Circle().strokeBorder(lineWidth: 2).frame(width: 7, height: 7)
+            Rectangle().frame(height: 2)
+        }
+        .foregroundStyle(.tint)
+        .allowsHitTesting(false)
     }
 }
