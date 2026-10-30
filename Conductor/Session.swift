@@ -790,12 +790,16 @@ final class Session {
         for t in tasks { await t.value }
     }
 
-    /// Tries again what failed: an account whose check failed runs it again whole (only a check that passes clears
-    /// the sidebar's error mark) and an unreachable one signs in again. Healthy accounts are left alone, or one dead
-    /// site would re-sync every other one every 20 s. When something comes back, every list and open issue reloads.
+    /// Tries again what failed: an account whose check failed or whose site stopped answering runs it again whole
+    /// (only a check that passes clears the sidebar's error mark) and an unreachable one signs in again. Healthy
+    /// accounts are left alone, or one dead site would re-sync every other one every 20 s. When something comes back,
+    /// every list and open issue reloads.
     func reconnect() async {
         let offline = Connectivity.shared.isOffline
-        let failed = Set(states.filter { $0.error != nil }.map(\.id))
+        // A site whose read failed after its check passed counts too: nothing else asks it again, so its flag, and
+        // Working Offline, stayed up for good once it was back.
+        let failed = Set(
+            states.filter { $0.error != nil || Connectivity.shared.offlineHosts.contains($0.host) }.map(\.id))
         let tasks = states.filter { failed.contains($0.id) }.map { st in
             Task { @MainActor in
                 do { try await st.load() } catch { if !error.isCancelled { st.error = error.localizedDescription } }
