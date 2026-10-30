@@ -714,11 +714,13 @@ final class Session {
             if failure == nil {
                 attach(st)
                 isRestoring = false
+            } else if states.contains(where: { $0.id == st.id }) {
+                // Attached from its cache already, a rejected token included: listed as unreachable too, the sidebar
+                // drew the account twice, the second time as a copy of its live section under the same id.
+                st.error = failure?.localizedDescription
             } else if let e = failure as? JiraError, e.status == 401 {
                 // Never forget an account on its own: a captive portal or proxy can answer 401 for every site.
                 unreachable[account.id] = String(localized: "Sign-in was rejected. Check the API token, then retry.")
-            } else if states.contains(where: { $0.id == st.id }) {
-                st.error = failure?.localizedDescription
             } else {
                 unreachable[account.id] = failure?.localizedDescription ?? String(localized: "Unknown error")
             }
@@ -744,8 +746,10 @@ final class Session {
         let st = AccountState(account: account)
         try await st.load()
         if st.colorName.isEmpty { st.setColor(Palette.next(avoiding: states.map(\.colorName))) }
-        states.removeAll { $0.account.site == account.site && $0.account.email == account.email }
-        stored.removeAll { $0.site == account.site && $0.email == account.email }
+        // By id (host + lowercased email), as `remove` and `attach` go: matched on the exact URL and email, a
+        // re-sign-in with the email cased differently would keep both entries under one id.
+        states.removeAll { $0.id == account.id }
+        stored.removeAll { $0.id == account.id }
         states.append(st)
         stored.append(account)
         unreachable[account.id] = nil
