@@ -329,11 +329,11 @@ struct PriorityIcon: View {
 
 struct GlassCard<Content: View>: View {
     var title: LocalizedStringKey?
-    /// "• 1 task", "• 1d 7h logged", after the title in the control's style: a figure that belongs to the title.
+    /// "• 1 task", "• 1d 7h logged", after the hint in the control's style: a figure that belongs to the title.
     var detail: String?
-    /// A control after the detail, in the hint's size: "• newest first ↓".
+    /// A control after the detail, in the hint's size, shown only while the card is open: "• newest first ↓".
     var accessory: AnyView?
-    /// "• M to add", faint, after the title: the key that acts on the card.
+    /// "• M to add", faint, right after the title: the key that acts on the card.
     var hint: String?
     /// Set for a card that folds away: a chevron at the title's trailing end, and a click on the title, fold it.
     var collapsed: Binding<Bool>?
@@ -351,11 +351,13 @@ struct GlassCard<Content: View>: View {
                     // gives way first.
                     HStack(alignment: .firstTextBaseline, spacing: 3) {
                         Text(title).font(.headline).foregroundStyle(.secondary).fixedSize()
+                        if let hint { Text(hint).keyHint(.subheadline).lineLimit(1) }
                         if let detail {
                             Text(verbatim: detail).font(.subheadline).foregroundStyle(.secondary).fixedSize()
                         }
-                        if let accessory { accessory.fixedSize() }
-                        if let hint { Text(hint).keyHint(.subheadline).lineLimit(1) }
+                        // Nothing to order in a folded card. The fold's binding changes in its animation, so the
+                        // control fades out with the content; last in the row, it moves nothing as it goes.
+                        if let accessory, collapsed?.wrappedValue != true { accessory.fixedSize() }
                         if let empty {
                             Spacer(minLength: 8)
                             Text(empty).font(.subheadline).foregroundStyle(.tertiary).fixedSize()

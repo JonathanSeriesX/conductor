@@ -1448,7 +1448,7 @@ struct IssueDetailView: View {
         .padding(.leading, 36)  // under the name, past the avatar
     }
 
-    /// "Comments • 250 comments • newest first ↓ • M to add". The order is a click on it, as the list's "sorted by".
+    /// "Comments • M to add • 250 comments • newest first ↓". The order is a click on it, as the list's "sorted by".
     private func commentsCard(_ issue: Issue) -> some View {
         let count = issue.fields.comment?.total ?? 0
         return GlassCard(
