@@ -81,7 +81,8 @@ struct JiraError: LocalizedError, Sendable {
 }
 
 struct JiraClient: Sendable {
-    let account: Account
+    /// `var`: a new token for the same account goes in place (`Session.add`).
+    var account: Account
     var sprintField: String?
     /// Every numeric field named like story points; which one a project uses shows up in its editmeta.
     var pointsFields: [String] = []
@@ -179,6 +180,11 @@ struct JiraClient: Sendable {
             await Connectivity.shared.reportSuccess(host: host)
             let http = resp as? HTTPURLResponse
             let status = http?.statusCode ?? 0
+            // Server answers a token it no longer takes as an anonymous visitor: projects and lists came back empty,
+            // and replaced the cached ones, where Cloud says 401.
+            if server, http?.value(forHTTPHeaderField: "X-AUSERNAME") == "anonymous" {
+                throw JiraError(status: 401, data: Data(), server: true)
+            }
             if (200..<300).contains(status) { return data }
             // Rate limited or busy: wait as long as Jira asks (2 s when it doesn't say, 30 s at most), then once more.
             guard !retried, status == 429 || status == 503 else {

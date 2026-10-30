@@ -10,16 +10,19 @@ struct IssueTarget: Hashable, Codable, Sendable {
 /// Everything that belongs to one signed-in account. Every account stays live; there is no "current" one.
 @MainActor @Observable
 final class AccountState: Identifiable {
-    let account: Account
+    nonisolated let id: UUID
     var client: JiraClient
+    /// As its client signs in, so a new token (`Session.add`) reaches every window holding this state at once.
+    var account: Account { client.account }
     var me: JiraUser?
     var projects: [Project] = []
     var filters: [Filter] = []
     var starred: Set<String> = []
     var issueTypeNames: [String] = []
     var jqlFields: [JQLAutocomplete.Field] = []
-    /// Set when the last network check failed; the cached catalog stays usable.
-    var error: String?
+    /// Set when the last network check failed; the cached catalog stays usable. A 401 (`isRejectedSignIn`) asks for
+    /// a new token rather than a retry.
+    var error: (any Error)?
     /// Rows the lists and prefetches have seen, so an issue page can open with what the row already knows. Row-sized:
     /// descriptions, comments and work logs stay on disk, or every warmed issue would sit here whole.
     @ObservationIgnored var peek: [String: Issue] = [:]
@@ -219,7 +222,6 @@ final class AccountState: Identifiable {
 
     var color: Color { Palette.color(named: colorName) }
 
-    nonisolated var id: UUID { account.id }
     var host: String { account.site.host() ?? "" }
     /// The user's own name for the account, else the company from the email domain ("acme.com" → "Acme"),
     /// else the site's first label. Jira's own site title is just "Jira" on most sites.
@@ -249,7 +251,7 @@ final class AccountState: Identifiable {
     private(set) var warmIsFirst = false
 
     init(account: Account) {
-        self.account = account
+        id = account.id
         client = JiraClient(account: account)
         customTitle = UserDefaults.standard.string(forKey: "accountTitle.\(account.id)") ?? ""
         colorName = UserDefaults.standard.string(forKey: "accountColor.\(account.id)") ?? ""
@@ -507,7 +509,7 @@ final class Session {
     /// Accounts that signed in. `stored` is the Keychain truth; an account that is offline stays stored but has no state.
     private(set) var states: [AccountState] = []
     private(set) var stored: [Account] = []
-    private(set) var unreachable: [UUID: String] = [:]
+    private(set) var unreachable: [UUID: any Error] = [:]
     private(set) var isRestoring = true
 
     /// One-shot requests from menu commands, URLs and other windows; the root view consumes them.
@@ -717,12 +719,11 @@ final class Session {
             } else if states.contains(where: { $0.id == st.id }) {
                 // Attached from its cache already, a rejected token included: listed as unreachable too, the sidebar
                 // drew the account twice, the second time as a copy of its live section under the same id.
-                st.error = failure?.localizedDescription
-            } else if let e = failure as? JiraError, e.status == 401 {
-                // Never forget an account on its own: a captive portal or proxy can answer 401 for every site.
-                unreachable[account.id] = String(localized: "Sign-in was rejected. Check the API token, then retry.")
+                st.error = failure
             } else {
-                unreachable[account.id] = failure?.localizedDescription ?? String(localized: "Unknown error")
+                // Never forget an account on its own, a 401 included: a captive portal or proxy can answer 401 for
+                // every site. A rejected one offers a new token.
+                unreachable[account.id] = failure
             }
         }
         LaunchProbe.once("restore.done")
@@ -740,25 +741,33 @@ final class Session {
         states.sort { (order.firstIndex(of: $0.id) ?? .max) < (order.firstIndex(of: $1.id) ?? .max) }
     }
 
-    /// Adds (or re-adds) an account after validating it.
+    /// Adds an account after validating it, or gives one already here its new token. By id (host + lowercased email),
+    /// as `remove` and `attach` go, and in place: the account keeps its sidebar slot, name and colour, and a live one
+    /// its state, which every list row and window holds; replaced, they went on with the rejected token (CON-285).
     @discardableResult
     func add(_ account: Account) async throws -> AccountState {
-        let st = AccountState(account: account)
-        try await st.load()
-        if st.colorName.isEmpty { st.setColor(Palette.next(avoiding: states.map(\.colorName))) }
-        // By id (host + lowercased email), as `remove` and `attach` go: matched on the exact URL and email, a
-        // re-sign-in with the email cased differently would keep both entries under one id.
-        states.removeAll { $0.id == account.id }
-        stored.removeAll { $0.id == account.id }
-        states.append(st)
-        stored.append(account)
+        let st = state(account.id) ?? AccountState(account: account)
+        let previous = st.client.account
+        st.client.account = account
+        do { try await st.load() } catch {
+            st.client.account = previous
+            throw error
+        }
+        if let i = stored.firstIndex(where: { $0.id == account.id }) {
+            stored[i] = account
+        } else {
+            stored.append(account)
+        }
+        attach(st)
         unreachable[account.id] = nil
         Keychain.save(stored)
+        // Lists and pages of the account were fetched with the rejected token, or lack it (All Accounts).
+        reloadTick += 1
         return st
     }
 
     func retry(_ account: Account) async {
-        do { try await add(account) } catch { unreachable[account.id] = error.localizedDescription }
+        do { try await add(account) } catch { unreachable[account.id] = error }
     }
 
     func remove(_ account: Account) {
@@ -784,7 +793,7 @@ final class Session {
                 // An account whose launch check failed runs it again whole: only a check that passes clears the
                 // sidebar's error mark, and a refresh that merely reached it left the mark up for good.
                 if st.error != nil {
-                    do { try await st.load() } catch { if !error.isCancelled { st.error = error.localizedDescription } }
+                    do { try await st.load() } catch { if !error.isCancelled { st.error = error } }
                     return
                 }
                 await st.refreshCatalog()
@@ -806,7 +815,7 @@ final class Session {
             states.filter { $0.error != nil || Connectivity.shared.offlineHosts.contains($0.host) }.map(\.id))
         let tasks = states.filter { failed.contains($0.id) }.map { st in
             Task { @MainActor in
-                do { try await st.load() } catch { if !error.isCancelled { st.error = error.localizedDescription } }
+                do { try await st.load() } catch { if !error.isCancelled { st.error = error } }
             }
         }
         for t in tasks { await t.value }
@@ -1137,6 +1146,9 @@ extension Error {
     var isCancelled: Bool {
         self is CancellationError || (self as? URLError)?.code == .cancelled
     }
+
+    /// Jira refused the token (a 401): only a new one helps, not a retry.
+    var isRejectedSignIn: Bool { (self as? JiraError)?.status == 401 }
 
     /// A transport failure, as opposed to something Jira answered.
     var isOffline: Bool {

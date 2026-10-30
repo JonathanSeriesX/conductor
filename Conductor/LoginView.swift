@@ -4,6 +4,8 @@ struct LoginView: View {
     /// Adds an account to those signed in: the sidebar's sheet, or the window Settings opens. `dismiss` closes
     /// either on Cancel and Add, never the main window.
     var isSheet = false
+    /// A new token for this account, Jira having rejected its own: the site and the user stay as they are.
+    var updating: Account?
     @Environment(Session.self) private var session
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openWindow) private var openWindow
@@ -32,7 +34,7 @@ struct LoginView: View {
                 .font(.system(size: 44, weight: .medium))
                 .foregroundStyle(
                     .linearGradient(colors: [.indigo, .cyan], startPoint: .topLeading, endPoint: .bottomTrailing))
-            Text(isSheet ? "Add Account" : "Conductor").font(.largeTitle.weight(.semibold))
+            Text(title).font(.largeTitle.weight(.semibold))
             Text(
                 server
                     ? "Sign in to Jira Server or Data Center with a personal access token."
@@ -41,14 +43,14 @@ struct LoginView: View {
             .foregroundStyle(.secondary).multilineTextAlignment(.center)
 
             VStack(spacing: 10) {
-                TextField("Site", text: $site, prompt: Text("yourteam.atlassian.net"))
+                TextField("Site", text: $site, prompt: Text("yourteam.atlassian.net")).disabled(updating != nil)
                 // A personal access token names its user itself, so the username comes from Jira. The field stays,
                 // greyed, so the card keeps its height while a typed site turns from Cloud to Server.
                 TextField(
                     server ? "Username" : "Email", text: server ? .constant("") : $email,
                     prompt: server ? Text("Taken from the token") : Text(verbatim: "you@company.com")
                 )
-                .disabled(server)
+                .disabled(server || updating != nil)
                 SecureField(
                     server ? "Personal access token" : "API token", text: $token,
                     prompt: Text(server ? "Personal access token" : "API token"))
@@ -73,7 +75,7 @@ struct LoginView: View {
                     if busy {
                         ProgressView().controlSize(.small).frame(maxWidth: .infinity)
                     } else {
-                        Text(isSheet ? "Add" : "Sign In").frame(maxWidth: .infinity)
+                        Text(updating != nil ? "Update" : isSheet ? "Add" : "Sign In").frame(maxWidth: .infinity)
                     }
                 }
                 .glassButton(prominent: true)
@@ -117,6 +119,17 @@ struct LoginView: View {
         }
         .padding(32)
         .frame(width: 400)
+        .onAppear {
+            guard let updating else { return }
+            site = updating.site.absoluteString
+            // A Server account's email is its username, which the greyed field does not show.
+            if !updating.isServer { email = updating.email }
+        }
+    }
+
+    private var title: LocalizedStringKey {
+        guard updating == nil else { return server ? "Update Personal Access Token" : "Update API Token" }
+        return isSheet ? "Add Account" : "Conductor"
     }
 
     private func submit() {
@@ -132,6 +145,11 @@ struct LoginView: View {
                     let me = try await JiraClient(account: account).myself()
                     account = Account(site: url, email: me.accountId, token: token)
                 }
+                // A Server token names its own user: another one's would sign this account in as them.
+                if let updating, account.id != updating.id {
+                    self.error = String(localized: "This token belongs to another user.")
+                    return
+                }
                 try await session.add(account)
                 if isSheet {
                     dismiss()
@@ -142,5 +160,12 @@ struct LoginView: View {
                 }
             } catch { self.error = error.localizedDescription }
         }
+    }
+}
+
+extension Account {
+    /// Opens the sign-in card for a new token: the sidebar's menu and error mark, and a list that is empty for it.
+    var updateTokenTitle: String {
+        isServer ? String(localized: "Update Personal Access Token…") : String(localized: "Update API Token…")
     }
 }

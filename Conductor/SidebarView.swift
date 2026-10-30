@@ -367,6 +367,7 @@ struct SidebarView: View {
     @State private var renamingPreset: Preset?
     @State private var newTitle = ""
     @State private var signingOut: AccountState?
+    @State private var updatingToken: Account?
 
     var body: some View {
         let selection = Binding<ListFilters?>(
@@ -384,9 +385,18 @@ struct SidebarView: View {
                 } header: {
                     HStack(spacing: 4) {
                         Text(st.title)
-                        if let e = st.error {
+                        if st.error?.isRejectedSignIn == true {
+                            // Only a new token helps here, so the mark asks for one.
+                            Button {
+                                updatingToken = st.account
+                            } label: {
+                                Image(systemName: "person.crop.circle.badge.exclamationmark")
+                            }
+                            .buttonStyle(.plain).foregroundStyle(.orange)
+                            .help("Showing cached data. Sign-in was rejected: click to enter a new token.")
+                        } else if let e = st.error {
                             Image(systemName: "wifi.exclamationmark").foregroundStyle(.orange).help(
-                                "Showing cached data. \(e)")
+                                "Showing cached data. \(e.localizedDescription)")
                         }
                     }
                     // Every click on the header toggles: the system's own header click skips the second click of a
@@ -414,8 +424,9 @@ struct SidebarView: View {
                             }
                         }
                         Button("Refresh", systemImage: "arrow.clockwise") {
-                            Task { do { try await st.load() } catch { st.error = error.localizedDescription } }
+                            Task { do { try await st.load() } catch { st.error = error } }
                         }
+                        Button(st.account.updateTokenTitle, systemImage: "key") { updatingToken = st.account }
                         Divider()
                         Button(
                             "Sign Out of \(st.title)…", systemImage: "rectangle.portrait.and.arrow.forward",
@@ -427,10 +438,17 @@ struct SidebarView: View {
             // On macOS 26 a sidebar List moves whole sections with the system's drag, line and motion.
             .onMove { from, to in withAnimation { session.moveAccounts(fromOffsets: from, toOffset: to) } }
             ForEach(session.accounts.filter { session.unreachable[$0.id] != nil }, id: \.id) { account in
+                let error = session.unreachable[account.id]
                 Section(account.site.host() ?? String(localized: "Account")) {
-                    Label("Couldn't connect", systemImage: "wifi.exclamationmark").foregroundStyle(.secondary)
-                        .help(session.unreachable[account.id] ?? "")
+                    if error?.isRejectedSignIn == true {
+                        Label("Sign-in was rejected", systemImage: "person.crop.circle.badge.exclamationmark")
+                            .foregroundStyle(.secondary).help(error?.localizedDescription ?? "")
+                    } else {
+                        Label("Couldn't connect", systemImage: "wifi.exclamationmark").foregroundStyle(.secondary)
+                            .help(error?.localizedDescription ?? "")
+                    }
                     Button("Retry") { Task { await session.retry(account) } }
+                    Button(account.updateTokenTitle) { updatingToken = account }
                     Button("Remove Account", role: .destructive) { session.remove(account) }
                 }
             }
@@ -490,6 +508,7 @@ struct SidebarView: View {
             if f == bare { openWindow(id: "board", value: BoardTarget(accountID: id, projectKey: key)) }
         }
         .sheet(isPresented: $showAddAccount) { LoginView(isSheet: true) }
+        .sheet(item: $updatingToken) { LoginView(isSheet: true, updating: $0) }
         .alert("Rename Account", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
             TextField("Name", text: $newTitle)
             Button("Rename") {

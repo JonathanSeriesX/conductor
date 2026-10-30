@@ -382,8 +382,16 @@ final class IssueListStore {
         for t in tasks {
             let result = await t.result
             guard gen == generation else { return }
-            // Of several sites, a failed one keeps what it had; alone, it says what went wrong.
-            if case .failure(let e) = result, f.account != nil { fail(e, cacheable: cacheable) }
+            // Of several sites, a failed one keeps what it had; alone, it says what went wrong, unless its check failed:
+            // the sidebar's mark and the empty list say so. A rejected token marks the account as its check would,
+            // which at launch can come after the list's first page.
+            if case .failure(let e) = result, let id = f.account {
+                if e.isRejectedSignIn {
+                    session.state(id)?.error = e
+                } else if session.state(id)?.error == nil {
+                    fail(e, cacheable: cacheable)
+                }
+            }
         }
         await whole?.value
         guard gen == generation else { return }
@@ -1725,13 +1733,23 @@ private struct IssueRows: View {
     }
 }
 
-/// What the list says in place of rows: no filter, a query Jira refused, or nothing found.
+/// What the list says in place of rows: no filter, a query Jira refused, accounts that failed, or nothing found.
 private struct ListOverlay: View {
     let store: IssueListStore
     @Binding var filters: ListFilters
     let cleared: ListFilters
+    @Environment(Session.self) private var session
+    @State private var updatingToken: Account?
 
     var body: some View {
+        // On the overlay itself: the content below goes and comes back with every reload behind the card.
+        content.sheet(item: $updatingToken) { LoginView(isSheet: true, updating: $0) }
+    }
+
+    @ViewBuilder private var content: some View {
+        let accounts = session.accounts.filter { filters.includes($0.id) }
+        let errors = accounts.compactMap(failure)
+        let rejected = accounts.first { failure($0)?.isRejectedSignIn == true }
         if store.unbounded {
             ContentUnavailableView(
                 "Pick a filter", systemImage: "line.3.horizontal.decrease.circle",
@@ -1740,6 +1758,23 @@ private struct ListOverlay: View {
                 ))
         } else if let e = store.queryError {
             ContentUnavailableView("Incomplete query", systemImage: "text.magnifyingglass", description: Text(e))
+        } else if !store.isLoading, store.rows.isEmpty, !accounts.isEmpty, errors.count == accounts.count {
+            // Every account of the list failed its check: empty for that, not because nothing matched (CON-285).
+            ContentUnavailableView {
+                if rejected != nil {
+                    Label("Sign-in was rejected", systemImage: "person.crop.circle.badge.exclamationmark")
+                } else {
+                    Label("Couldn't connect", systemImage: "wifi.exclamationmark")
+                }
+            } description: {
+                Text((errors.first { $0.isRejectedSignIn } ?? errors[0]).localizedDescription)
+            } actions: {
+                // Stacked: side by side, the token's long title was cut off by a narrow list column.
+                VStack {
+                    if let rejected { Button(rejected.updateTokenTitle) { updatingToken = rejected } }
+                    Button("Retry") { Task { await session.reconnect() } }
+                }
+            }
         } else if !store.isLoading, store.rows.isEmpty {
             ContentUnavailableView {
                 Label(filters.isActive ? "No matches" : "No issues", systemImage: "tray")
@@ -1753,6 +1788,11 @@ private struct ListOverlay: View {
                 }
             }
         }
+    }
+
+    /// Why the account's check failed, live or unreachable; nil while it passes.
+    private func failure(_ account: Account) -> (any Error)? {
+        session.state(account.id)?.error ?? session.unreachable[account.id]
     }
 }
 
