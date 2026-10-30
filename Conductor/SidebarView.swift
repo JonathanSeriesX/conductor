@@ -392,7 +392,7 @@ struct SidebarView: View {
                 } header: {
                     HStack(spacing: 4) {
                         Text(st.title)
-                        if st.error?.isRejectedSignIn == true {
+                        if st.mark?.isRejectedSignIn == true {
                             // Only a new token helps here, so the mark asks for one.
                             Button {
                                 updatingToken = st.account
@@ -401,7 +401,7 @@ struct SidebarView: View {
                             }
                             .buttonStyle(.plain).foregroundStyle(.orange)
                             .help("Showing cached data. Sign-in was rejected: click to enter a new token.")
-                        } else if let e = st.error {
+                        } else if let e = st.mark {
                             Image(systemName: "wifi.exclamationmark").foregroundStyle(.orange).help(
                                 "Showing cached data. \(e.localizedDescription)")
                         }

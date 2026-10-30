@@ -173,8 +173,9 @@ struct JiraClient: Sendable {
         var retried = false
         while true {
             let (data, resp): (Data, URLResponse)
+            let sent = ContinuousClock.now
             do { (data, resp) = try await URLSession.shared.data(for: req) } catch {
-                await Connectivity.shared.report(error, host: host)
+                await Connectivity.shared.report(error, host: host, sent: sent)
                 throw error
             }
             await Connectivity.shared.reportSuccess(host: host)

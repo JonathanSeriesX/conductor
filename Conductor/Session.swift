@@ -23,6 +23,12 @@ final class AccountState: Identifiable {
     /// Set when the last network check failed; the cached catalog stays usable. A 401 (`isRejectedSignIn`) asks for
     /// a new token rather than a retry.
     var error: (any Error)?
+    /// What the sidebar's mark shows of `error`: a transport failure only while its site still isn't answering
+    /// (`Connectivity`), so the first request that gets through ends the mark as it ends Working Offline. Kept until
+    /// the next check passed, it said "disconnected" over lists that loaded fine (CON-287).
+    var mark: (any Error)? {
+        error.flatMap { $0.isOffline && !Connectivity.shared.offlineHosts.contains(host) ? nil : $0 }
+    }
     /// Rows the lists and prefetches have seen, so an issue page can open with what the row already knows. Row-sized:
     /// descriptions, comments and work logs stay on disk, or every warmed issue would sit here whole.
     @ObservationIgnored var peek: [String: Issue] = [:]
@@ -300,6 +306,7 @@ final class AccountState: Identifiable {
         async let custom = client.customFieldIds()
         async let catalog: () = refreshCatalog()
         me = try await user
+        error = nil  // the check passed; the catalog behind it can take half a minute on a site just back
         DiskCache.saveAsync(me, account: account, name: "me")
         if let ids = try? await custom {
             client.sprintField = ids.sprint
@@ -310,7 +317,6 @@ final class AccountState: Identifiable {
             DiskCache.saveAsync(ids.epics, account: account, name: "epicFields")
         }
         await catalog
-        error = nil
         LaunchProbe.once("account.loaded")
         // The account is usable now; the lists, boards and the warm pass fill the cache behind it. Judged before the
         // lists start, since they prefetch details of their own.
@@ -1132,13 +1138,21 @@ final class Connectivity {
     /// while another keeps answering.
     private(set) var offlineHosts: Set<String> = []
     var isOffline: Bool { !offlineHosts.isEmpty }
+    /// When each site last answered. A request sent before then that fails in transport is old news: one that hung
+    /// through an outage timed out after the site was back, and flagged it offline again (CON-287).
+    @ObservationIgnored private var answered: [String: ContinuousClock.Instant] = [:]
 
     // Written only on a real change: every reply reports, and each write, even of the same set, re-rendered the
     // sidebar, several times per page load.
-    func report(_ error: any Error, host: String) {
-        if error.isOffline, !offlineHosts.contains(host) { offlineHosts.insert(host) }
+    func report(_ error: any Error, host: String, sent: ContinuousClock.Instant = .now) {
+        if error.isOffline, !offlineHosts.contains(host), answered[host].map({ $0 < sent }) ?? true {
+            offlineHosts.insert(host)
+        }
     }
-    func reportSuccess(host: String) { if offlineHosts.contains(host) { offlineHosts.remove(host) } }
+    func reportSuccess(host: String) {
+        answered[host] = .now
+        if offlineHosts.contains(host) { offlineHosts.remove(host) }
+    }
 }
 
 extension Error {

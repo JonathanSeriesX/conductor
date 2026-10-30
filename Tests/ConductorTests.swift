@@ -378,8 +378,14 @@ final class DecodingTests: XCTestCase {
         c.report(URLError(.timedOut), host: "a")
         c.report(JiraError(status: 500, data: Data()), host: "b")  // Jira answered: not offline
         XCTAssertEqual(c.offlineHosts, ["a"])
+        let hung = ContinuousClock.now
         c.reportSuccess(host: "a")
         XCTAssertFalse(c.isOffline)
+        // Sent before the site answered again: it hung through the outage, and the site is back (CON-287).
+        c.report(URLError(.timedOut), host: "a", sent: hung)
+        XCTAssertFalse(c.isOffline)
+        c.report(URLError(.timedOut), host: "a")
+        XCTAssertTrue(c.isOffline)
     }
 
     func testAccountIDIsStableAcrossLaunches() {
