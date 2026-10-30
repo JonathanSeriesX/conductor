@@ -261,6 +261,10 @@ final class JQLTests: XCTestCase {
         XCTAssertEqual(
             IssueListStore.changed("ORDER BY key", minutes: 5),
             "(updated >= -5m OR lastViewed >= -5m) ORDER BY updated DESC")
+        // A list's count is kept under its query without the order, so every order finds it (CON-282).
+        XCTAssertEqual(
+            IssueListStore.countName("assignee = currentUser() ORDER BY updated DESC"),
+            IssueListStore.countName("assignee = currentUser() order by statusCategory ASC, status ASC"))
     }
 
     /// Search suggestions: the five newest issues in memory by key prefix or summary, a key once across accounts.

@@ -304,10 +304,17 @@ final class IssueListStore {
         let queries: [(AccountState, String)] = states.map { ($0, f.jql) }
         // Typed searches are not cached: they change with every keystroke and would litter the disk.
         let cacheable = f.text.isEmpty
-        total = queries.reduce(0 as Int?) { sum, q in
-            guard let sum, let c = q.0.listCounts["list-" + DiskCache.hash(q.1)] else { return nil }
-            return sum + c
-        }
+        // The count goes by the issues, not their order: another order of the list on screen keeps its number.
+        var resorted = shown
+        resorted.sort = f.sort
+        total =
+            queries.reduce(0 as Int?) { sum, q in
+                // ponytail: also the name before CON-282 (the whole query), for counts of older builds; drop later.
+                guard let sum,
+                    let c = q.0.listCounts[Self.countName(q.1)] ?? q.0.listCounts["list-" + DiskCache.hash(q.1)]
+                else { return nil }
+                return sum + c
+            } ?? (resorted == f ? total : nil)
         Task { await countIssues(queries, gen: gen, cache: cacheable) }
         let queryKey = ListKey(accounts: states.map(\.id), jql: f.jql, typed: !cacheable)
         let opening = shownKey != queryKey
@@ -318,8 +325,6 @@ final class IssueListStore {
             endPending = false
             var byAccount = pages.mapValues(\.rows)
             let since = pages.mapValues(\.since)
-            var resorted = shown
-            resorted.sort = f.sort
             if resorted == f, !rows.isEmpty {
                 // Only the order changed. A list that is all here changes places at once, and its sync confirms it
                 // with no first page over it, which would reorder its top a second time. Jira orders types and
@@ -396,7 +401,7 @@ final class IssueListStore {
         for ((st, jql), t) in zip(queries, tasks) {
             guard let c = await t.value else { return }
             if cache {
-                st.listCounts["list-" + DiskCache.hash(jql)] = c
+                st.listCounts[Self.countName(jql)] = c
                 DiskCache.saveAsync(st.listCounts, account: st.account, name: "listCounts")
             }
             sum += c
@@ -586,11 +591,20 @@ final class IssueListStore {
     /// A list's query narrowed to the issues changed, or viewed on the web, in the last `minutes`, newest first.
     /// Relative dates are the server's own clock and zone.
     static func changed(_ jql: String, minutes: Int) -> String {
-        let clause = jql.ranges(of: /(?i)\border\s+by\b/).last.map { jql[..<$0.lowerBound] } ?? jql[...]
         let recent = "(updated >= -\(minutes)m OR lastViewed >= -\(minutes)m)"
-        let rest = clause.trimmingCharacters(in: .whitespaces)
+        let rest = unordered(jql)
         return (rest.isEmpty ? recent : "(\(rest)) AND \(recent)") + " ORDER BY updated DESC"
     }
+
+    /// A query without its ORDER BY: which issues it matches, whatever their order.
+    static func unordered(_ jql: String) -> String {
+        let clause = jql.ranges(of: /(?i)\border\s+by\b/).last.map { jql[..<$0.lowerBound] } ?? jql[...]
+        return clause.trimmingCharacters(in: .whitespaces)
+    }
+
+    /// The name a list's count is kept under in `AccountState.listCounts`: its query without the order, so every
+    /// order of a list opens with the number counted in any of them, not "5 000+" (CON-282).
+    static func countName(_ jql: String) -> String { "list-" + DiskCache.hash(unordered(jql)) }
 
     /// One account's rows brought up to date: `keys` in their order (the server's, each once), each the newest copy
     /// there is, a changed row's, else the row as it stands; a key neither has is left out. Rows that tie on the sort

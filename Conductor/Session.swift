@@ -26,8 +26,8 @@ final class AccountState: Identifiable {
     /// First pages of lists by cache name ("list-<hash of JQL>"): the recent ones from disk at launch, then every
     /// one fetched, so a list opens with rows in its first frame instead of after a disk read.
     @ObservationIgnored var lists: [String: [Issue]] = [:]
-    /// How many issues each cached list's query matched when it was last counted, by the same cache name, so a
-    /// list opens with its count in its first frame rather than "50+ issues".
+    /// How many issues each cached list's query matched when it was last counted, by `IssueListStore.countName`
+    /// (the query without its order), so a list opens with its count in its first frame rather than "50+ issues".
     @ObservationIgnored var listCounts: [String: Int] = [:]
     /// Each board as it was last drawn, by project key, so a board window reopens without a disk read and decode.
     @ObservationIgnored var boardSnapshots: [String: BoardStore.Snapshot] = [:]
