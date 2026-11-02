@@ -1675,3 +1675,167 @@ final class IssueTableTests: XCTestCase {
             ["A-1", "A-4", "A-2", "A-3"])
     }
 }
+
+/// The changes of 29–30 October: a sort's words and starting direction, statuses as a board reads, children's
+/// orders, a count named by the issues alone, and an account whose token Jira rejects.
+final class SortWordsAndSignInTests: XCTestCase {
+    typealias Field = ListFilters.Sort.Field
+
+    /// Due dates, types and statuses start ascending; the menu names each direction in the field's own words.
+    func testEachFieldStartsInItsOwnDirectionAndNamesIt() {
+        XCTAssertEqual(Field.allCases.filter { !$0.startsDescending }, [.due, .type, .status])
+        XCTAssertEqual(Field.updated.direction(descending: true), "Newest first")
+        XCTAssertEqual(Field.viewed.direction(descending: false), "Oldest first")
+        XCTAssertEqual(Field.due.direction(descending: false), "Earliest first")
+        XCTAssertEqual(Field.priority.direction(descending: true), "Highest first")
+        XCTAssertEqual(Field.key.direction(descending: false), "Lowest first")
+        XCTAssertEqual(Field.type.direction(descending: false), "A to Z")
+        XCTAssertEqual(Field.status.direction(descending: false), "Yet To Do first")
+        XCTAssertEqual(Field.status.direction(descending: true), "Completed first")
+        // Only a status sort asks Jira for two clauses.
+        XCTAssertEqual(ListFilters.Sort(field: .status, descending: true).clause, "statusCategory DESC, status DESC")
+        XCTAssertEqual(ListFilters.Sort(field: .due, descending: false).clause, "duedate ASC")
+        XCTAssertEqual(ListFilters.Sort(field: .viewed, descending: true).clause, "lastViewed DESC")
+    }
+
+    func testStatusesReadAsABoardByNameWithinAndUnknownOnesWithTheWorkInProgress() {
+        func s(_ name: String, _ category: String) -> Status {
+            Status(id: name, name: name, statusCategory: StatusCategory(key: category, name: category))
+        }
+        XCTAssertEqual(Status.compare(s("To Do", "new"), s("Done", "done")), .orderedAscending)
+        XCTAssertEqual(Status.compare(s("Done", "done"), s("In Progress", "indeterminate")), .orderedDescending)
+        XCTAssertEqual(
+            Status.compare(s("In Review", "indeterminate"), s("In Progress", "indeterminate")), .orderedDescending)
+        XCTAssertEqual(Status.compare(s("Open", "new"), s("Open", "new")), .orderedSame)
+        // Jira's "undefined" category, and no status at all, sit among the work in progress.
+        XCTAssertEqual(Status.compare(nil, s("To Do", "new")), .orderedDescending)
+        XCTAssertEqual(Status.compare(nil, s("Done", "done")), .orderedAscending)
+        XCTAssertEqual(Status.compare(s("Odd", "undefined"), s("Zzz", "indeterminate")), .orderedAscending)
+    }
+
+    /// Subtasks come in Jira's rank: `ordered` keeps a tie's order either way, where the lists' `areInOrder` breaks
+    /// it by key.
+    func testOrderedKeepsTiesInBothDirections() throws {
+        func issue(_ key: String, _ category: String) throws -> Issue {
+            try JSONDecoder().decode(
+                Issue.self,
+                from: Data(
+                    #"{"id":"\#(key)","key":"\#(key)","fields":{"summary":"s","status":{"id":"1","name":"S","statusCategory":{"key":"\#(category)","name":"c"}},"issuetype":{"id":"1","name":"Task"}}}"#
+                        .utf8))
+        }
+        let rows = [try issue("A-3", "new"), try issue("A-1", "done"), try issue("A-2", "new")]
+        let asc = ListFilters.Sort(field: .status, descending: false)
+        let desc = ListFilters.Sort(field: .status, descending: true)
+        XCTAssertEqual(asc.ordered(rows, by: asc.compare).map(\.key), ["A-3", "A-2", "A-1"])
+        XCTAssertEqual(desc.ordered(rows, by: desc.compare).map(\.key), ["A-1", "A-3", "A-2"])
+        XCTAssertEqual(rows.sorted(by: asc.areInOrder).map(\.key), ["A-2", "A-3", "A-1"])
+    }
+
+    func testChildSortsSurviveTheTripThroughDefaultsAndShrugOffGarbage() throws {
+        XCTAssertEqual(ChildSorts.standard, .init(field: .status, descending: false))
+        XCTAssertTrue(ChildSorts.decode(Data()).isEmpty)
+        XCTAssertTrue(ChildSorts.decode(Data("nonsense".utf8)).isEmpty)
+        let saved = ["QA-18": ListFilters.Sort(field: .priority, descending: true)]
+        XCTAssertEqual(ChildSorts.decode(try JSONEncoder().encode(saved)), saved)
+    }
+
+    /// An epic, or a type above one, takes child issues under ⇧⌘N; everything else takes subtasks.
+    func testAnEpicOrAnythingAboveOneTakesChildrenNotSubtasks() throws {
+        func issue(level: Int?) throws -> Issue {
+            let l = level.map(String.init) ?? "null"
+            return try JSONDecoder().decode(
+                Issue.self,
+                from: Data(
+                    #"{"id":"1","key":"A-1","fields":{"summary":"s","status":{"id":"1","name":"S","statusCategory":{"key":"new","name":"c"}},"issuetype":{"id":"1","name":"T","hierarchyLevel":\#(l)}}}"#
+                        .utf8))
+        }
+        XCTAssertTrue(try issue(level: 1).isEpic)
+        XCTAssertTrue(try issue(level: 2).isEpic)
+        XCTAssertFalse(try issue(level: 0).isEpic)
+        XCTAssertFalse(try issue(level: -1).isEpic)
+        XCTAssertFalse(try issue(level: nil).isEpic)
+    }
+
+    /// A count is kept under the issues a query matches, whatever their order and however "order by" is written.
+    @MainActor func testACountIsNamedByTheIssuesNotTheirOrder() {
+        XCTAssertEqual(IssueListStore.unordered("project = QA ORDER BY updated DESC"), "project = QA")
+        XCTAssertEqual(IssueListStore.unordered("project = QA order by statusCategory ASC, status ASC"), "project = QA")
+        XCTAssertEqual(IssueListStore.unordered("project = QA"), "project = QA")
+        XCTAssertEqual(IssueListStore.unordered("ORDER BY updated DESC"), "")
+        XCTAssertEqual(
+            IssueListStore.countName("project = QA ORDER BY key ASC"), IssueListStore.countName("project = QA"))
+        XCTAssertNotEqual(IssueListStore.countName("project = QA"), IssueListStore.countName("project = ST"))
+        XCTAssertEqual(
+            IssueListStore.changed("project = QA ORDER BY statusCategory ASC, status ASC", minutes: 5),
+            "(project = QA) AND (updated >= -5m OR lastViewed >= -5m) ORDER BY updated DESC")
+    }
+
+    /// The sidebar's mark shows a transport failure only while the site is still silent; a rejected token stays
+    /// until a new one (CON-287, CON-285).
+    @MainActor func testTheMarkShowsATransportFailureOnlyWhileTheSiteIsStillSilent() {
+        let st = AccountState(
+            account: Account(site: URL(string: "https://mark-test.invalid")!, email: "a@b.c", token: "t"))
+        st.error = URLError(.timedOut)
+        XCTAssertNil(st.mark, "nothing says the site is still down")
+        Connectivity.shared.report(URLError(.timedOut), host: st.host)
+        XCTAssertNotNil(st.mark)
+        Connectivity.shared.reportSuccess(host: st.host)
+        XCTAssertNil(st.mark)
+        st.error = JiraError(status: 401, data: Data())
+        XCTAssertEqual(st.mark?.isRejectedSignIn, true)
+        st.error = JiraError(status: 500, data: Data())
+        XCTAssertEqual(st.mark?.isRejectedSignIn, false, "Jira answered: the mark stays until a check passes")
+        st.error = nil
+        XCTAssertNil(st.mark)
+    }
+
+    /// A new token goes into the account's own state, by id, so its slot, name, colour and windows carry on.
+    @MainActor func testANewTokenGoesInPlaceOfTheOldOne() {
+        let old = Account(site: URL(string: "https://x.atlassian.net")!, email: "A@b.c", token: "old")
+        let new = Account(site: URL(string: "https://x.atlassian.net")!, email: "a@B.c", token: "new")
+        XCTAssertEqual(old.id, new.id)
+        let st = AccountState(account: old)
+        st.client.account = new
+        XCTAssertEqual(st.id, old.id)
+        XCTAssertEqual(st.account.token, "new")
+    }
+
+    func testARejectedTokenReadsAsOneAndNamesItsKind() {
+        XCTAssertEqual(
+            JiraError(status: 401, data: Data(), server: true).errorDescription, "Invalid personal access token.")
+        XCTAssertEqual(JiraError(status: 401, data: Data()).errorDescription, "Invalid email or API token.")
+        XCTAssertTrue(JiraError(status: 401, data: Data()).isRejectedSignIn)
+        XCTAssertFalse(JiraError(status: 403, data: Data()).isRejectedSignIn)
+        XCTAssertFalse(URLError(.timedOut).isRejectedSignIn)
+        XCTAssertEqual(
+            Account(site: URL(string: "http://localhost:8080")!, email: "", token: "t").updateTokenTitle,
+            "Update Personal Access Token…")
+        XCTAssertEqual(
+            Account(site: URL(string: "https://x.atlassian.net")!, email: "a@b.c", token: "t").updateTokenTitle,
+            "Update API Token…")
+    }
+
+    /// Data Center answers a token it no longer takes as an anonymous visitor (an empty catalog, a 400 from search),
+    /// where Cloud says 401: the client reads X-AUSERNAME and says 401 itself (CON-285).
+    func testLiveServerAnswersARejectedTokenAs401NotAsAnEmptySite() async throws {
+        let env = ProcessInfo.processInfo.environment
+        guard let site = env["CONDUCTOR_SERVER_SITE"].flatMap(Account.normalizeSite) else {
+            throw XCTSkip("No live Server in the environment")
+        }
+        let c = JiraClient(account: Account(site: site, email: "", token: "not-a-token"))
+        let calls: [(String, () async throws -> Void)] = [
+            ("myself", { _ = try await c.myself() }),
+            ("search", { _ = try await c.search(jql: "project = QA", fields: "key") }),
+            ("projects", { _ = try await c.projects() }),
+        ]
+        for (name, call) in calls {
+            do {
+                try await call()
+                XCTFail("\(name): an anonymous answer passed as a signed-in one")
+            } catch let e as JiraError {
+                XCTAssertEqual(e.status, 401, name)
+                XCTAssertEqual(e.errorDescription, "Invalid personal access token.", name)
+            }
+        }
+    }
+}
