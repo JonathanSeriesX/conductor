@@ -636,7 +636,7 @@ struct SidebarView: View {
         Label {
             Text(title)
         } icon: {
-            Image(systemName: symbol).foregroundStyle(active ? color ?? .accentColor : .secondary)
+            SidebarIcon(symbol: symbol, color: active ? color ?? .accentColor : .secondary)
         }
     }
 
@@ -681,6 +681,17 @@ struct SidebarView: View {
                 session.createIssueRequested = true
             }
         }
+    }
+}
+
+/// White on a selected row, as its text goes: an accent icon vanished on the accent selection.
+private struct SidebarIcon: View {
+    let symbol: String
+    let color: Color
+    @Environment(\.backgroundProminence) private var prominence
+
+    var body: some View {
+        Image(systemName: symbol).foregroundStyle(prominence == .increased ? .white : color)
     }
 }
 
