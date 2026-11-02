@@ -214,6 +214,7 @@ struct JiraClient: Sendable {
         }
         if let sprintField { d.userInfo[.sprintField] = sprintField }
         d.userInfo[.pointsFields] = pointsFields
+        if server { d.userInfo[.serverSite] = account.site }
         if let epics {
             d.userInfo[.epicLinkField] = epics.link
             d.userInfo[.epicType] = epics.type

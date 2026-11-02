@@ -1166,6 +1166,29 @@ final class ServerTests: XCTestCase {
         XCTAssertEqual(c.childrenJQL(["QA-1"]), #"(parent in ("QA-1") OR cf[10100] in ("QA-1"))"#)
     }
 
+    /// Jira at localhost:8080 names itself by its base URL, where the token would not go: its attachments are
+    /// fetched through the site signed in through. Cloud's links, and avatars on other hosts, stay as Jira sent them.
+    func testServerAttachmentsLoadThroughTheSiteSignedInThrough() throws {
+        let sent = "https://jira.example.ts.net/jira/secure/attachment/10000/my%20shot.png"
+        let json =
+            #"{"id":"1","key":"QA-2","fields":{"summary":"s","status":{"id":"1","name":"To Do","statusCategory":{"key":"new","name":"To Do"}},"issuetype":{"id":"1","name":"Task"},"assignee":{"name":"tester","displayName":"T","avatarUrls":{"48x48":"https://www.gravatar.com/avatar/5b?s=48"}},"attachment":[{"id":"10000","filename":"my shot.png","size":157,"content":"\#(sent)","thumbnail":"https://jira.example.ts.net/jira/secure/thumbnail/10000/_thumb_10000.png","created":"2026-10-05T09:56:55.551+0300"}]}}"#
+        func issue(_ site: String) throws -> Issue {
+            try JiraClient(account: Account(site: URL(string: site)!, email: "e", token: "t")).decoder.decode(
+                Issue.self, from: Data(json.utf8))
+        }
+        let local = try issue("http://localhost:8080/jira")
+        XCTAssertEqual(
+            local.fields.attachment?.first?.content.absoluteString,
+            "http://localhost:8080/jira/secure/attachment/10000/my%20shot.png")
+        XCTAssertEqual(
+            local.fields.attachment?.first?.thumbnail?.absoluteString,
+            "http://localhost:8080/jira/secure/thumbnail/10000/_thumb_10000.png")
+        XCTAssertEqual(local.fields.assignee?.avatar?.host(), "www.gravatar.com")
+        XCTAssertEqual(
+            try issue("https://jira.example.ts.net/jira").fields.attachment?.first?.content.absoluteString, sent)
+        XCTAssertEqual(try issue("https://x.atlassian.net").fields.attachment?.first?.content.absoluteString, sent)
+    }
+
     func testLocalServerSitesStayAsTyped() {
         XCTAssertEqual(Account.normalizeSite("http://localhost:8080")?.absoluteString, "http://localhost:8080")
         XCTAssertEqual(Account.normalizeSite("localhost:8080/jira")?.absoluteString, "https://localhost:8080/jira")
@@ -1310,7 +1333,9 @@ final class LiveServerTests: XCTestCase {
         let link = try XCTUnwrap(issue.fields.issuelinks?.first)
         try await c.deleteLink(id: link.id)
         let uploaded = try await c.uploadAttachment(created.key, data: Data("hello".utf8), filename: "note.txt")
-        let attachment = try XCTUnwrap(uploaded.first)
+        // As the page does: through the issue, which moves Server's links onto the site signed in through.
+        issue = try await c.issue(created.key)
+        let attachment = try XCTUnwrap(issue.fields.attachment?.first { $0.id == uploaded.first?.id })
         let bytes = try await c.data(for: attachment.content)
         XCTAssertEqual(bytes, Data("hello".utf8))
         try await c.deleteAttachment(id: attachment.id)

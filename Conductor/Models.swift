@@ -167,10 +167,29 @@ struct Attachment: Codable, Hashable, Sendable, Identifiable {
     let filename: String
     let mimeType: String?
     let size: Int
-    let content: URL
-    let thumbnail: URL?
+    var content: URL
+    var thumbnail: URL?
     let created: Date
     let author: JiraUser?
+
+    /// The same file fetched through `site`. Server builds these links on its base URL, which need not be the
+    /// address signed in through (Jira at localhost:8080 that names itself by a tailnet host): there the token
+    /// would not go, and Jira answers with its login page.
+    func on(_ site: URL) -> Attachment {
+        func moved(_ url: URL) -> URL {
+            guard var c = URLComponents(url: site, resolvingAgainstBaseURL: false),
+                let u = URLComponents(url: url, resolvingAgainstBaseURL: false),
+                let r = u.percentEncodedPath.range(of: "/secure/")
+            else { return url }
+            c.percentEncodedPath += u.percentEncodedPath[r.lowerBound...]
+            c.percentEncodedQuery = u.percentEncodedQuery
+            return c.url ?? url
+        }
+        var a = self
+        a.content = moved(content)
+        a.thumbnail = thumbnail.map(moved)
+        return a
+    }
 }
 
 struct Comment: Codable, Hashable, Sendable, Identifiable {
@@ -284,7 +303,7 @@ struct Issue: Codable, Hashable, Sendable, Identifiable {
         var parent: IssueRef?
         let subtasks: [IssueRef]?
         var comment: CommentPage?
-        let attachment: [Attachment]?
+        var attachment: [Attachment]?
         let issuelinks: [IssueLink]?
         var worklog: WorklogPage?
         let timetracking: TimeTracking?
@@ -322,6 +341,10 @@ struct Issue: Codable, Hashable, Sendable, Identifiable {
             if let epic = try? dyn.decodeIfPresent(String.self, forKey: AnyKey(link)) {
                 fields.parent = IssueRef(id: epic, key: epic, fields: .init(summary: "", status: nil, issuetype: nil))
             }
+        }
+        // Server: the client passes the address signed in through, where attachments are fetched.
+        if let site = decoder.userInfo[.serverSite] as? URL {
+            fields.attachment = fields.attachment?.map { $0.on(site) }
         }
         if let cached = try? c.decodeIfPresent([Sprint].self, forKey: .sprints) {
             sprints = cached
@@ -397,6 +420,7 @@ extension CodingUserInfoKey {
     static let pointsFields = CodingUserInfoKey(rawValue: "pointsFields")!
     static let epicLinkField = CodingUserInfoKey(rawValue: "epicLinkField")!
     static let epicType = CodingUserInfoKey(rawValue: "epicType")!
+    static let serverSite = CodingUserInfoKey(rawValue: "serverSite")!
 }
 
 // MARK: - Links, worklogs, watchers
