@@ -286,9 +286,11 @@ struct IssueWindow: View {
                     back: trail.isEmpty
                         ? nil
                         : {
+                            // A second ⌘[ can run before the view re-renders with back = nil.
+                            guard let last = trail.popLast() else { return }
                             navigating = true
                             forward = false
-                            target = trail.removeLast()
+                            target = last
                         }, embedded: embedded, forward: forward
                 )
                 .equatable()
