@@ -381,6 +381,34 @@ struct GlassCard<Content: View>: View {
     }
 }
 
+/// Under an editor that cannot keep all of what it opened (`ADFNode.hasLossyNodes`): what saving loses, and a
+/// link to the web, which keeps it. `onOpen` runs as the link opens: an editor closes, as the web's takes over.
+struct LossyNote: View {
+    let text: LocalizedStringKey
+    let url: URL
+    var link: LocalizedStringResource = "Edit on the web…"
+    var onOpen: () -> Void = {}
+
+    var body: some View {
+        var web = AttributedString(localized: link)
+        web.link = url
+        return Label {
+            Text(text) + Text(verbatim: " ") + Text(web)
+        } icon: {
+            Image(systemName: "exclamationmark.triangle")
+        }
+        .font(.caption).foregroundStyle(.orange)
+        // Every line, in a form that would rather cut it to one (New Issue): the window grows instead.
+        .fixedSize(horizontal: false, vertical: true)
+        .environment(
+            \.openURL,
+            OpenURLAction { url in
+                onOpen()
+                return .systemAction(url)
+            })
+    }
+}
+
 /// A header over content that a click on the header folds away and back: a card, a person's work log.
 struct Foldable<Header: View, Content: View>: View {
     /// Nil for content that does not fold.

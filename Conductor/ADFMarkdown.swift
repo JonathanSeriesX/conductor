@@ -240,13 +240,14 @@ extension ADFNode {
         (content ?? []).map { $0.blockMarkdown(indent: "", mentions: &mentions) }.joined(separator: "\n\n")
     }
 
-    /// Node types the Markdown round-trip would flatten or drop.
+    /// Node types the Markdown round-trip would flatten or drop. Cards, statuses and dates go out as their text and
+    /// come back as plain text; so does a custom emoji, which has only a short name (a standard one is its character).
     var hasLossyNodes: Bool {
         let lossy: Set<String> = [
             "media", "mediaSingle", "mediaGroup", "mediaInline", "panel", "expand", "nestedExpand", "layoutSection",
-            "decisionList",
+            "decisionList", "inlineCard", "status", "date",
         ]
-        if lossy.contains(type) { return true }
+        if lossy.contains(type) || (type == "emoji" && attr("text") == nil) { return true }
         return (content ?? []).contains { $0.hasLossyNodes }
     }
 

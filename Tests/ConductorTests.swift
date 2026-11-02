@@ -736,6 +736,24 @@ final class MarkdownTests: XCTestCase {
         XCTAssertFalse(ADFNode.document(markdown: "plain").hasLossyNodes)
     }
 
+    /// What goes out as plain text warns; what the editor writes itself does not (CON-292).
+    func testCardsStatusesAndCommentFilesAreLossy() throws {
+        func doc(_ inline: ADFNode) -> ADFNode {
+            ADFNode(type: "doc", content: [ADFNode(type: "paragraph", content: [inline])])
+        }
+        XCTAssertTrue(doc(ADFNode(type: "status", attrs: ["text": .string("DONE")])).hasLossyNodes)
+        XCTAssertTrue(doc(ADFNode(type: "inlineCard", attrs: ["url": .string("https://x.y/z")])).hasLossyNodes)
+        let md =
+            "Some **bold**, ~~gone~~ and [a link](https://x.y).\n\n- one\n  1. two\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n\nping @Ivan K"
+        let plain = ADFNode.document(markdown: md, mentions: ["Ivan K": "a1"])
+        XCTAssertEqual(plain.content?.map(\.type), ["paragraph", "bulletList", "table", "paragraph"])
+        XCTAssertFalse(plain.hasLossyNodes)
+        // QA-111's comment 11778, as Jira sent it: a file the editor turned into "(image: qa-reply-data.json)".
+        let comment =
+            #"{"type":"doc","version":1,"content":[{"type":"paragraph","content":[{"type":"text","text":"A file node that carries its name (alt), as a picture's does:"}]},{"type":"mediaGroup","content":[{"type":"media","attrs":{"type":"file","id":"d3bb4430-07a1-4d40-a6aa-e3757a242f48","alt":"qa-reply-data.json","collection":""}}]}]}"#
+        XCTAssertTrue(try JSONDecoder().decode(ADFNode.self, from: Data(comment.utf8)).hasLossyNodes)
+    }
+
     func testTaskListsRoundTrip() {
         let md = "- [ ] todo item\n- [x] done item\n\n- plain bullet"
         let doc = ADFNode.document(markdown: md)

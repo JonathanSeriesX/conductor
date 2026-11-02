@@ -793,21 +793,10 @@ struct IssueDetailView: View {
                 )
                 .focusSoon($descriptionFocused)
                 if issue.fields.description?.hasLossyNodes == true, let web = jira?.client.browseURL(key) {
-                    Label {
-                        Text(
-                            "This description has images, panels or other content the editor can't keep. Saving replaces them with the text shown here; Cancel leaves the description as it is."
-                        ) + Text(verbatim: " ") + Text(editOnWeb(web))
-                    } icon: {
-                        Image(systemName: "exclamationmark.triangle")
-                    }
-                    .font(.caption).foregroundStyle(.orange)
-                    // The link closes this editor as it opens the web's: that one keeps what this one would lose.
-                    .environment(
-                        \.openURL,
-                        OpenURLAction { url in
-                            cancelDescriptionEdit()
-                            return .systemAction(url)
-                        })
+                    LossyNote(
+                        text:
+                            "This description has images, panels or other content the editor can't keep. Saving replaces them with the text shown here; Cancel leaves the description as it is.",
+                        url: web, onOpen: cancelDescriptionEdit)
                 }
             } else if let d = issue.fields.description, !(d.content ?? []).isEmpty {
                 let flip: ((String) -> Void)? = store.canEdit("description") ? { toggleTask($0) } : nil
@@ -1507,17 +1496,26 @@ struct IssueDetailView: View {
 
     /// The editor on one comment, hosted in its AppKit row: the environment it needs goes with it.
     private func commentEditor(_ c: Comment, focus: FocusState<Bool>.Binding) -> some View {
-        Composer(
-            text: $editDraft, mentions: $editMentions, placeholder: "Edit comment", uploadImage: uploadPasted,
-            focus: focus,
-            actions: AnyView(
-                HStack(spacing: 10) {
-                    Button("Cancel") { cancelCommentEdit() }.glassButton().keyboardShortcut(.cancelAction)
-                    Button("Save") { saveCommentEdit(c) }.glassButton(prominent: true)
-                        .keyboardShortcut(focus.wrappedValue ? KeyboardShortcut(.return, modifiers: .command) : nil)
-                        .disabled(editDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                }), floatingSuggestions: false
-        )
+        VStack(alignment: .leading, spacing: 12) {
+            Composer(
+                text: $editDraft, mentions: $editMentions, placeholder: "Edit comment", uploadImage: uploadPasted,
+                focus: focus,
+                actions: AnyView(
+                    HStack(spacing: 10) {
+                        Button("Cancel") { cancelCommentEdit() }.glassButton().keyboardShortcut(.cancelAction)
+                        Button("Save") { saveCommentEdit(c) }.glassButton(prominent: true)
+                            .keyboardShortcut(focus.wrappedValue ? KeyboardShortcut(.return, modifiers: .command) : nil)
+                            .disabled(editDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }), floatingSuggestions: false
+            )
+            if c.body.hasLossyNodes, let web = jira?.client.browseURL(key) {
+                LossyNote(
+                    text:
+                        "This comment has images, panels or other content the editor can't keep. Saving replaces them with the text shown here; Cancel leaves the comment as it is.",
+                    url: web.appending(queryItems: [URLQueryItem(name: "focusedCommentId", value: c.id)]),
+                    onOpen: cancelCommentEdit)
+            }
+        }
         .environment(session)
         .environment(\.jira, jira)
     }
@@ -1926,12 +1924,6 @@ struct IssueDetailView: View {
                 if !error.isCancelled { store.error = error.localizedDescription }
             }
         }
-    }
-
-    private func editOnWeb(_ url: URL) -> AttributedString {
-        var s = AttributedString(localized: "Edit on the web…")
-        s.link = url
-        return s
     }
 
     /// A click on a task's circle flips it, in Jira too. Cloud only: wiki markup has no task lists.
