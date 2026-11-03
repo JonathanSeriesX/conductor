@@ -925,7 +925,7 @@ struct IssueListView: View {
                         filterName = ""
                         savingFilter = true
                     } : nil,
-                openBoard: boardTarget.map { b in { openWindow(id: "board", value: b) } },
+                board: boardTarget,
                 sort: $filters.sort
             )
         )

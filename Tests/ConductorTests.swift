@@ -993,6 +993,16 @@ final class BoardTests: XCTestCase {
         XCTAssertEqual(lanes[0].issues.map(\.key), ["A-2", "A-4"])
         XCTAssertEqual(Swimlanes.none.lanes(issues).first?.issues.count, 4)
     }
+
+    /// View › Open Board follows the list on screen: the menu's value changes with its project's board (CON-294).
+    func testListActionsChangeWithTheirBoard() {
+        let id = UUID()
+        func actions(_ key: String) -> ListActions {
+            ListActions(saveFilter: nil, board: BoardTarget(accountID: id, projectKey: key), sort: nil)
+        }
+        XCTAssertNotEqual(actions("KAN"), actions("QA"))
+        XCTAssertEqual(actions("QA"), actions("QA"))
+    }
 }
 
 final class LocalizationTests: XCTestCase {

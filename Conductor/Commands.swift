@@ -47,15 +47,18 @@ extension IssueActions: Equatable {
 /// What the issue list in the key window can do.
 struct ListActions {
     let saveFilter: (() -> Void)?
-    let openBoard: (() -> Void)?
+    /// The list's project board, which View › Open Board opens. A value, not a closure: compared by nil-ness, the
+    /// first list's closure stayed in the menu and opened its board from every project (CON-294).
+    let board: BoardTarget?
     let sort: Binding<ListFilters.Sort>?
 }
 
 extension ListActions: Equatable {
     /// By what the menus show; the closures are new on every list pass, and publishing them each time made
-    /// SwiftUI warn that the focused value changed several times per frame.
+    /// SwiftUI warn that the focused value changed several times per frame. Save Filter's only raises the list's
+    /// own alert, so an older one does the same.
     static func == (a: Self, b: Self) -> Bool {
-        (a.saveFilter == nil) == (b.saveFilter == nil) && (a.openBoard == nil) == (b.openBoard == nil)
+        (a.saveFilter == nil) == (b.saveFilter == nil) && a.board == b.board
             && a.sort?.wrappedValue == b.sort?.wrappedValue
     }
 }
@@ -181,9 +184,9 @@ struct AppCommands: Commands {
         // this one, two lines on each side. First in the View menu now, this group's leading separator is the
         // menu's first item, which AppKit hides, and it shares one line with Show Sidebar below.
         CommandGroup(before: .sidebar) {
-            Button("Open Board") { list?.openBoard?() }
+            Button("Open Board") { if let b = list?.board { openWindow(id: "board", value: b) } }
                 .keyboardShortcut("b", modifiers: [.command, .shift])
-                .disabled(list?.openBoard == nil)
+                .disabled(list?.board == nil)
             // Inline, as Mail's Sort By would be without its submenu. The section draws a separator on each side, so
             // a Divider beside it made a second line.
             Section("Sort By") {
