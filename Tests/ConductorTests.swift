@@ -1385,6 +1385,8 @@ final class LiveServerTests: XCTestCase {
             "project": .object(["key": .string(project)]), "issuetype": .object(["id": .string(epicType.id)]),
             "summary": .string("[DC test] Epic"),
         ])
+        // Torn down whatever fails below, so a run leaves nothing on the site.
+        addTeardownBlock { [c] in try await c.deleteIssue(key: epic.key) }
         let doc = ADFNode.document(markdown: "## Plan\n\n- **one**\n- two\n\n```swift\nlet a = 1\n```")
         var f: [String: JSONValue] = [
             "project": .object(["key": .string(project)]), "issuetype": .object(["id": .string(story.id)]),
@@ -1393,6 +1395,7 @@ final class LiveServerTests: XCTestCase {
         ]
         f.merge(c.parentFields(epic.key, subtask: false)) { $1 }
         let created = try await c.createIssue(fields: f)
+        addTeardownBlock { [c] in try await c.deleteIssue(key: created.key) }
 
         // Read: the description comes back as the document sent, the epic as the parent with its summary.
         var issue = try await c.issue(created.key)

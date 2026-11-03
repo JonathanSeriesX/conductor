@@ -748,6 +748,11 @@ struct JiraClient: Sendable {
         _ = try await request("issue/\(key)", method: "PUT", body: Body(fields: text(fields)))
     }
 
+    /// Deletes the issue and its subtasks, which Jira otherwise refuses for a parent.
+    func deleteIssue(key: String) async throws {
+        _ = try await request("issue/\(key)", query: ["deleteSubtasks": "true"], method: "DELETE")
+    }
+
     /// Every label on the site, for suggestions while typing one. Server has no full list and answers only its 15 most
     /// used, so the label editors there also ask `labelSuggestions` for what is typed.
     func labels() async throws -> [String] {
