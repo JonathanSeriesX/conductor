@@ -15,6 +15,8 @@ final class AccountState: Identifiable {
     /// As its client signs in, so a new token (`Session.add`) reaches every window holding this state at once.
     var account: Account { client.account }
     var me: JiraUser?
+    /// Server: the site's configured base URL, for links to it that come from elsewhere (`Session.state(host:)`).
+    var baseURL: URL?
     var projects: [Project] = []
     var filters: [Filter] = []
     var starred: Set<String> = []
@@ -271,6 +273,7 @@ final class AccountState: Identifiable {
     /// Puts what the last session knew in place. True when enough is there to show the account at once.
     func apply(_ c: CachedAccount) -> Bool {
         me = c.me
+        baseURL = c.baseURL
         client.sprintField = c.sprintField
         client.pointsFields = c.pointsFields
         client.epics = c.epics
@@ -305,9 +308,14 @@ final class AccountState: Identifiable {
         async let user = client.myself()
         async let custom = client.customFieldIds()
         async let catalog: () = refreshCatalog()
+        async let base = account.isServer ? client.baseURL() : nil
         me = try await user
         error = nil  // the check passed; the catalog behind it can take half a minute on a site just back
         DiskCache.saveAsync(me, account: account, name: "me")
+        if let url = try? await base {
+            baseURL = url
+            DiskCache.saveAsync(url, account: account, name: "baseURL")
+        }
         if let ids = try? await custom {
             client.sprintField = ids.sprint
             client.pointsFields = ids.points
@@ -564,7 +572,12 @@ final class Session {
     var accounts: [Account] { stored }
 
     func state(_ id: UUID) -> AccountState? { states.first { $0.id == id } }
-    func state(host: String) -> AccountState? { states.first { $0.host.caseInsensitiveCompare(host) == .orderedSame } }
+    func state(host: String) -> AccountState? { Self.state(host: host, in: states) }
+    /// The account signed in through `host`, else the Server account whose base URL is on it (CON-295).
+    static func state(host: String, in states: [AccountState]) -> AccountState? {
+        func on(_ h: String?) -> Bool { h?.caseInsensitiveCompare(host) == .orderedSame }
+        return states.first { on($0.host) } ?? states.first { on($0.baseURL?.host()) }
+    }
     /// The client that can fetch a given URL with the right credentials; any client for public hosts.
     func client(for url: URL) -> JiraClient? { state(host: url.host() ?? "")?.client ?? states.first?.client }
 
@@ -991,7 +1004,10 @@ final class Session {
             else { return }
             target = inner
         }
-        guard let key = Self.issueKey(in: target), let st = state(host: target.host() ?? "") ?? states.first else {
+        guard let key = Self.issueKey(in: target) else { return }
+        // A site no account is on opens nothing: another account's issue of the same key would be the wrong one.
+        guard let st = state(host: target.host() ?? "") else {
+            NSLog("No account for %@; not opening %@", target.host() ?? "", key)
             return
         }
         pendingOpens.append(IssueTarget(accountID: st.id, key: key))
@@ -1027,6 +1043,7 @@ final class Session {
 /// What the last session left on disk for one account, read on any thread; `AccountState.apply` puts it in place.
 struct CachedAccount: Sendable {
     var me: JiraUser?
+    var baseURL: URL?
     var sprintField: String?
     var pointsFields: [String]
     var epics: EpicFields?
@@ -1041,6 +1058,7 @@ struct CachedAccount: Sendable {
 
     init(_ account: Account) {
         me = DiskCache.load(account: account, name: "me")
+        baseURL = DiskCache.load(account: account, name: "baseURL")
         sprintField = DiskCache.load(account: account, name: "sprintField")
         pointsFields = DiskCache.load(account: account, name: "pointsFields") ?? []
         epics = DiskCache.load(account: account, name: "epicFields")

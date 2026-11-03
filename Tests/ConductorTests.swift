@@ -1242,6 +1242,19 @@ final class ServerTests: XCTestCase {
         XCTAssertNil(Account.plainHTTPSite("localhost:8080", after: URLError(.serverCertificateUntrusted)))
         XCTAssertNil(Account.plainHTTPSite("localhost:8080", after: JiraError(status: 401, data: Data())))
     }
+
+    /// A link on a Server's base URL goes to the account signed in through another address; a site no account is
+    /// on finds none, rather than the first account (CON-295).
+    @MainActor func testALinkFindsItsAccountByHostOrServerBaseURL() {
+        let cloud = AccountState(
+            account: Account(site: URL(string: "https://a.atlassian.net")!, email: "e", token: "t"))
+        let dc = AccountState(account: Account(site: URL(string: "http://localhost:8080")!, email: "", token: "t"))
+        dc.baseURL = URL(string: "https://codex-host.possum-everest.ts.net")
+        XCTAssertTrue(Session.state(host: "A.atlassian.net", in: [cloud, dc]) === cloud)
+        XCTAssertTrue(Session.state(host: "localhost", in: [cloud, dc]) === dc)
+        XCTAssertTrue(Session.state(host: "codex-host.possum-everest.ts.net", in: [cloud, dc]) === dc)
+        XCTAssertNil(Session.state(host: "elsewhere.example.com", in: [cloud, dc]))
+    }
 }
 
 /// Every Server-specific path against a real Jira Data Center. Skipped unless the environment names one:
@@ -1268,6 +1281,8 @@ final class LiveServerTests: XCTestCase {
         var c = JiraClient(account: Account(site: site, email: "", token: token))
         XCTAssertTrue(c.account.isServer)
         let me = try await c.myself()
+        let base = try await c.baseURL()
+        XCTAssertNotNil(base.host(), "serverInfo names the site's base URL")
         let ids = try await c.customFieldIds()
         c.sprintField = ids.sprint
         c.pointsFields = ids.points

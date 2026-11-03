@@ -260,6 +260,14 @@ struct JiraClient: Sendable {
 
     func myself() async throws -> JiraUser { try await get("myself") }
 
+    /// Server: the base URL the site is configured with, which its own links carry. It need not be the address
+    /// signed in through (Jira at localhost:8080 that names itself by a tailnet host).
+    func baseURL() async throws -> URL {
+        struct Info: Decodable { let baseUrl: URL }
+        let info: Info = try await get("serverInfo")
+        return info.baseUrl
+    }
+
     /// Sprint and story points are custom fields whose ids differ per site; so are a Server's epic fields.
     func customFieldIds() async throws -> (sprint: String?, points: [String], epics: EpicFields?) {
         let fields: [FieldInfo] = try await get("field")
