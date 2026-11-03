@@ -1213,6 +1213,16 @@ final class ServerTests: XCTestCase {
         XCTAssertEqual(Account.normalizeSite("jira:8443")?.absoluteString, "https://jira:8443")
         XCTAssertTrue(server.account.isServer)
     }
+
+    func testServerWithoutTLSFallsBackToHTTPOnlyWhenTypedWithoutScheme() {
+        let tls = URLError(.secureConnectionFailed)
+        XCTAssertEqual(
+            Account.plainHTTPSite(" localhost:8080/jira ", after: tls)?.absoluteString, "http://localhost:8080/jira")
+        XCTAssertNil(Account.plainHTTPSite("https://localhost:8080", after: tls))
+        XCTAssertNil(Account.plainHTTPSite("team", after: tls))
+        XCTAssertNil(Account.plainHTTPSite("localhost:8080", after: URLError(.serverCertificateUntrusted)))
+        XCTAssertNil(Account.plainHTTPSite("localhost:8080", after: JiraError(status: 401, data: Data())))
+    }
 }
 
 /// Every Server-specific path against a real Jira Data Center. Skipped unless the environment names one:

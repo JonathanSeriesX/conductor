@@ -140,9 +140,17 @@ struct LoginView: View {
             defer { busy = false }
             do {
                 let token = token.trimmingCharacters(in: .whitespaces)
+                var url = url
                 var account = Account(site: url, email: email.trimmingCharacters(in: .whitespaces), token: token)
                 if account.isServer {
-                    let me = try await JiraClient(account: account).myself()
+                    let me: JiraUser
+                    do { me = try await JiraClient(account: account).myself() } catch {
+                        // https is tried first; a site typed without a scheme that speaks no TLS gets one try over http.
+                        guard let http = Account.plainHTTPSite(site, after: error) else { throw error }
+                        url = http
+                        account = Account(site: url, email: account.email, token: token)
+                        me = try await JiraClient(account: account).myself()
+                    }
                     account = Account(site: url, email: me.accountId, token: token)
                 }
                 // A Server token names its own user: another one's would sign this account in as them.

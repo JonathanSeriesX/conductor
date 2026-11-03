@@ -49,6 +49,17 @@ struct Account: Codable, Sendable, Equatable, Identifiable {
         comps.fragment = nil
         return comps.url
     }
+
+    /// The site over plain http, for a Server typed without a scheme whose https try met no TLS there
+    /// (`localhost:8080`): nil for anything else, so Cloud, a typed https:// and a bad certificate stay on https.
+    static func plainHTTPSite(_ raw: String, after error: any Error) -> URL? {
+        guard !raw.contains("://"), (error as? URLError)?.code == .secureConnectionFailed,
+            let url = normalizeSite(raw), Account(site: url, email: "", token: "").isServer,
+            var comps = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        else { return nil }
+        comps.scheme = "http"
+        return comps.url
+    }
 }
 
 struct JiraError: LocalizedError, Sendable {
