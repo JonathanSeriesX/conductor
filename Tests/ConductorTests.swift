@@ -798,6 +798,31 @@ final class MarkdownTests: XCTestCase {
 }
 
 final class FilterAndDurationTests: XCTestCase {
+    /// A project row and a filter saved from it with another status and order each light up their own row; a
+    /// built-in entry keeps its name with its chips or order changed (CON-296).
+    @MainActor func testASavedFilterMatchesOnlyAsSaved() {
+        let id = UUID()
+        var project = ListFilters()
+        (project.account, project.project) = (id, "QA")
+        var saved = project
+        saved.status = .inProgress
+        saved.sort = .init(field: .created, descending: false)
+        let assigned = Smart.assigned.filters(account: id)
+        let all = [
+            Preset(id: "a", name: "Assigned", symbol: "", filters: assigned),
+            Preset(id: "s", name: "In progress", symbol: "", filters: saved, custom: true),
+        ]
+        XCTAssertNil(Session.preset(matching: project, in: all), "the project row's own list")
+        XCTAssertEqual(Session.preset(matching: saved, in: all)?.id, "s")
+        var typed = saved
+        typed.text = "login"
+        XCTAssertEqual(Session.preset(matching: typed, in: all)?.id, "s", "a search typed on it")
+        var resorted = assigned
+        resorted.status = .done
+        resorted.sort = .init(field: .key, descending: true)
+        XCTAssertEqual(Session.preset(matching: resorted, in: all)?.id, "a")
+    }
+
     func testChipsExtendTheQuery() {
         var f = Smart.recent.filters(account: nil)
         f.status = .inProgress

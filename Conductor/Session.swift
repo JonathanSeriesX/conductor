@@ -901,25 +901,31 @@ final class Session {
         return list.filter { !hiddenPresets.contains($0.id) }
     }
 
-    /// The sidebar entry these filters came from, for the window title.
+    /// The sidebar entry these filters came from, for the window title: a saved filter by its own name, not by its
+    /// project's.
     func title(for f: ListFilters) -> String {
+        if let p = preset(matching: f) { return p.name }
         if let key = f.project, let st = f.account.flatMap(state) {
             return st.projects.first { $0.key == key }?.name ?? key
         }
-        return preset(matching: f)?.name ?? String(localized: "Issues")
+        return String(localized: "Issues")
     }
 
-    /// The sidebar entry these filters came from. The status chip and the sort order are left out of the
-    /// comparison: a preset is built with whatever the Hide Done default is at the time, and neither flipping that
-    /// setting nor re-sorting the list must unname it.
+    /// The sidebar entry these filters came from. The exact one first; else a built-in one with another status chip
+    /// or sort order: it is built with whatever the Hide Done default is at the time, and neither flipping that
+    /// setting nor re-sorting the list must unname it. A saved filter matches only as saved, status and sort with
+    /// it: one saved from a project with another status took the project's own list, and its highlight (CON-296).
     func preset(matching f: ListFilters) -> Preset? {
-        func same(_ a: ListFilters, _ b: ListFilters) -> Bool {
-            var (a, b) = (a, b)
-            (a.status, b.status) = (.any, .any)
-            (a.sort, b.sort) = (ListFilters.Sort(), ListFilters.Sort())
-            return a == b
+        Self.preset(matching: f, in: presets(account: nil) + states.flatMap { presets(account: $0) })
+    }
+
+    static func preset(matching f: ListFilters, in all: [Preset]) -> Preset? {
+        func loose(_ a: ListFilters) -> ListFilters {
+            var a = a
+            a.status = .any
+            a.sort = ListFilters.Sort()
+            return a
         }
-        let all = presets(account: nil) + states.flatMap { presets(account: $0) }
         var untyped = f
         untyped.text = ""
         var (everywhere, untypedEverywhere) = (f, untyped)
@@ -927,7 +933,11 @@ final class Session {
         // A saved search carries its text, and a saved filter its accounts, so the exact list first; else a search
         // typed on a list, or a few accounts picked on an All Accounts one, does not unname it.
         for g in [f, untyped, everywhere, untypedEverywhere] {
-            if let p = all.first(where: { same($0.filters, g) }) { return p }
+            if let p = all.first(where: { $0.filters == g })
+                ?? all.first(where: { !$0.custom && loose($0.filters) == loose(g) })
+            {
+                return p
+            }
         }
         return nil
     }

@@ -631,11 +631,27 @@ struct SidebarView: View {
                         renamingPreset = p
                     }
                     // No question: the filter goes to the Bin (Window menu) and can come back from there.
-                    Button("Delete", systemImage: "trash", role: .destructive) { session.removePreset(p.id) }
+                    Button("Delete", systemImage: "trash", role: .destructive) {
+                        leave(p) { session.removePreset(p.id) }
+                    }
                 } else {
-                    Button("Hide", systemImage: "eye.slash") { session.hidePreset(p.id) }
+                    Button("Hide", systemImage: "eye.slash") { leave(p) { session.hidePreset(p.id) } }
                 }
             }
+    }
+
+    /// An entry deleted or hidden while on screen takes the list with it, to the project it was saved from, else to
+    /// the first entry of its section: left alone, the list went on showing it with no row lit (CON-296).
+    private func leave(_ p: Preset, by remove: () -> Void) {
+        let shown = session.preset(matching: filters)?.id == p.id
+        remove()
+        guard shown else { return }
+        var next = ListFilters()
+        (next.account, next.project) = (p.filters.account, p.filters.project)
+        if p.filters.project == nil {
+            next = session.presets(account: p.filters.account.flatMap(session.state)).first?.filters ?? filters
+        }
+        filters = next
     }
 
     /// A sidebar label whose icon carries the account colour; unified entries take the accent. Every icon goes grey
