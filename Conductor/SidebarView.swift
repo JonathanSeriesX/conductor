@@ -297,7 +297,16 @@ struct ListFilters: Hashable, Codable {
         }
         if !q.isEmpty {
             let escaped = q.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
-            c.append("text ~ \"\(escaped)\"")
+            // Jira matches whole words, so the last plain word also counts as a prefix ("fil" finds Filler, as in
+            // Mail), next to the search as typed: "filling*" skips the stemming that finds "fill" (CON-269).
+            let last = q.split(whereSeparator: \.isWhitespace).last ?? ""
+            if last.count >= 2, last.allSatisfy({ $0.isLetter || $0.isNumber }), !["AND", "OR", "NOT"].contains(last),
+                !q.contains("\"")
+            {
+                c.append("(text ~ \"\(escaped)\" OR text ~ \"\(escaped)*\")")
+            } else {
+                c.append("text ~ \"\(escaped)\"")
+            }
         }
         return c
     }

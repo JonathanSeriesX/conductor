@@ -29,6 +29,25 @@ final class JQLTests: XCTestCase {
         )
     }
 
+    /// Jira matches whole words: the last plain word is a prefix too, beside the words as typed, which keep their
+    /// stemming ("filling" finds "fill", "filling*" does not). Anything that is not a plain word stays as typed.
+    func testTheLastPlainWordAlsoMatchesAsAPrefix() {
+        var f = blank
+        f.text = "fil"
+        XCTAssertEqual(f.jql, "(text ~ \"fil\" OR text ~ \"fil*\") ORDER BY updated DESC")
+        f.text = "  login fail "
+        XCTAssertEqual(f.jql, "(text ~ \"login fail\" OR text ~ \"login fail*\") ORDER BY updated DESC")
+        f.status = .open
+        f.text = "Ошибка"
+        XCTAssertEqual(
+            f.jql, "statusCategory != Done AND (text ~ \"Ошибка\" OR text ~ \"Ошибка*\") ORDER BY updated DESC")
+        f.status = .any
+        for q in ["f", "fil*", "fi?", "login a", "fail-fast", "v1.2", "login AND", "\"sign in\"", "\"sign in\" fai"] {
+            f.text = q
+            XCTAssertFalse(f.jql.contains("OR text ~"), q)
+        }
+    }
+
     func testIssueKeyIsLookedUpDirectly() {
         var f = blank
         f.text = "es-2284"
@@ -1503,7 +1522,7 @@ final class JQLDetectionTests: XCTestCase {
         var f = ListFilters()
         f.status = .any
         f.text = "sign in"
-        XCTAssertEqual(f.jql, "text ~ \"sign in\" ORDER BY updated DESC")
+        XCTAssertEqual(f.jql, "(text ~ \"sign in\" OR text ~ \"sign in*\") ORDER BY updated DESC")
         f.text = "status = Done"
         XCTAssertEqual(f.jql, "status = Done")
     }
