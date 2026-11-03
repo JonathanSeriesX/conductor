@@ -1227,6 +1227,18 @@ final class ServerTests: XCTestCase {
         }
     }
 
+    /// {code} and {noformat} come back as themselves after an edit; +underline+, which Markdown cannot write,
+    /// warns rather than going quietly (CON-299).
+    func testCodeAndNoformatSurviveAnEditAndUnderlineWarns() {
+        let wiki = "{code}\nlet a = 1\n{code}\n\n{noformat}\nraw *x*\n{noformat}\n\n{code:swift}\nlet b = 2\n{code}"
+        let doc = ADFNode.document(wiki: wiki)
+        var m: [String: String] = [:]
+        XCTAssertEqual(ADFNode.document(markdown: doc.markdown(mentions: &m), mentions: m).wiki, wiki)
+        XCTAssertFalse(doc.hasLossyNodes)
+        XCTAssertEqual(ADFNode.document(markdown: "```\nplain\n```").wiki, "{code}\nplain\n{code}")
+        XCTAssertTrue(ADFNode.document(wiki: "Some +underlined+ text").hasLossyNodes)
+    }
+
     func testMentionsGoOutAsUsernames() {
         let doc = ADFNode.document(markdown: "ping @Taylor Tester", mentions: ["Taylor Tester": "tester"])
         XCTAssertEqual(doc.wiki, "ping [~tester]")

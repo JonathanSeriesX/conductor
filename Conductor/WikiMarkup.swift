@@ -44,9 +44,9 @@ extension ADFNode {
                 return ([p + " " + text.joined(separator: " \\\\ ")] + lines).joined(separator: "\n")
             }.joined(separator: "\n")
         case "codeBlock":
-            let lang = attr("language").map { ":" + $0 } ?? ""
-            let tag = lang.isEmpty ? "{noformat}" : "{code\(lang)}"
-            return tag + "\n" + plainText + "\n" + (lang.isEmpty ? "{noformat}" : "{code}")
+            // A block read from {noformat} has that for its language, so each fence goes back as it came (CON-299).
+            if attr("language") == "noformat" { return "{noformat}\n" + plainText + "\n{noformat}" }
+            return "{code\(attr("language").map { ":" + $0 } ?? "")}\n" + plainText + "\n{code}"
         case "blockquote":
             return "{quote}\n" + ADFNode(type: "doc", content: content).wiki + "\n{quote}"
         case "panel", "expand", "nestedExpand":
@@ -187,7 +187,8 @@ private enum WikiParser {
                 let params = m.2.map(String.init) ?? ""
                 switch tag {
                 case "code", "noformat":
-                    let lang = tag == "code" ? language(params) : nil
+                    // The language is all a Markdown fence keeps: {noformat} goes there to survive an edit.
+                    let lang = tag == "code" ? language(params) : tag
                     out.append(
                         ADFNode(
                             type: "codeBlock", attrs: lang.map { ["language": .string($0)] },
