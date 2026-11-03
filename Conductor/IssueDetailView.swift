@@ -1740,17 +1740,23 @@ struct IssueDetailView: View {
         case .openInWindow: openWindow(id: "issue", value: target)
         case .copyLink: copyToPasteboard(jira.client.browseURL(key).absoluteString)
         case .assign: reveal(.assignee, .middle) { showAssign = true }
+        // I and W toggle from the store, so each shows its change at once: a second press then reads the first one's
+        // outcome, not the issue from before it, and sends the opposite write rather than the same one again.
         case .assignToMe:
-            let me = jira.me?.accountId
-            let to = IssueActions.isMine(assignee: store.issue?.fields.assignee?.accountId, me: me) ? nil : me
-            run { try await $0.assign(key, to: to) }
+            let me = jira.me
+            let to =
+                IssueActions.isMine(assignee: store.issue?.fields.assignee?.accountId, me: me?.accountId) ? nil : me
+            optimistic({ $0.assignee = to }) { try await $0.assign(key, to: to?.accountId) }
         case .changeStatus: reveal(.status, .middle) { showStatus = true }
         case .changePriority: reveal(.priority, .middle) { showPriority = true }
         case .editLabels: reveal(.labels, .middle) { showLabels = true }
         case .watch:
             let on = store.issue?.fields.watches?.isWatching != true
             let me = jira.me?.accountId
-            run { try await $0.watch(key, on, me: me) }
+            optimistic({
+                let n = $0.watches?.watchCount ?? 0
+                $0.watches = Watches(watchCount: max(0, n + (on ? 1 : -1)), isWatching: on)
+            }) { try await $0.watch(key, on, me: me) }
         case .transition(let id): transition(id)
         case .remind: showRemind = true
         // An editor already open keeps its draft and only takes the keyboard back: starting over dropped the typing.
