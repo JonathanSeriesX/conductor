@@ -121,8 +121,21 @@ struct ADFNode: Codable, Hashable, Sendable {
         self.content = content
     }
 
+    /// The text as the page reads it: a mention, an emoji, a status, a card and a date carry no text node of their own.
     var plainText: String {
         if let text { return text }
-        return (content ?? []).map(\.plainText).joined(separator: type == "paragraph" ? "" : "\n")
+        switch type {
+        case "mention": return attr("text") ?? attr("id").map { "@" + $0 } ?? ""
+        case "emoji": return attr("text") ?? attr("shortName") ?? ""
+        case "status": return attr("text") ?? ""
+        case "inlineCard": return attr("url") ?? ""
+        case "hardBreak": return "\n"
+        case "date":
+            let ms = attrs?["timestamp"]?.string.flatMap(Double.init)
+            return ms.map { Date(timeIntervalSince1970: $0 / 1000).formatted(date: .abbreviated, time: .omitted) } ?? ""
+        default:
+            let inline = type == "paragraph" || type == "heading"
+            return (content ?? []).map(\.plainText).joined(separator: inline ? "" : "\n")
+        }
     }
 }

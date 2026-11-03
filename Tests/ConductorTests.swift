@@ -360,6 +360,38 @@ final class ADFTests: XCTestCase {
         XCTAssertEqual(doc.plainText, "first\nthird")
     }
 
+    /// A work log or comment read as one line keeps what the page shows for nodes with no text of their own.
+    func testPlainTextKeepsMentionsAndOtherInlineNodes() {
+        XCTAssertEqual(ADFNode.document(wiki: "Slice 1 *bold* [~perf0042]").plainText, "Slice 1 bold @perf0042")
+        let doc = ADFNode(
+            type: "doc",
+            content: [
+                ADFNode(
+                    type: "heading",
+                    content: [
+                        .init(type: "text", text: "Big "),
+                        .init(type: "text", text: "news", marks: [.init(type: "strong", attrs: nil)]),
+                    ]),
+                ADFNode(
+                    type: "paragraph",
+                    content: [
+                        .init(type: "mention", attrs: ["id": .string("abc"), "text": .string("@Chloé")]),
+                        .init(type: "text", text: ", "),
+                        .init(type: "mention", attrs: ["id": .string("bob")]),
+                        .init(type: "text", text: " "),
+                        .init(type: "emoji", attrs: ["shortName": .string(":tada:"), "text": .string("🎉")]),
+                        .init(type: "text", text: " "),
+                        .init(type: "status", attrs: ["text": .string("Done")]),
+                        .init(type: "hardBreak"),
+                        .init(type: "inlineCard", attrs: ["url": .string("https://example.com")]),
+                        .init(type: "text", text: " by "),
+                        .init(type: "date", attrs: ["timestamp": .string("1767225600000")]),
+                    ]),
+            ])
+        let date = Date(timeIntervalSince1970: 1_767_225_600).formatted(date: .abbreviated, time: .omitted)
+        XCTAssertEqual(doc.plainText, "Big news\n@Chloé, @bob 🎉 Done\nhttps://example.com by \(date)")
+    }
+
     @MainActor func testRealWorldNodesDecodeAndRender() throws {
         let json = """
             {"type":"doc","version":1,"content":[

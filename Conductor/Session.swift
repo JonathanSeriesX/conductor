@@ -386,7 +386,9 @@ final class AccountState: Identifiable {
         let users: [JiraUser]
     }
     /// nil until the disk copy is read or the site first answers.
-    var people: People?
+    var people: People? {
+        didSet { if let people { client.knowing(people.users) } }
+    }
     @ObservationIgnored private var peopleRead: Task<Void, Never>?
     /// A day after the copy was fetched, or after the last try Jira refused; past, to try at the next call.
     @ObservationIgnored private var peopleDue = Date.distantPast

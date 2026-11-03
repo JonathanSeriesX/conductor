@@ -408,9 +408,14 @@ struct JiraClient: Sendable {
     }
 
     /// Server writes a mention as [~username]; the page shows the person's name, as Cloud's mention carries it.
-    /// Names come from the people the issues already show, then once per unknown username from Jira.
+    /// Names come from the site's people (`knowing`), the people the issues already show and what earlier runs asked,
+    /// then once per unknown username from Jira, four at a time.
     private func namingMentions(_ issues: [Issue]) async -> [Issue] {
         let host = account.site.host() ?? ""
+        if Self.mentionNamesRead.withLock({ $0.insert(host).inserted }) {
+            let disk: [String: String] = DiskCache.load(account: account, name: "mention-names") ?? [:]
+            Self.mentionNames.withLock { $0[host, default: [:]].merge(disk) { run, _ in run } }
+        }
         var names = Self.mentionNames.withLock { $0[host] ?? [:] }
         var wanted = Set<String>()
         for i in issues {
@@ -427,9 +432,12 @@ struct JiraClient: Sendable {
             }
         }
         let unknown = wanted.subtracting(names.keys)
+        var fetched: [String: String] = [:]
         if !unknown.isEmpty {
             await withTaskGroup(of: (String, String)?.self) { group in
-                for id in unknown {
+                for (n, id) in unknown.enumerated() {
+                    // Four at a time: a list mentioning hundreds of people sent as many requests at once.
+                    if n >= 4, let r = await group.next() ?? nil { fetched[r.0] = r.1 }
                     group.addTask {
                         // Kept under the username asked, which the mark carries (Jira's own may differ in case).
                         // A username Jira refuses (a deleted or renamed user) keeps itself as its name, so it is
@@ -440,12 +448,20 @@ struct JiraClient: Sendable {
                         } catch { return error.isOffline || error.isCancelled ? nil : (id, id) }
                     }
                 }
-                for await r in group { if let r { names[r.0] = r.1 } }
+                for await r in group { if let r { fetched[r.0] = r.1 } }
             }
+            names.merge(fetched) { _, new in new }
         }
         guard !wanted.isEmpty else { return issues }
         // Merged, not replaced: pages named at once (a prefetch completes eight) would drop each other's names.
-        Self.mentionNames.withLock { [names] in $0[host, default: [:]].merge(names) { _, new in new } }
+        let all = Self.mentionNames.withLock { [names] in
+            $0[host, default: [:]].merge(names) { _, new in new }
+            return $0[host] ?? [:]
+        }
+        // Kept for the next launch once Jira named someone; one it refused is asked again then.
+        if fetched.contains(where: { $0.key != $0.value }) {
+            DiskCache.saveAsync(all.filter { $0.key != $0.value }, account: account, name: "mention-names")
+        }
         return issues.map { i in
             var i = i
             i.fields.description = i.fields.description?.namingMentions(names)
@@ -471,6 +487,15 @@ struct JiraClient: Sendable {
     }
     /// Display names by username, per Server host, for the whole run; one Jira could not return maps to itself.
     private static let mentionNames = Mutex<[String: [String: String]]>([:])
+    /// The hosts whose names kept on disk are read already, once a run.
+    private static let mentionNamesRead = Mutex<Set<String>>([])
+
+    /// Server: the site's people name the mentions of them, without a request each.
+    func knowing(_ people: [JiraUser]) {
+        guard server else { return }
+        let names = Dictionary(people.map { ($0.accountId, $0.displayName) }) { first, _ in first }
+        Self.mentionNames.withLock { $0[account.site.host() ?? "", default: [:]].merge(names) { _, new in new } }
+    }
 
     /// Server: each issue's epic, read from its epic-link field as a bare key, gets its summary, status and type,
     /// all in one search.
