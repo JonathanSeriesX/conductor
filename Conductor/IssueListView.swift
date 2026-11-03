@@ -45,11 +45,10 @@ struct DisplayRow: Identifiable {
                 let kids = children[r.id]?.compactMap(\.issue.fields.updated).max() ?? .distantPast
                 return (r, max(r.issue.fields.updated ?? .distantPast, kids))
             }
+            // Stable: rows that tie keep Jira's order, which the merge keeps too; their ids as text put KAN-88
+            // between KAN-879 and KAN-883 (CON-245).
             let descending = sort.descending
-            top = dated.sorted { a, b in
-                a.date != b.date ? (descending ? a.date > b.date : a.date < b.date) : a.row.id < b.row.id
-            }
-            .map(\.row)
+            top = dated.sorted { descending ? $0.date > $1.date : $0.date < $1.date }.map(\.row)
         }
         var out: [DisplayRow] = []
         for r in top {

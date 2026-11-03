@@ -1482,6 +1482,29 @@ final class NestAndBoardColumnTests: XCTestCase {
             "any other order is the server's")
     }
 
+    /// Rows that tie on the update keep the order they came in, Jira's within an account (key descending, here)
+    /// and the merge's across accounts: their ids compared as text put KAN-88 between KAN-879 and KAN-883 (CON-245).
+    @MainActor func testRowsThatTieKeepJirasOrder() throws {
+        let site = { (h: String) in
+            AccountState(account: Account(site: URL(string: "https://\(h).atlassian.net")!, email: "e", token: "t"))
+        }
+        let (a, b) = (site("a"), site("b"))
+        let rows = try [
+            ListRow(issue: issue("KAN-883", minute: 5), state: a),
+            ListRow(issue: issue("KAN-879", minute: 5), state: a),
+            ListRow(issue: issue("KAN-88", minute: 5), state: a), ListRow(issue: issue("KAN-9", minute: 5), state: b),
+            ListRow(issue: issue("KAN-1", minute: 1), state: b), ListRow(issue: issue("KAN-2", minute: 5), state: a),
+        ]
+        for descending in [true, false] {
+            XCTAssertEqual(
+                DisplayRow.nest(rows, expanded: [], sort: .init(field: .updated, descending: descending))
+                    .map(\.row.issue.key),
+                descending
+                    ? ["KAN-883", "KAN-879", "KAN-88", "KAN-9", "KAN-2", "KAN-1"]
+                    : ["KAN-1", "KAN-883", "KAN-879", "KAN-88", "KAN-9", "KAN-2"])
+        }
+    }
+
     @MainActor func testAColumnHoldsItsStatusesAndFoldsOnlySubtasksWhoseParentIsOnTheBoard() throws {
         let store = BoardStore()
         // A-3's parent A-2 sits in another column; A-4's parent A-9 is not on the board.
