@@ -482,6 +482,7 @@ struct PeoplePicker: View {
                             } label: {
                                 Label("Assign to me", systemImage: "person.fill.checkmark")
                             }
+                            .id(me.id)
                         }
                         if current != nil {
                             row(me == nil ? 0 : 1) {
@@ -489,6 +490,7 @@ struct PeoplePicker: View {
                             } label: {
                                 Label("Unassigned", systemImage: "person.slash")
                             }
+                            .id("")
                         }
                         let lead = picks.count - others.count
                         ForEach(Array(others.enumerated()), id: \.element.id) { i, u in
@@ -505,7 +507,11 @@ struct PeoplePicker: View {
                         }
                     }
                 }
-                .onChange(of: highlighted) { if let h = highlighted { proxy.scrollTo(h) } }
+                // By the pick's own id, the one ForEach gives its row: an index as each row's id kept the lazy stack
+                // drawing the rows from before a search, whatever Jira answered (CON-311).
+                .onChange(of: highlighted) {
+                    if let h = highlighted, picks.indices.contains(h) { proxy.scrollTo(picks[h]?.id ?? "") }
+                }
             }
             // The list's height follows its rows, since a popover sizes itself to its content and a scroll view has
             // no height of its own.
@@ -542,7 +548,8 @@ struct PeoplePicker: View {
             }
             try? await Task.sleep(for: .milliseconds(250))
             guard !Task.isCancelled else { return }
-            users = (try? await fetch()) ?? []
+            let found = try? await fetch()
+            if !Task.isCancelled { users = found ?? [] }  // more typing cancelled it: the next answer comes (CON-323)
         }
         .onChange(of: users) { highlighted = nil }  // the rows under it changed
     }
@@ -570,6 +577,5 @@ struct PeoplePicker: View {
                 .contentShape(.rect)
         }
         .buttonStyle(.plain)
-        .id(index)
     }
 }

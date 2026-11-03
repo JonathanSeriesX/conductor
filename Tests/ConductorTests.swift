@@ -1385,6 +1385,23 @@ final class LiveServerTests: XCTestCase {
         XCTAssertTrue(people.contains { $0.id == me.id })
     }
 
+    /// The assignee picker's typed search finds by name and by username, and only those (CON-311). Needs the PERF
+    /// project's people, which the Data Center's fixtures hold.
+    func testAssignableSearchFindsWhatIsTyped() async throws {
+        let env = ProcessInfo.processInfo.environment
+        guard let site = env["CONDUCTOR_SERVER_SITE"].flatMap(Account.normalizeSite),
+            let token = env["CONDUCTOR_SERVER_TOKEN"]
+        else { throw XCTSkip("No live Server in the environment") }
+        let c = JiraClient(account: Account(site: site, email: "", token: token))
+        let chlo = try await c.assignableUsers(project: "PERF", query: "Chlo")
+        XCTAssertFalse(chlo.isEmpty)
+        XCTAssertTrue(chlo.allSatisfy { $0.displayName.localizedStandardContains("Chlo") })
+        let inProject = try await c.assignableUsers(project: "PERF", query: "perf0042")
+        XCTAssertEqual(inProject.map(\.id), ["perf0042"])
+        let onIssue = try await c.assignableUsers("PERF-5053", query: "perf0042")
+        XCTAssertEqual(onIssue.map(\.id), ["perf0042"])
+    }
+
     func testEveryReadAndWriteSpeaksServer() async throws {
         let env = ProcessInfo.processInfo.environment
         guard let site = env["CONDUCTOR_SERVER_SITE"].flatMap(Account.normalizeSite),
