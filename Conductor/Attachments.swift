@@ -41,7 +41,7 @@ struct AttachmentTile: View {
             guard inside, attachment.size < 25_000_000, let client else { return }
             Task { _ = await AttachmentOpener.download(attachment, client: client) }
         }
-        .onDrag { AttachmentOpener.dragItem(attachment) ?? NSItemProvider() }
+        .onDrag { client.flatMap { AttachmentOpener.dragItem(attachment, client: $0) } ?? NSItemProvider() }
     }
 
     private func preview() {
@@ -65,14 +65,16 @@ enum AttachmentOpener {
         return "doc"
     }
 
-    private static func file(for attachment: Attachment) -> URL {
+    private static func file(for attachment: Attachment, client: JiraClient) -> URL {
         // The name is Jira's: its last component alone, so it cannot reach outside the attachment's own folder.
         let name = (attachment.filename as NSString).lastPathComponent.replacingOccurrences(of: "/", with: "_")
-        return FileManager.default.temporaryDirectory.appending(path: "attachments/\(attachment.id)/\(name)")
+        // Per account: an attachment id is unique only within its site.
+        return FileManager.default.temporaryDirectory.appending(
+            path: "attachments/\(client.account.id)/\(attachment.id)/\(name)")
     }
 
-    private static func store(_ data: Data, for attachment: Attachment) -> URL {
-        let file = file(for: attachment)
+    private static func store(_ data: Data, for attachment: Attachment, client: JiraClient) -> URL {
+        let file = file(for: attachment, client: client)
         try? FileManager.default.createDirectory(
             at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
         try? data.write(to: file)
@@ -90,13 +92,13 @@ enum AttachmentOpener {
 
     /// Downloads with auth into the app's temp folder; the same file is reused on later calls.
     static func download(_ attachment: Attachment, client: JiraClient) async -> URL? {
-        let file = file(for: attachment)
+        let file = file(for: attachment, client: client)
         if FileManager.default.fileExists(atPath: file.path) { return file }
         // An inline image already has its bytes in the image cache; reuse them instead of fetching again.
         var data = await DiskCache.imageData(for: attachment.content)
         if data == nil { data = try? await client.data(for: attachment.content) }
         guard let data else { return nil }
-        return store(data, for: attachment)
+        return store(data, for: attachment, client: client)
     }
 
     static func open(_ attachment: Attachment, client: JiraClient) async {
@@ -126,11 +128,11 @@ enum AttachmentOpener {
     /// For a drag out of the app: the file, once it is here (downloaded, or shown inline from the image cache), so a
     /// tile fetches on hover. Its URL alone: for a picture's file SwiftUI also promised one, named with the type's
     /// extension added to the suggested name (click-test.png.png), and the Finder took the promise.
-    static func dragItem(_ attachment: Attachment) -> NSItemProvider? {
-        var file = file(for: attachment)
+    static func dragItem(_ attachment: Attachment, client: JiraClient) -> NSItemProvider? {
+        var file = file(for: attachment, client: client)
         if !FileManager.default.fileExists(atPath: file.path) {
             guard let data = DiskCache.imageDataNow(for: attachment.content) else { return nil }
-            file = store(data, for: attachment)
+            file = store(data, for: attachment, client: client)
         }
         return NSItemProvider(object: file as NSURL)
     }
