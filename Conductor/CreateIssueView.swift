@@ -98,8 +98,9 @@ final class CreateIssueModel {
     var unsupportedRequired: [String] {
         fields.filter { $0.required && !Self.handled.contains($0.fieldId) }.map(\.name)
     }
-    /// Jira's limit, checked here so a long summary never goes out to come back as an error.
-    var summaryTooLong: Bool { summary.count > 255 }
+    /// Jira's limit, checked here so a long summary never goes out to come back as an error. Jira counts a Java
+    /// string's length, in UTF-16 units: an emoji is two of them, a flag four.
+    var summaryTooLong: Bool { summary.utf16.count > 255 }
 
     var canSubmit: Bool {
         project != nil && type != nil && !summary.trimmingCharacters(in: .whitespaces).isEmpty && !summaryTooLong
@@ -231,7 +232,8 @@ struct CreateIssueView: View {
     /// room of its own, so the window keeps its height.
     private var footerError: String? {
         m.summaryTooLong
-            ? String(localized: "A summary can be 255 characters at most; this one is \(m.summary.count).") : m.error
+            ? String(localized: "A summary can be 255 characters at most; this one is \(m.summary.utf16.count).")
+            : m.error
     }
 
     var body: some View {

@@ -1896,8 +1896,9 @@ struct IssueDetailView: View {
             if blurred { summaryDraft = nil }
             return
         }
-        guard draft.count <= 255 else {
-            store.error = String(localized: "A summary can be 255 characters at most; this one is \(draft.count).")
+        guard draft.utf16.count <= 255 else {
+            store.error = String(
+                localized: "A summary can be 255 characters at most; this one is \(draft.utf16.count).")
             return
         }
         summaryDraft = nil
@@ -1919,7 +1920,7 @@ struct IssueDetailView: View {
         // The old issue's own account: the page may have moved to an issue of another one.
         guard let client = session.state(old.accountID)?.client,
             let draft = summaryDraft?.trimmingCharacters(in: .whitespacesAndNewlines), !draft.isEmpty,
-            draft.count <= 255, draft != store.issue?.fields.summary
+            draft.utf16.count <= 255, draft != store.issue?.fields.summary
         else { return }
         let key = old.key
         Task {
