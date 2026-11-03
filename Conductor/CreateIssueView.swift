@@ -32,8 +32,8 @@ final class CreateIssueModel {
     var priority: Priority?
     var labels: [String] = []
     var parentKey = ""
-    /// See `CreateRequest.parentLevel`.
-    let parentLevel: Int
+    /// See `CreateRequest.parentLevel`; nil when the window was not opened under a parent.
+    let parentLevel: Int?
     var error: String?
     var isWorking = false
     var isLoadingMeta = false
@@ -42,7 +42,7 @@ final class CreateIssueModel {
     /// task fills it a frame later (CON-244): the draft's project (a window reopened, or restored after a relaunch),
     /// else the request's, else the one used last time, else a starred one, else the first; then the draft itself.
     init(request: CreateRequest, session: Session) {
-        parentLevel = request.parentLevel ?? 0
+        parentLevel = request.parentKey.map { _ in request.parentLevel ?? 0 }
         let saved = Drafts.shared.creates.first { $0.id == request.id }
         let last = UserDefaults.standard.string(forKey: "lastCreateProject")
         if let saved, let id = saved.accountID, let st = session.state(id),
@@ -109,6 +109,18 @@ final class CreateIssueModel {
             && !isWorking && !isLoadingMeta
     }
 
+    /// The types the pop-up offers: under a parent, the ones a level below it (standard issues in an epic, subtasks
+    /// in a task), as Jira takes no other there; every type in a window with no parent.
+    var offeredTypes: [IssueType] { Self.types(types, under: parentLevel) }
+
+    /// Server's types may lack a level and carry only the subtask flag. Under a parent nothing fits (a subtask's),
+    /// every type is offered, so the pop-up is never empty and Jira's own answer says why.
+    static func types(_ all: [IssueType], under parentLevel: Int?) -> [IssueType] {
+        guard let parentLevel else { return all }
+        let fit = all.filter { ($0.hierarchyLevel ?? ($0.isSubtask ? -1 : 0)) == parentLevel - 1 }
+        return fit.isEmpty ? all : fit
+    }
+
     /// The project's issue types, from the account's cache at once and from the network behind it, once a session:
     /// every later window opens on the same answer.
     func loadTypes(_ st: AccountState) async {
@@ -125,11 +137,10 @@ final class CreateIssueModel {
     private func setTypes(_ list: [IssueType], _ st: AccountState) async {
         if types != list { types = list }
         let before = type?.id
-        if !types.contains(where: { $0.id == type?.id }) {
+        // The pop-up shows only what it offers: a type outside it (a draft's, a parent's other level) would show blank.
+        if !offeredTypes.contains(where: { $0.id == type?.id }) {
             // A child sits one level under its parent: a subtask under a standard issue, a task under an epic.
-            let candidates = types.filter {
-                parentKey.isEmpty ? !$0.isSubtask : ($0.hierarchyLevel ?? ($0.isSubtask ? -1 : 0)) == parentLevel - 1
-            }
+            let candidates = parentLevel == nil ? types.filter { !$0.isSubtask } : offeredTypes
             // Task is the everyday default; Epic is rarely what someone means by ⌘N.
             type =
                 candidates.first { $0.name.caseInsensitiveCompare("Task") == .orderedSame }
@@ -208,7 +219,7 @@ struct CreateIssueView: View {
     private var parentKey: String? { request.parentKey }
     private var title: LocalizedStringKey {
         guard let parentKey else { return "New Issue" }
-        return m.parentLevel >= 1 ? "New Child Issue of \(parentKey)" : "New Subtask of \(parentKey)"
+        return (m.parentLevel ?? 0) >= 1 ? "New Child Issue of \(parentKey)" : "New Subtask of \(parentKey)"
     }
 
     /// `session` fills the form before the first frame; the environment's is not there yet.
@@ -255,7 +266,7 @@ struct CreateIssueView: View {
             HStack(spacing: 10) {
                 Picker("Type", selection: $m.type) {
                     if m.type == nil { Text("Type").tag(IssueType?.none) }
-                    ForEach(m.types) { t in
+                    ForEach(m.offeredTypes) { t in
                         Label {
                             Text(t.name)
                         } icon: {
@@ -515,7 +526,7 @@ struct CreateIssueView: View {
                 m.error = error.localizedDescription
                 return
             }
-            if let t = m.types.first(where: { $0.id == i.fields.issuetype.id }) { m.type = t }
+            if let t = m.offeredTypes.first(where: { $0.id == i.fields.issuetype.id }) { m.type = t }
             m.summary = i.fields.summary
             var mentions: [String: String] = [:]
             m.text = i.fields.description?.markdown(mentions: &mentions) ?? ""

@@ -1809,6 +1809,22 @@ final class SortWordsAndSignInTests: XCTestCase {
         XCTAssertFalse(try issue(level: nil).isEpic)
     }
 
+    /// ⇧⌘N's window offers the types one level under its parent, by level on Cloud and by the subtask flag on Server.
+    @MainActor func testANewChildOffersOnlyTheTypesALevelUnderItsParent() {
+        func type(_ name: String, _ level: Int?, subtask: Bool = false) -> IssueType {
+            IssueType(id: name, name: name, iconUrl: nil, subtask: subtask, hierarchyLevel: level)
+        }
+        let cloud = [type("Epic", 1), type("Task", 0), type("Story", 0), type("Subtask", -1, subtask: true)]
+        let names = { (all: [IssueType], level: Int?) in CreateIssueModel.types(all, under: level).map(\.name) }
+        XCTAssertEqual(names(cloud, nil), ["Epic", "Task", "Story", "Subtask"])
+        XCTAssertEqual(names(cloud, 1), ["Task", "Story"])
+        XCTAssertEqual(names(cloud, 0), ["Subtask"])
+        // Nothing goes under a subtask: every type stays, so the pop-up is never empty.
+        XCTAssertEqual(names(cloud, -1), ["Epic", "Task", "Story", "Subtask"])
+        let server = [type("Task", nil), type("Sub-task", nil, subtask: true)]
+        XCTAssertEqual(names(server, 0), ["Sub-task"])
+    }
+
     /// A count is kept under the issues a query matches, whatever their order and however "order by" is written.
     @MainActor func testACountIsNamedByTheIssuesNotTheirOrder() {
         XCTAssertEqual(IssueListStore.unordered("project = QA ORDER BY updated DESC"), "project = QA")
