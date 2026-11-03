@@ -28,12 +28,21 @@ final class UpdateChecker {
                 var req = URLRequest(url: releases)
                 req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
                 let (data, resp) = try await URLSession.shared.data(for: req)
-                guard (resp as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
-                let r = try JSONDecoder().decode(Release.self, from: data)
+                let status = (resp as? HTTPURLResponse)?.statusCode ?? 0
+                // 404: the repository has no release yet, so nothing is newer than this build.
+                guard status == 200 || status == 404 else {
+                    if interactive {
+                        alert(
+                            String(localized: "Couldn't check for updates"),
+                            String(localized: "GitHub returned HTTP \(status)."))
+                    }
+                    return
+                }
+                let r = status == 200 ? try JSONDecoder().decode(Release.self, from: data) : nil
                 // Stamped only once GitHub answered: a launch without network checks again next time.
                 UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: "lastUpdateCheck")
-                let latest = r.tag_name.trimmingCharacters(in: CharacterSet(charactersIn: "vV"))
-                if Self.isNewer(latest, than: current) {
+                let latest = r?.tag_name.trimmingCharacters(in: CharacterSet(charactersIn: "vV")) ?? current
+                if let r, Self.isNewer(latest, than: current) {
                     if UserDefaults.standard.string(forKey: "skippedVersion") == latest, !interactive { return }
                     offer(latest, url: r.html_url, notes: r.body)
                 } else if interactive {
