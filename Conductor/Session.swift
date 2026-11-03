@@ -521,7 +521,8 @@ final class Session {
     /// One-shot requests from menu commands, URLs and other windows; the root view consumes them.
     var createIssueRequested = false
     var navigationRequest: ListFilters?
-    var pendingOpen: IssueTarget?
+    /// Issues to open, oldest first: links fired faster than the window takes them each open (CON-317).
+    var pendingOpens: [IssueTarget] = []
     /// AppKit has put back the last session's windows. A link that launches the app waits for it: opened before, it
     /// found no restored window of its issue to raise and made a second (CON-249).
     private(set) var windowsRestored = false
@@ -979,7 +980,7 @@ final class Session {
         if url.scheme == "conductor" {
             if url.host() == "issue" {
                 let key = url.lastPathComponent.uppercased()
-                if let st = state(forKey: key) { pendingOpen = IssueTarget(accountID: st.id, key: key) }
+                if let st = state(forKey: key) { pendingOpens.append(IssueTarget(accountID: st.id, key: key)) }
                 return
             }
             guard
@@ -993,7 +994,7 @@ final class Session {
         guard let key = Self.issueKey(in: target), let st = state(host: target.host() ?? "") ?? states.first else {
             return
         }
-        pendingOpen = IssueTarget(accountID: st.id, key: key)
+        pendingOpens.append(IssueTarget(accountID: st.id, key: key))
     }
 
     /// The account whose projects include the key's ("ES-123" → ES), else the first one.
@@ -1006,7 +1007,7 @@ final class Session {
     func open(spotlightID: String) {
         let parts = spotlightID.split(separator: "|", maxSplits: 1).map(String.init)
         guard parts.count == 2, let st = state(host: parts[0]) else { return }
-        pendingOpen = IssueTarget(accountID: st.id, key: parts[1])
+        pendingOpens.append(IssueTarget(accountID: st.id, key: parts[1]))
     }
 
     /// "…/browse/ES-123", "…/jira/software/…/issues/ES-123" (or core) or "…?selectedIssue=ES-123" → "ES-123";

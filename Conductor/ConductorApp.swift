@@ -307,7 +307,7 @@ struct RootView: View {
                 session.navigationRequest = nil
             }
         }
-        .onChange(of: session.pendingOpen) { _, target in if let target { open(target) } }
+        .onChange(of: session.pendingOpens) { openPending() }
         // Signed out of every account (at launch with a restored window, or after the last sign-out): the sign-in
         // card takes over and this window goes.
         .onChange(of: [session.isRestoring, session.isSignedIn], initial: true) {
@@ -373,16 +373,20 @@ struct RootView: View {
 
     /// Requests from Spotlight, notifications and links land in an issue window. A link that launched the app ran
     /// before the restored windows were up and opened a second window of an issue that had one (CON-249): at launch
-    /// the request waits in `pendingOpen` until AppKit has restored them (`restoreOnce` runs it then), and a window
-    /// already showing the issue comes forward (`IssueWindows`) rather than through `openWindow`.
-    private func open(_ target: IssueTarget) {
-        guard session.windowsRestored else { return }
-        if let w = IssueWindows.window(for: target) {
-            w.makeKeyAndOrderFront(nil)
-        } else {
-            openWindow(id: "issue", value: target)
+    /// the requests wait in `pendingOpens` until AppKit has restored them (`restoreOnce` runs them then), and a window
+    /// already showing the issue comes forward (`IssueWindows`) rather than through `openWindow`. All of them, in
+    /// order: links fired faster than one view update apart arrive together (CON-317).
+    private func openPending() {
+        guard session.windowsRestored, !session.pendingOpens.isEmpty else { return }
+        let targets = session.pendingOpens
+        session.pendingOpens = []
+        for target in targets {
+            if let w = IssueWindows.window(for: target) {
+                w.makeKeyAndOrderFront(nil)
+            } else {
+                openWindow(id: "issue", value: target)
+            }
         }
-        session.pendingOpen = nil
         NSApp.activate()
     }
 
@@ -420,7 +424,7 @@ struct RootView: View {
             filters = req
             session.navigationRequest = nil
         }
-        if let t = session.pendingOpen { open(t) }
+        openPending()
         // An account that signed out takes its list with it.
         if let id = filters.account, session.state(id) == nil, let f = session.filters(for: .assigned) { filters = f }
     }
