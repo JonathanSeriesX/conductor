@@ -553,6 +553,16 @@ final class DecodingTests: XCTestCase {
         )
         XCTAssertNil(Account.normalizeSite(""))
     }
+
+    /// A clone draft keeps its warning when reopened; a draft saved before that field decodes without it (CON-318).
+    func testCreateDraftKeepsTheLossyClone() throws {
+        let old =
+            #"{"request":{"id":"6F9619FF-8B86-D011-B42D-00CF4FC964FF"},"summary":"s","text":"t","mentions":{},"labels":[],"parentKey":""}"#
+        var d = try JSONDecoder().decode(CreateDraft.self, from: Data(old.utf8))
+        XCTAssertNil(d.lossyClone)
+        d.lossyClone = URL(string: "https://x.atlassian.net/browse/QA-1")
+        XCTAssertEqual(try JSONDecoder().decode(CreateDraft.self, from: JSONEncoder().encode(d)), d)
+    }
 }
 
 /// Reads a real issue with more than 100 comments. Skipped unless the environment names one:
@@ -771,6 +781,29 @@ final class MarkdownTests: XCTestCase {
         let comment =
             #"{"type":"doc","version":1,"content":[{"type":"paragraph","content":[{"type":"text","text":"A file node that carries its name (alt), as a picture's does:"}]},{"type":"mediaGroup","content":[{"type":"media","attrs":{"type":"file","id":"d3bb4430-07a1-4d40-a6aa-e3757a242f48","alt":"qa-reply-data.json","collection":""}}]}]}"#
         XCTAssertTrue(try JSONDecoder().decode(ADFNode.self, from: Data(comment.utf8)).hasLossyNodes)
+    }
+
+    /// Block cards, extensions and the marks the writer drops warn; the five marks it writes do not (CON-318).
+    func testDroppedMarksAndBlockCardsAreLossy() {
+        func doc(_ n: ADFNode) -> ADFNode { ADFNode(type: "doc", content: [n]) }
+        func text(_ mark: String) -> ADFNode {
+            doc(
+                ADFNode(
+                    type: "paragraph",
+                    content: [ADFNode(type: "text", text: "x", marks: [ADFMark(type: mark, attrs: nil)])]))
+        }
+        for m in ["underline", "textColor", "subsup", "backgroundColor"] { XCTAssertTrue(text(m).hasLossyNodes, m) }
+        for m in ["strong", "em", "code", "strike", "link"] { XCTAssertFalse(text(m).hasLossyNodes, m) }
+        let centred = ADFNode(
+            type: "paragraph", marks: [ADFMark(type: "alignment", attrs: ["align": .string("center")])],
+            content: [ADFNode(type: "text", text: "x")])
+        XCTAssertTrue(doc(centred).hasLossyNodes)
+        for t in ["blockCard", "embedCard", "extension"] {
+            let card = doc(ADFNode(type: t, attrs: ["url": .string("https://x.y/z")]))
+            var m: [String: String] = [:]
+            XCTAssertEqual(card.markdown(mentions: &m), "", "\(t) goes out as nothing")
+            XCTAssertTrue(card.hasLossyNodes, t)
+        }
     }
 
     func testTaskListsRoundTrip() {

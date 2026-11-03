@@ -32,6 +32,8 @@ final class CreateIssueModel {
     var priority: Priority?
     var labels: [String] = []
     var parentKey = ""
+    /// The issue cloned last, on the web, when its description held what the editor can't keep.
+    var lossyClone: URL?
     /// See `CreateRequest.parentLevel`; nil when the window was not opened under a parent.
     let parentLevel: Int?
     var error: String?
@@ -76,6 +78,7 @@ final class CreateIssueModel {
             priority = saved.priority
             labels = saved.labels
             parentKey = saved.parentKey
+            lossyClone = saved.lossyClone
         }
     }
 
@@ -214,8 +217,6 @@ struct CreateIssueView: View {
     @State private var fetchedLabels: [String] = []
     @FocusState private var summaryFocused: Bool
     @State private var showClone = false
-    /// The issue cloned last, on the web, when its description held what the editor can't keep.
-    @State private var lossyClone: URL?
     private var parentKey: String? { request.parentKey }
     private var title: LocalizedStringKey {
         guard let parentKey else { return "New Issue" }
@@ -234,7 +235,7 @@ struct CreateIssueView: View {
         CreateDraft(
             request: request, accountID: m.choice?.accountID, projectKey: m.project?.key, type: m.type,
             summary: m.summary, text: m.text, mentions: m.mentions, assignee: m.assignee, priority: m.priority,
-            labels: m.labels, parentKey: m.parentKey)
+            labels: m.labels, parentKey: m.parentKey, lossyClone: m.lossyClone)
     }
     private var labelMatches: [String] {
         Labels.matches(labelDraft, in: allLabels + fetchedLabels, excluding: m.labels)
@@ -324,7 +325,7 @@ struct CreateIssueView: View {
             if m.has("description") {
                 Composer(text: $m.text, mentions: $m.mentions, placeholder: "Description", minHeight: 120)
                     .environment(\.jira, m.state)
-                if let web = lossyClone, !m.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                if let web = m.lossyClone, !m.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     let key = web.lastPathComponent
                     LossyNote(
                         text:
@@ -530,7 +531,7 @@ struct CreateIssueView: View {
             m.summary = i.fields.summary
             var mentions: [String: String] = [:]
             m.text = i.fields.description?.markdown(mentions: &mentions) ?? ""
-            lossyClone = i.fields.description?.hasLossyNodes == true ? c.browseURL(key) : nil
+            m.lossyClone = i.fields.description?.hasLossyNodes == true ? c.browseURL(key) : nil
             m.mentions = mentions
             m.assignee = i.fields.assignee
             m.priority = m.priorities.first { $0.id == i.fields.priority?.id }

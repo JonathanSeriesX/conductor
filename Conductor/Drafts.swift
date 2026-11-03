@@ -32,6 +32,9 @@ struct CreateDraft: Codable, Equatable, Identifiable {
     var priority: Priority?
     var labels: [String] = []
     var parentKey = ""
+    /// The cloned issue on the web, when its description held what the editor can't keep: a reopened draft still
+    /// warns. Missing from drafts saved before it, which decode with none.
+    var lossyClone: URL?
 }
 
 @MainActor @Observable

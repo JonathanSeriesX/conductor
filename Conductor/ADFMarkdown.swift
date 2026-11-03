@@ -242,12 +242,17 @@ extension ADFNode {
 
     /// Node types the Markdown round-trip would flatten or drop. Cards, statuses and dates go out as their text and
     /// come back as plain text; so does a custom emoji, which has only a short name (a standard one is its character).
+    /// Block and embed cards and extensions go out as nothing, and so does every mark but the five the writer puts
+    /// out: underline, colour, sub- and superscript, a highlight, a paragraph's alignment or indent.
     var hasLossyNodes: Bool {
         let lossy: Set<String> = [
             "media", "mediaSingle", "mediaGroup", "mediaInline", "panel", "expand", "nestedExpand", "layoutSection",
-            "decisionList", "inlineCard", "status", "date",
+            "decisionList", "inlineCard", "status", "date", "blockCard", "embedCard", "extension", "inlineExtension",
+            "bodiedExtension", "multiBodiedExtension", "placeholder",
         ]
+        let written: Set<String> = ["strong", "em", "code", "strike", "link"]
         if lossy.contains(type) || (type == "emoji" && attr("text") == nil) { return true }
+        if (marks ?? []).contains(where: { !written.contains($0.type) }) { return true }
         return (content ?? []).contains { $0.hasLossyNodes }
     }
 
