@@ -39,6 +39,10 @@ final class CreateIssueModel {
     var error: String?
     var isWorking = false
     var isLoadingMeta = false
+    /// Bumped by every lookup, so only the newest answer lands: two projects can share a type, two accounts a key.
+    /// `metaGeneration` also owns the fields and the spinner; a project change bumps both.
+    private var typesGeneration = 0
+    private var metaGeneration = 0
 
     /// The form as the window's first frame shows it, so the window lays itself out once rather than again when its
     /// task fills it a frame later (CON-244): the draft's project (a window reopened, or restored after a relaunch),
@@ -128,13 +132,16 @@ final class CreateIssueModel {
     /// every later window opens on the same answer.
     func loadTypes(_ st: AccountState) async {
         guard let p = project else { return }
+        typesGeneration += 1
+        metaGeneration += 1  // the fields of the project left behind are not wanted either
+        let (tgen, gen) = (typesGeneration, metaGeneration)
         let (c, key) = (st.client, p.key)
         let (now, fresh) = await st.memoOnce("createmeta-\(key)") { try await c.createIssueTypes(project: key) }
-        guard project?.key == key else { return }  // another project was picked during the disk read
-        isLoadingMeta = now == nil
+        guard tgen == typesGeneration else { return }  // another project or account was picked during the disk read
+        if gen == metaGeneration { isLoadingMeta = now == nil }
         if let now { await setTypes(now, st) }
-        if let list = await fresh.value, project?.key == key { await setTypes(list, st) }
-        isLoadingMeta = false
+        if let list = await fresh.value, tgen == typesGeneration { await setTypes(list, st) }
+        if gen == metaGeneration { isLoadingMeta = false }  // else a fields lookup since owns the spinner
     }
 
     private func setTypes(_ list: [IssueType], _ st: AccountState) async {
@@ -156,6 +163,8 @@ final class CreateIssueModel {
 
     /// The fields of the chosen type, cached the same way.
     func loadFields(_ st: AccountState) async {
+        metaGeneration += 1
+        let gen = metaGeneration
         guard let p = project, let t = type else {
             isLoadingMeta = false
             return
@@ -164,11 +173,13 @@ final class CreateIssueModel {
         let (now, fresh) = await st.memoOnce("createmeta-\(key)-\(typeID)") {
             try await c.createFields(project: key, issueType: typeID)
         }
-        guard type?.id == typeID else { return }  // another type was picked during the disk read
+        guard gen == metaGeneration else { return }  // another type, project or account was picked during the disk read
         if let now { setFields(now) } else { isLoadingMeta = true }
-        if let list = await fresh.value {
-            if type?.id == typeID { setFields(list) }
-        } else if fields.isEmpty, type?.id == typeID, !Connectivity.shared.isOffline {
+        let list = await fresh.value
+        guard gen == metaGeneration else { return }
+        if let list {
+            setFields(list)
+        } else if fields.isEmpty, !Connectivity.shared.isOffline {
             // `has` assumes the usual fields while none are known, which would hide a create screen that failed to load.
             error = String(localized: "Couldn't load the fields for \(t.name).")
         }

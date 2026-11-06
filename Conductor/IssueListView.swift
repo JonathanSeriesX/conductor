@@ -88,8 +88,8 @@ final class IssueListStore {
     private(set) var stale: Set<String> = []
     /// The list's selection, as `keep` was last told.
     private var kept: Set<IssueTarget> = []
-    /// Keys with a write on its way to Jira.
-    var pending: Set<String> = []
+    /// Issues with a write on its way to Jira.
+    var pending: Set<IssueTarget> = []
     /// The row under the pointer, the one with tooltips. Not watched: read by every row, a pointer crossing one row's
     /// border redrew them all; the table shows the two rows it changes again (see `IssueTable.Coordinator.hover`).
     @ObservationIgnored var hovered: String?
@@ -250,9 +250,9 @@ final class IssueListStore {
         }
     }
 
-    /// Changes the rows' copies of `keys` at once, ahead of Jira's answer.
-    func patch(_ keys: [String], _ change: (inout Issue) -> Void) {
-        edit({ keys.contains($0.issue.key) }, change)
+    /// Changes the rows' copies of `targets` at once, ahead of Jira's answer.
+    func patch(_ targets: [IssueTarget], _ change: (inout Issue) -> Void) {
+        edit({ targets.contains($0.target) }, change)
     }
 
     /// Changes issues in place, on screen and in the pages behind the screen, keeping their order until the next
@@ -892,8 +892,11 @@ struct IssueListView: View {
                 guard let state = rows.first?.state, rows.allSatisfy({ $0.state === state }) else { return nil }
                 return NSHostingMenu(
                     rootView: IssueMenu(
-                        issues: rows.map(\.issue), state: state, write: { act(keys: rows.map(\.issue.key), $0) },
-                        patch: store.patch
+                        issues: rows.map(\.issue), state: state, write: { act(rows.map(\.target), $0) },
+                        // A unified list can hold the same key from two sites: only this account's row changes.
+                        patch: { keys, change in
+                            store.patch(keys.map { IssueTarget(accountID: state.id, key: $0) }, change)
+                        }
                     )
                     // Titles alone, as the List's context menu had: a hosting menu draws the icons too.
                     .labelStyle(.titleOnly)
@@ -1295,12 +1298,12 @@ struct IssueListView: View {
 
     /// Runs a write with its rows marked busy, then reloads the list and the open issue so both show the result;
     /// the rows already show what the menu patched in, so the reload only confirms and re-sorts.
-    private func act(keys: [String], _ op: @escaping () async throws -> Void) {
-        store.pending.formUnion(keys)
+    private func act(_ targets: [IssueTarget], _ op: @escaping () async throws -> Void) {
+        store.pending.formUnion(targets)
         Task {
             do { try await op() } catch { store.error = error.localizedDescription }
-            store.pending.subtract(keys)
-            keys.forEach(session.touched)
+            store.pending.subtract(targets)
+            targets.forEach { session.touched($0.key) }
         }
     }
 
@@ -1691,7 +1694,7 @@ private struct IssueRows: View {
                     selected: selected, emphasized: selected && active && !previewFocused,
                     above: i > 0 && selection.contains(shown[i - 1].row.target),
                     below: i + 1 < shown.count && selection.contains(shown[i + 1].row.target),
-                    expanded: expanded.contains(d.id), pending: store.pending.contains(row.issue.key),
+                    expanded: expanded.contains(d.id), pending: store.pending.contains(row.target),
                     stale: store.stale.contains(row.id), tips: store.hovered == d.id,
                     toggle: d.children.isEmpty
                         ? nil : { withAnimation(.snappy(duration: 0.25)) { expanded.formSymmetricDifference([d.id]) } }

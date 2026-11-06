@@ -17,6 +17,8 @@ final class BoardStore {
     var error: String?
     var truncated = false
     private var generation = 0
+    /// The board pick that owns config, sprints, quick filters and the spinner; `generation` owns only the cards.
+    private var boardGeneration = 0
     private var state: AccountState?
     private var projectKey = ""
 
@@ -93,10 +95,13 @@ final class BoardStore {
             // Last run's board at once; the network pass below replaces it piece by piece.
             apply(snap)
         }
+        boardGeneration += 1
+        let gen = boardGeneration
         isLoading = true
-        defer { isLoading = false }
+        defer { if gen == boardGeneration { isLoading = false } }
         do {
             boards = try await client.boards(project: project)
+            guard gen == boardGeneration else { return }  // a board picked meanwhile loads itself
             if !boards.contains(where: { $0.id == board?.id }) {
                 board = boards.first { $0.type == "scrum" } ?? boards.first
             }
@@ -106,21 +111,28 @@ final class BoardStore {
 
     func loadBoard(_ client: JiraClient) async {
         guard let board else { return }
+        boardGeneration += 1
+        generation += 1  // the last board's cards still on their way must not land under this one
+        let gen = boardGeneration
         isLoading = true
-        defer { isLoading = false }
+        defer { if gen == boardGeneration { isLoading = false } }
         do {
             async let cfg = client.boardConfiguration(board.id)
             async let sp = board.type == "scrum" ? client.sprints(board: board.id) : []
             async let qf = client.quickFilters(board: board.id)
-            config = try await cfg
-            sprints = (try? await sp) ?? []
-            quickFilters = (try? await qf) ?? []
+            let (c, s, q) = (try await cfg, (try? await sp) ?? [], (try? await qf) ?? [])
+            guard gen == boardGeneration else { return }  // another board was picked while this one's answers were out
+            config = c
+            sprints = s
+            quickFilters = q
             activeFilters = activeFilters.filter { id in quickFilters.contains { $0.id == id } }
             if !sprints.contains(where: { $0.id == sprint?.id }) {
                 sprint = sprints.first { $0.state == "active" } ?? sprints.first
             }
             await loadIssues(client)
-        } catch { if !error.isOffline, !error.isCancelled { self.error = error.localizedDescription } }
+        } catch {
+            if gen == boardGeneration, !error.isOffline, !error.isCancelled { self.error = error.localizedDescription }
+        }
     }
 
     /// Pages through the whole board, showing cards as each page lands.

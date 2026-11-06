@@ -25,7 +25,9 @@ final class IssueDetailStore {
     var linkTypes: [LinkType] = []
     var children: [Issue] = []
     var error: String?
-    var isWorking = false
+    /// Writes in flight: one that ends must not stop another's spinner.
+    private var working = 0
+    var isWorking: Bool { working > 0 }
     var previewURL: URL?
     /// Jira answered 404, as it does for an issue deleted or moved, a key never used, and one this account can't see.
     var gone = false
@@ -74,6 +76,9 @@ final class IssueDetailStore {
     private(set) var key: String?
     private(set) var account: UUID?
     func holds(_ state: AccountState, _ key: String) -> Bool { self.key == key && account == state.id }
+    /// The issue `issue` is, by the target it was loaded for. `key` moves on as soon as another issue is asked for,
+    /// while this one stays on screen until the next page is in place: actions and writes check this, not `key`.
+    private(set) var displayed: IssueTarget?
 
     /// A store already holding the seed's page: `load` then goes straight to the network, as for an issue it shows.
     init(seed: PageSeed? = nil) {
@@ -81,6 +86,7 @@ final class IssueDetailStore {
         key = seed.target.key
         account = seed.target.accountID
         issue = seed.issue
+        displayed = seed.target
         editMeta = seed.editMeta
         transitions = seed.transitions
         children = seed.children
@@ -205,6 +211,7 @@ final class IssueDetailStore {
                 guard holds(state, key) else { return }
             }
             issue = shown
+            displayed = IssueTarget(accountID: state.id, key: key)
             editMeta = meta
             transitions = shown.flatMap { state.transitionsByWorkflow[AccountState.workflowKey($0)] } ?? []
             children = kids ?? []
@@ -233,6 +240,7 @@ final class IssueDetailStore {
             }.value
             guard holds(state, key) else { return }
             if !sameIssue { issue = fresh }
+            update(\.displayed, IssueTarget(accountID: state.id, key: key))  // a Refresh can land before the first load
             LaunchProbe.once("issue.fresh")
             DiskCache.saveAsync(fresh, account: state.account, name: "issue-\(key)")
             Spotlight.index([fresh], host: state.host)
@@ -276,13 +284,20 @@ final class IssueDetailStore {
 
     /// Takes a change announced from elsewhere (a card moved on a board) before this page's own reload.
     func apply(_ c: Session.IssueChange) {
-        guard c.targets.contains(where: { $0.key == key && $0.accountID == account }) else { return }
+        guard let displayed, c.targets.contains(displayed) else { return }
         if let i = c.issue {
-            if i.key == key { update(\.issue, i) }
+            if i.key == displayed.key { update(\.issue, i) }
         } else if let change = c.change, var i = issue {
             change(&i)
             update(\.issue, i)
         }
+    }
+
+    /// Takes back a failed write's provisional `value`, while the page still shows that issue and the field still
+    /// holds it: a later edit, or Jira's copy since, stays.
+    func undo<T: Equatable>(_ field: WritableKeyPath<Issue.Fields, T>, _ value: T, to old: T, on target: IssueTarget) {
+        guard displayed == target, issue?.fields[keyPath: field] == value else { return }
+        issue?.fields[keyPath: field] = old
     }
 
     /// The task's value if it lands within `limit`, else nil (the task keeps running). Not a task group, which returns
@@ -350,8 +365,8 @@ final class IssueDetailStore {
     /// False when the write failed, so the caller can keep the user's draft.
     @discardableResult
     func perform(_ state: AccountState, key: String, _ op: @Sendable (JiraClient) async throws -> Void) async -> Bool {
-        isWorking = true
-        defer { isWorking = false }
+        working += 1
+        defer { working -= 1 }
         do { try await op(state.client) } catch {
             if !error.isCancelled { self.error = error.localizedDescription }
             return false
@@ -443,6 +458,9 @@ struct IssueDetailView: View {
     @State private var commentRequest = 0
     /// The issue on screen: the previous one stays until the next has loaded, and its folds go with it.
     private var shownKey: String { store.issue?.key ?? key }
+    /// The page shows this issue, not the previous one it keeps until this one's is in place: anything read off the
+    /// page (a watch state, a transition, a description) is acted on only then.
+    private var live: Bool { store.displayed == target }
     /// Folded cards and work-log groups, per issue, as this Mac remembers them.
     @State private var folded = Folds.load()
 
@@ -762,7 +780,7 @@ struct IssueDetailView: View {
                     .font(.system(.largeTitle, design: .rounded, weight: .semibold))
                     .contentShape(.rect)
                     .onTapGesture {
-                        guard store.canEdit("summary") else { return }
+                        guard store.canEdit("summary"), live else { return }
                         editClick = NSEvent.mouseLocation
                         caretPending = true
                         summaryDraft = issue.fields.summary
@@ -1717,14 +1735,17 @@ struct IssueDetailView: View {
 
     private var actions: IssueActions? {
         guard let issue = store.issue else { return nil }
+        // Nothing read off the previous issue is offered while it is on screen (`perform` refuses it too), but Back
+        // and Escape keep working.
         return IssueActions(
             key: key,
-            watching: issue.fields.watches?.isWatching == true,
-            assignedToMe: IssueActions.isMine(assignee: issue.fields.assignee?.accountId, me: jira?.me?.accountId),
-            transitions: store.transitions,
-            canEditSummary: store.canEdit("summary"),
-            canEditDescription: store.canEdit("description"),
-            isEpic: issue.isEpic,
+            watching: live && issue.fields.watches?.isWatching == true,
+            assignedToMe: live
+                && IssueActions.isMine(assignee: issue.fields.assignee?.accountId, me: jira?.me?.accountId),
+            transitions: live ? store.transitions : [],
+            canEditSummary: live && store.canEdit("summary"),
+            canEditDescription: live && store.canEdit("description"),
+            isEpic: live && issue.isEpic,
             isEditing: summaryDraft != nil || descriptionDraft != nil || editingCommentID != nil || replyingTo != nil,
             back: back,
             embedded: embedded,
@@ -1733,7 +1754,10 @@ struct IssueDetailView: View {
     }
 
     private func perform(_ action: IssueActions.Action) {
-        guard let jira else { return }
+        // A key or menu can call an older page's actions: only what needs the key alone while another issue shows.
+        guard let jira,
+            live || [.openInBrowser, .openInWindow, .copyLink, .refresh, .history].contains(action)
+        else { return }
         let summary = store.issue?.fields.summary ?? ""
         switch action {
         case .openInBrowser: NSWorkspace.shared.open(jira.client.browseURL(key))
@@ -1746,17 +1770,17 @@ struct IssueDetailView: View {
             let me = jira.me
             let to =
                 IssueActions.isMine(assignee: store.issue?.fields.assignee?.accountId, me: me?.accountId) ? nil : me
-            optimistic({ $0.assignee = to }) { try await $0.assign(key, to: to?.accountId) }
+            optimistic(\.assignee, to) { try await $0.assign(key, to: to?.accountId) }
         case .changeStatus: reveal(.status, .middle) { showStatus = true }
         case .changePriority: reveal(.priority, .middle) { showPriority = true }
         case .editLabels: reveal(.labels, .middle) { showLabels = true }
         case .watch:
-            let on = store.issue?.fields.watches?.isWatching != true
+            let w = store.issue?.fields.watches
+            let on = w?.isWatching != true
             let me = jira.me?.accountId
-            optimistic({
-                let n = $0.watches?.watchCount ?? 0
-                $0.watches = Watches(watchCount: max(0, n + (on ? 1 : -1)), isWatching: on)
-            }) { try await $0.watch(key, on, me: me) }
+            optimistic(\.watches, Watches(watchCount: max(0, (w?.watchCount ?? 0) + (on ? 1 : -1)), isWatching: on)) {
+                try await $0.watch(key, on, me: me)
+            }
         case .transition(let id): transition(id)
         case .remind: showRemind = true
         // An editor already open keeps its draft and only takes the keyboard back: starting over dropped the typing.
@@ -1809,7 +1833,9 @@ struct IssueDetailView: View {
     /// The task resolves to whether the write succeeded, so editors can keep a draft that failed to save.
     @discardableResult
     private func run(_ op: @escaping @Sendable (JiraClient) async throws -> Void) -> Task<Bool, Never> {
-        guard let jira else { return Task { false } }
+        // Every write comes through here. While the page shows another issue, what the write was built from is that
+        // issue's: refused, as a failure, so editors keep their drafts.
+        guard let jira, live else { return Task { false } }
         let key = key
         return Task {
             let ok = await store.perform(jira, key: key, op)
@@ -1821,22 +1847,17 @@ struct IssueDetailView: View {
         }
     }
 
-    /// Shows `change` at once and writes it; the page waits for nobody. A failed write puts the old issue back.
+    /// Shows `value` in `field` at once and writes it; the page waits for nobody. A failed write takes back that
+    /// field alone (see `undo`): putting the whole issue back undid a later edit that had succeeded.
     @discardableResult
-    private func optimistic(
-        _ change: (inout Issue.Fields) -> Void, _ op: @escaping @Sendable (JiraClient) async throws -> Void
-    )
-        -> Task<Bool, Never>
-    {
-        let before = store.issue
-        if var f = before?.fields {
-            change(&f)
-            store.issue?.fields = f
-        }
+    private func optimistic<T: Equatable>(
+        _ field: WritableKeyPath<Issue.Fields, T>, _ value: T,
+        _ op: @escaping @Sendable (JiraClient) async throws -> Void
+    ) -> Task<Bool, Never> {
+        guard live, let old = store.issue?.fields[keyPath: field] else { return Task { false } }
+        store.issue?.fields[keyPath: field] = value
         let task = run(op)
-        Task {
-            if !(await task.value), store.key == before?.key, store.account == target.accountID { store.issue = before }
-        }
+        Task { if !(await task.value) { store.undo(field, value, to: old, on: target) } }
         return task
     }
 
@@ -1845,7 +1866,7 @@ struct IssueDetailView: View {
             return
         }
         let account = target.accountID
-        optimistic({ $0.status = t.to }) {
+        optimistic(\.status, t.to) {
             try await $0.transition(key, to: id)
             await Bin.shared.put(.status(old), account: account, key: key)
         }
@@ -1906,9 +1927,11 @@ struct IssueDetailView: View {
         guard draft != store.issue?.fields.summary else { return }
         let key = key
         Task {
-            if !(await optimistic({ $0.summary = draft }) {
+            // Reopened only where it was written: the store knows which issue the page is on now, `self.key` (this
+            // copy of the view's) only which it was on.
+            if !(await optimistic(\.summary, draft) {
                 try await $0.editIssue(key, fields: ["summary": .string(draft)])
-            }.value), self.key == key {
+            }.value), store.key == key, store.account == target.accountID {
                 summaryDraft = draft
             }
         }
@@ -1938,7 +1961,7 @@ struct IssueDetailView: View {
         guard var doc = store.issue?.fields.description else { return }
         doc.flipTask(localId)
         guard let value = try? JSONValue(doc) else { return }
-        _ = optimistic({ $0.description = doc }) { try await $0.editIssue(key, fields: ["description": value]) }
+        _ = optimistic(\.description, doc) { try await $0.editIssue(key, fields: ["description": value]) }
     }
 
     /// Focus an editor whose focus state may be true already while the keyboard is elsewhere.
@@ -1958,6 +1981,7 @@ struct IssueDetailView: View {
     }
 
     private func beginDescriptionEdit(_ issue: Issue) {
+        guard live else { return }
         var mentions: [String: String] = [:]
         descriptionDraft = issue.fields.description?.markdown(mentions: &mentions) ?? ""
         descriptionOriginal = descriptionDraft ?? ""
@@ -1984,13 +2008,19 @@ struct IssueDetailView: View {
         guard draft != descriptionOriginal else { return }
         let doc = ADFNode.document(markdown: draft, mentions: descriptionMentions)
         guard let value = try? JSONValue(doc) else { return }
+        let (t, mentions, original) = (target, descriptionMentions, descriptionOriginal)
         Task {
-            if !(await optimistic({ $0.description = doc }) {
+            let saved = await optimistic(\.description, doc) {
                 try await $0.editIssue(key, fields: ["description": value])
+            }.value
+            // Back in its issue's editor, kept on disk, as the page may show another issue by now. One opened there
+            // since keeps its text; the closed one's stash may not have caught up and still hold this very draft.
+            let open = Drafts.shared[t].description
+            guard !saved, open == nil || open == draft else { return }
+            Drafts.shared.update(t) {
+                ($0.description, $0.descriptionMentions, $0.descriptionOriginal) = (draft, mentions, original)
             }
-            .value) {
-                descriptionDraft = draft
-            }
+            if store.key == t.key, store.account == t.accountID { unstash() }
         }
     }
 
@@ -2000,6 +2030,7 @@ struct IssueDetailView: View {
     }
 
     private func beginCommentEdit(_ c: Comment) {
+        guard live else { return }
         var mentions: [String: String] = [:]
         editDraft = c.body.markdown(mentions: &mentions)
         editOriginal = editDraft
@@ -2053,8 +2084,16 @@ struct IssueDetailView: View {
         returnKeyboard()
         guard editDraft != editOriginal else { return }
         let doc = ADFNode.document(markdown: editDraft, mentions: editMentions)
+        let (t, draft, mentions, original) = (target, editDraft, editMentions, editOriginal)
         Task {
-            if !(await run { try await $0.updateComment(key, id: c.id, body: doc) }.value) { editingCommentID = c.id }
+            let saved = await run { try await $0.updateComment(key, id: c.id, body: doc) }.value
+            // As a failed description save: an editor opened there since keeps its text.
+            let open = Drafts.shared[t]
+            guard !saved, open.editingComment == nil || open.edit == draft else { return }
+            Drafts.shared.update(t) {
+                ($0.editingComment, $0.edit, $0.editMentions, $0.editOriginal) = (c.id, draft, mentions, original)
+            }
+            if store.key == t.key, store.account == t.accountID { unstash() }
         }
     }
 
@@ -2121,6 +2160,8 @@ struct CommentComposer: View {
     let send: (ADFNode) async -> Bool
     @State private var text = ""
     @State private var mentions: [String: String] = [:]
+    /// The issue whose draft the box holds.
+    @State private var loaded: IssueTarget?
 
     var body: some View {
         Composer(
@@ -2148,19 +2189,24 @@ struct CommentComposer: View {
 
     private func load(_ t: IssueTarget) {
         let d = Drafts.shared[t]
-        (text, mentions) = (d.comment, d.commentMentions)
+        (loaded, text, mentions) = (t, d.comment, d.commentMentions)
     }
 
     private func post() {
         let body = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !body.isEmpty else { return }
         let doc = ADFNode.document(markdown: body, mentions: mentions)
+        let (t, sent) = (target, text)
         Task {
-            if await send(doc) {
+            guard await send(doc) else { return }
+            // Only the text sent goes, from its own issue: the box may hold another issue's draft by now, or more.
+            if loaded == t, text == sent {
                 text = ""
                 mentions = [:]
                 focus.wrappedValue = false
                 NSApp.keyWindow?.focusList()
+            } else if Drafts.shared[t].comment == sent {
+                Drafts.shared.update(t) { ($0.comment, $0.commentMentions) = ("", [:]) }
             }
         }
     }

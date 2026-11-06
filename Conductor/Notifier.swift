@@ -8,7 +8,9 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     static let shared = Notifier()
     private weak var session: Session?
     private var task: Task<Void, Never>?
-    private var lastPoll: [UUID: Date] = [:]
+    /// Per account, the time the assignment, status and comment scans last read up to. A scan that fails keeps its
+    /// own, so the next pass reads the window it missed again.
+    private var lastPoll: [UUID: [Date]] = [:]
     private var meIDs: [UUID: String] = [:]
     private var seenComments: Set<String> = []
     /// Assignment and status banners already shown, keyed by issue and its `updated` stamp: the poll
@@ -51,13 +53,13 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         let client = JiraClient(account: account)
         let host = account.site.host() ?? ""
         let now = Date()
-        guard let since = lastPoll[account.id] else {
+        guard var since = lastPoll[account.id] else {
             // First pass only seeds the clock; nothing from before launch is news.
-            lastPoll[account.id] = now
+            lastPoll[account.id] = [now, now, now]
             return
         }
-        lastPoll[account.id] = now
-        let minutes = max(1, Int(now.timeIntervalSince(since) / 60) + 1)
+        defer { lastPoll[account.id] = since }
+        let minutes = since.map { max(1, Int(now.timeIntervalSince($0) / 60) + 1) }
         if meIDs[account.id] == nil {
             if let cached = session?.state(account.id)?.me?.accountId {
                 meIDs[account.id] = cached
@@ -70,8 +72,9 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
 
         if let page = try? await client.search(
             jql:
-                "assignee CHANGED TO currentUser() AFTER -\(minutes)m AND NOT assignee CHANGED BY currentUser() AFTER -\(minutes)m ORDER BY updated DESC"
+                "assignee CHANGED TO currentUser() AFTER -\(minutes[0])m AND NOT assignee CHANGED BY currentUser() AFTER -\(minutes[0])m ORDER BY updated DESC"
         ) {
+            since[0] = now
             for i in page.issues
             where announced.insert("\(host)|\(i.key)|assigned|\(i.fields.updated?.timeIntervalSince1970 ?? 0)").inserted
             {
@@ -80,8 +83,9 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         }
         if let page = try? await client.search(
             jql:
-                "\(involved) AND status CHANGED AFTER -\(minutes)m AND NOT status CHANGED BY currentUser() AFTER -\(minutes)m ORDER BY updated DESC"
+                "\(involved) AND status CHANGED AFTER -\(minutes[1])m AND NOT status CHANGED BY currentUser() AFTER -\(minutes[1])m ORDER BY updated DESC"
         ) {
+            since[1] = now
             for i in page.issues where announced.insert("\(host)|\(i.key)|status|\(i.fields.status.id)").inserted {
                 notify(
                     String(localized: "\(i.key) is now \(i.fields.status.name)"), i.fields.summary, host: host,
@@ -89,13 +93,16 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
             }
         }
         if let page = try? await client.search(
-            jql: "\(involved) AND updated >= -\(minutes)m ORDER BY updated DESC", fields: "summary,comment")
+            jql: "\(involved) AND updated >= -\(minutes[2])m ORDER BY updated DESC", fields: "summary,comment")
         {
+            var read = true
             for i in page.issues {
                 var comments = i.fields.comment?.comments ?? []
                 // A search result carries the oldest 20 comments; a new one on a longer thread comes after them.
-                if !i.hasAllComments, let recent = try? await client.recentComments(i.key) { comments = recent }
-                for c in comments where c.created > since && c.author?.accountId != me {
+                if !i.hasAllComments {
+                    if let recent = try? await client.recentComments(i.key) { comments = recent } else { read = false }
+                }
+                for c in comments where c.created > since[2] && c.author?.accountId != me {
                     let id = "\(host)|\(c.id)"
                     guard seenComments.insert(id).inserted else { continue }
                     let text = c.body.plainText.replacingOccurrences(of: "\n", with: " ")
@@ -105,6 +112,7 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
                         String(text.prefix(140)), host: host, key: i.key)
                 }
             }
+            if read { since[2] = now }
         }
     }
 
