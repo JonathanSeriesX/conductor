@@ -414,16 +414,7 @@ struct SidebarView: View {
                             Image(systemName: "wifi.exclamationmark").foregroundStyle(.orange).help(
                                 "Showing cached data. \((st.mark ?? URLError(.cannotConnectToHost)).localizedDescription)"
                             )
-                            // One account down gets its own retry here; two or more share Working Offline below.
-                            if downCount == 1 {
-                                Button {
-                                    Task { await session.reconnect() }
-                                } label: {
-                                    Image(systemName: "arrow.clockwise")
-                                }
-                                .buttonStyle(.plain).foregroundStyle(.secondary)
-                                .help("Try to reconnect now. Conductor also retries on its own every 20 seconds.")
-                            }
+                            if downCount == 1 { reconnectButton }
                         }
                     }
                     // Every click on the header toggles: the system's own header click skips the second click of a
@@ -493,19 +484,35 @@ struct SidebarView: View {
                         }
                 }
             }
+            // Accounts that failed at launch with nothing cached: the live header's marks, the rest in its menu.
             ForEach(session.accounts.filter { session.unreachable[$0.id] != nil }, id: \.id) { account in
                 let error = session.unreachable[account.id]
-                Section(account.site.host() ?? String(localized: "Account")) {
-                    if error?.isRejectedSignIn == true {
-                        Label("Sign-in was rejected", systemImage: "person.crop.circle.badge.exclamationmark")
-                            .foregroundStyle(.secondary).help(error?.localizedDescription ?? "")
-                    } else {
-                        Label("Couldn't connect", systemImage: "wifi.exclamationmark").foregroundStyle(.secondary)
-                            .help(error?.localizedDescription ?? "")
+                Section {
+                } header: {
+                    HStack(spacing: 4) {
+                        Text(account.site.host() ?? String(localized: "Account"))
+                        if error?.isRejectedSignIn == true {
+                            Button {
+                                updatingToken = account
+                            } label: {
+                                Image(systemName: "person.crop.circle.badge.exclamationmark")
+                            }
+                            .buttonStyle(.plain).foregroundStyle(.orange)
+                            .help("Sign-in was rejected: click to enter a new token.")
+                        } else {
+                            Image(systemName: "wifi.exclamationmark").foregroundStyle(.orange).help(
+                                "Couldn't connect. \(error?.localizedDescription ?? "")")
+                            if downCount == 1 { reconnectButton }
+                        }
                     }
-                    Button("Retry") { Task { await session.retry(account) } }
-                    Button(account.updateTokenTitle) { updatingToken = account }
-                    Button("Remove Account", role: .destructive) { session.remove(account) }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(.rect)
+                    .contextMenu {
+                        Button("Refresh", systemImage: "arrow.clockwise") { Task { await session.retry(account) } }
+                        Button(account.updateTokenTitle, systemImage: "key") { updatingToken = account }
+                        Divider()
+                        Button("Remove Account", systemImage: "trash", role: .destructive) { session.remove(account) }
+                    }
                 }
             }
         }
@@ -528,7 +535,7 @@ struct SidebarView: View {
         .navigationSplitViewColumnWidth(min: 200, ideal: 240)
         .bottomBar {
             VStack(alignment: .leading, spacing: 10) {
-                if Connectivity.shared.isOffline, downCount != 1 {
+                if downCount > 1 || (downCount == 0 && Connectivity.shared.isOffline) {
                     HStack {
                         Label("Working Offline", systemImage: "wifi.slash").foregroundStyle(.secondary)
                         Spacer()
@@ -614,7 +621,20 @@ struct SidebarView: View {
     private func isDown(_ st: AccountState) -> Bool {
         (st.mark != nil && st.mark?.isRejectedSignIn != true) || Connectivity.shared.offlineHosts.contains(st.host)
     }
-    private var downCount: Int { session.states.count(where: isDown) }
+    /// Live accounts down plus those that never connected; a rejected token is not down, it needs a new one.
+    private var downCount: Int {
+        session.states.count(where: isDown) + session.unreachable.values.count { !$0.isRejectedSignIn }
+    }
+    /// One account down gets its own retry beside its mark; two or more share Working Offline at the bottom.
+    private var reconnectButton: some View {
+        Button {
+            Task { await session.reconnect() }
+        } label: {
+            Image(systemName: "arrow.clockwise")
+        }
+        .buttonStyle(.plain).foregroundStyle(.secondary)
+        .help("Try to reconnect now. Conductor also retries on its own every 20 seconds.")
+    }
 
     @ViewBuilder
     private func accountContent(_ st: AccountState) -> some View {
