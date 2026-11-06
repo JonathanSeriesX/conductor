@@ -11027,7 +11027,6 @@
         }
       }
     },
-
     "Clone…" : {
       "localizations" : {
         "ar" : {
@@ -11122,10 +11121,6 @@
         }
       }
     },
-
-
-
-
     "Close" : {
       "localizations" : {
         "ar" : {
@@ -13107,6 +13102,100 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "無法連線"
+          }
+        }
+      }
+    },
+    "Couldn't connect. %@" : {
+      "localizations" : {
+        "ar" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "تعذر الاتصال. %@"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Keine Verbindung möglich. %@"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No se pudo conectar. %@"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Connexion impossible. %@"
+          }
+        },
+        "hi" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "कनेक्ट नहीं हो सका। %@"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Impossibile connettersi. %@"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "接続できませんでした。%@"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "연결할 수 없습니다. %@"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nie można połączyć. %@"
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Não foi possível conectar. %@"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось подключиться. %@"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bağlanılamadı. %@"
+          }
+        },
+        "uk" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не вдалося під’єднатися. %@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法连接。%@"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "無法連線。%@"
           }
         }
       }
@@ -27793,6 +27882,100 @@
         }
       }
     },
+    "Open %@ on the web…" : {
+      "localizations" : {
+        "ar" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "فتح %@ على الويب…"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ im Web öffnen…"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Abrir %@ en la web…"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ouvrir %@ sur le web…"
+          }
+        },
+        "hi" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ वेब पर खोलें…"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apri %@ sul web…"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@をWebで開く…"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "웹에서 %@ 열기…"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Otwórz %@ w przeglądarce…"
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Abrir %@ na web…"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Открыть %@ на сайте…"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ konusunu web'de aç…"
+          }
+        },
+        "uk" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Відкрити %@ у вебі…"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在网页上打开 %@…"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在網頁上打開 %@…"
+          }
+        }
+      }
+    },
     "Open %@; ⌘-click for a new window" : {
       "localizations" : {
         "ar" : {
@@ -35981,6 +36164,100 @@
         }
       }
     },
+    "Sign-in was rejected: click to enter a new token." : {
+      "localizations" : {
+        "ar" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "رُفض تسجيل الدخول: انقر لإدخال رمز جديد."
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Die Anmeldung wurde abgelehnt: Klicken Sie, um ein neues Token einzugeben."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Se rechazó el inicio de sesión: haz clic para introducir un token nuevo."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "La connexion a été refusée : cliquez pour saisir un nouveau jeton."
+          }
+        },
+        "hi" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "साइन इन अस्वीकार कर दिया गया: नया टोकन दर्ज करने के लिए क्लिक करें।"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Accesso rifiutato: fai clic per inserire un nuovo token."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "サインインが拒否されました。クリックして新しいトークンを入力してください。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "로그인이 거부되었습니다. 클릭하여 새 토큰을 입력하십시오."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Logowanie odrzucone: kliknij, aby wpisać nowy token."
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "O início de sessão foi recusado: clique para inserir um novo token."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Вход отклонен: нажмите, чтобы ввести новый токен."
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Giriş reddedildi: yeni bir belirteç girmek için tıklayın."
+          }
+        },
+        "uk" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Вхід відхилено: клацніть, щоб ввести новий токен."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "登录被拒绝：点按以输入新令牌。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "登入遭拒：按一下來輸入新權杖。"
+          }
+        }
+      }
+    },
     "Sign-in was rejected. Check the API token, then retry." : {
       "extractionState" : "stale",
       "localizations" : {
@@ -38341,6 +38618,100 @@
         }
       }
     },
+    "The description of %@ has images, panels or other content the editor can't keep; the new issue gets the text shown here." : {
+      "localizations" : {
+        "ar" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "يحتوي وصف %@ على صور أو لوحات تنبيه أو محتوى آخر لا يستطيع المحرر الاحتفاظ به؛ تحصل المشكلة الجديدة على النص المعروض هنا."
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Die Beschreibung von %@ enthält Bilder, Panels oder andere Inhalte, die der Editor nicht beibehalten kann; der neue Vorgang erhält den hier angezeigten Text."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "La descripción de %@ contiene imágenes, paneles u otro contenido que el editor no puede conservar; la nueva incidencia recibe el texto que se muestra aquí."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "La description de %@ contient des images, des panneaux ou d’autres contenus que l’éditeur ne peut pas conserver ; le nouveau ticket reçoit le texte affiché ici."
+          }
+        },
+        "hi" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ के विवरण में इमेज, पैनल या अन्य सामग्री है जिसे एडिटर नहीं रख सकता; नए इश्यू को यहाँ दिखाया गया टेक्स्ट मिलेगा।"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "La descrizione di %@ contiene immagini, pannelli o altri contenuti che l’editor non può mantenere; il nuovo ticket riceve il testo mostrato qui."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@の説明には、エディタで保持できない画像、パネル、その他のコンテンツが含まれています。新しい課題には、ここに表示されているテキストが入ります。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@의 설명에는 편집기에서 유지할 수 없는 이미지, 패널 또는 기타 콘텐츠가 있습니다. 새 이슈에는 여기에 표시된 텍스트가 들어갑니다."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Opis %@ zawiera obrazy, panele lub inną zawartość, której edytor nie może zachować; nowe zgłoszenie otrzyma pokazany tutaj tekst."
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "A descrição de %@ tem imagens, painéis ou outro conteúdo que o editor não consegue manter; o novo item recebe o texto mostrado aqui."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "В описании %@ есть изображения, панели или другое содержимое, которое редактор не может сохранить; новая задача получит показанный здесь текст."
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ açıklamasında düzenleyicinin koruyamadığı görüntüler, paneller veya başka içerikler var; yeni konu burada gösterilen metni alır."
+          }
+        },
+        "uk" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Опис %@ містить зображення, панелі або інший вміст, який редактор не може зберегти; нова задача отримає показаний тут текст."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ 的描述包含图像、面板或编辑器无法保留的其他内容；新事务将使用此处显示的文本。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ 的描述包含影像、面板或編輯器無法保留的其他內容；新問題將使用此處顯示的文字。"
+          }
+        }
+      }
+    },
     "The token is removed from the Keychain. Cached issues stay until the cache is cleared." : {
       "localizations" : {
         "ar" : {
@@ -38525,6 +38896,100 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "此動作無法還原。"
+          }
+        }
+      }
+    },
+    "This comment has images, panels or other content the editor can't keep. Saving replaces them with the text shown here; Cancel leaves the comment as it is." : {
+      "localizations" : {
+        "ar" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "يحتوي هذا التعليق على صور أو لوحات تنبيه أو محتوى آخر لا يستطيع المحرر الاحتفاظ به. يؤدي الحفظ إلى استبدالها بالنص المعروض هنا؛ ويُبقي «إلغاء» التعليق كما هو."
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dieser Kommentar enthält Bilder, Panels oder andere Inhalte, die der Editor nicht beibehalten kann. Beim Speichern werden sie durch den hier angezeigten Text ersetzt; „Abbrechen“ lässt den Kommentar unverändert."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Este comentario contiene imágenes, paneles u otro contenido que el editor no puede conservar. Al guardar, se reemplazan por el texto que se muestra aquí; Cancelar deja el comentario tal como está."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ce commentaire contient des images, des panneaux ou d’autres contenus que l’éditeur ne peut pas conserver. Enregistrer les remplace par le texte affiché ici ; Annuler laisse le commentaire tel quel."
+          }
+        },
+        "hi" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "इस टिप्पणी में इमेज, पैनल या अन्य सामग्री है जिसे एडिटर नहीं रख सकता। सहेजने पर वे यहाँ दिखाए गए टेक्स्ट से बदल जाएँगे; “रद्द करें” से टिप्पणी जैसी है वैसी ही रहेगी।"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Questo commento contiene immagini, pannelli o altri contenuti che l’editor non può mantenere. Salvando, verranno sostituiti dal testo mostrato qui; Annulla lascia il commento invariato."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "このコメントには、エディタで保持できない画像、パネル、その他のコンテンツが含まれています。保存すると、ここに表示されているテキストに置き換えられます。「キャンセル」を選ぶと、コメントはそのまま残ります。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "이 댓글에는 편집기에서 유지할 수 없는 이미지, 패널 또는 기타 콘텐츠가 있습니다. 저장하면 여기에 표시된 텍스트로 대치되며, 취소하면 댓글이 그대로 유지됩니다."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ten komentarz zawiera obrazy, panele lub inną zawartość, której edytor nie może zachować. Zachowanie zastąpi je pokazanym tutaj tekstem; „Anuluj” pozostawi komentarz bez zmian."
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Este comentário tem imagens, painéis ou outro conteúdo que o editor não consegue manter. Salvar substitui esse conteúdo pelo texto mostrado aqui; Cancelar mantém o comentário como está."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "В комментарии есть изображения, панели или другое содержимое, которое редактор не может сохранить. При сохранении оно будет заменено показанным здесь текстом; «Отменить» оставит комментарий без изменений."
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bu yorumda düzenleyicinin koruyamadığı görüntüler, paneller veya başka içerikler var. Kaydetmek bunları burada gösterilen metinle değiştirir; Vazgeç, yorumu olduğu gibi bırakır."
+          }
+        },
+        "uk" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Цей коментар містить зображення, панелі або інший вміст, який редактор не може зберегти. Збереження замінить їх показаним тут текстом; «Скасувати» залишить коментар без змін."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此评论包含图像、面板或编辑器无法保留的其他内容。保存后将以此处显示的文本替换它们；取消则保持评论不变。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此留言包含影像、面板或編輯器無法保留的其他內容。儲存會以此處顯示的文字取代它們；取消則保持留言不變。"
           }
         }
       }
