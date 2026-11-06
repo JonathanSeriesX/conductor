@@ -16,6 +16,7 @@ struct LoginView: View {
     @State private var error: String?
 
     @State private var busy = false
+    @FocusState private var editingSite: Bool
     private var server: Bool {
         Account.normalizeSite(site).map { Account(site: $0, email: "", token: "").isServer } ?? false
     }
@@ -44,13 +45,16 @@ struct LoginView: View {
 
             VStack(spacing: 10) {
                 TextField("Site", text: $site, prompt: Text("yourteam.atlassian.net")).disabled(updating != nil)
-                // A personal access token names its user itself, so the username comes from Jira. The field stays,
-                // greyed, so the card keeps its height while a typed site turns from Cloud to Server.
-                TextField(
-                    server ? "Username" : "Email", text: server ? .constant("") : $email,
-                    prompt: server ? Text("Taken from the token") : Text(verbatim: "you@company.com")
-                )
-                .disabled(server || updating != nil)
+                    .focused($editingSite)
+                // A personal access token names its user itself, so a Server site has no username field. While the
+                // site is typed it stays, greyed, or "acme." (a Server until ".atlassian.net") would make it blink.
+                if !server || editingSite {
+                    TextField(
+                        server ? "Username" : "Email", text: server ? .constant("") : $email,
+                        prompt: server ? Text("Taken from the token") : Text(verbatim: "you@company.com")
+                    )
+                    .disabled(server || updating != nil)
+                }
                 SecureField(
                     server ? "Personal access token" : "API token", text: $token,
                     prompt: Text(server ? "Personal access token" : "API token"))
