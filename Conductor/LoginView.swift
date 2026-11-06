@@ -119,6 +119,23 @@ struct LoginView: View {
         }
         .padding(32)
         .frame(width: 400)
+        // Signed in, or about to be: the list window takes over. The system restores this card from a launch that
+        // had no account, and only the main window checks the accounts, so it waited for good with none sent; and
+        // an account the 20 s retry brings back after an offline launch now returns the list.
+        .onChange(of: !isSheet && (session.isSignedIn || session.isRestoring), initial: true) { _, takeOver in
+            guard takeOver else { return }
+            // A turn later: by then a main window the system restores beside the card is there, and a card dismissed
+            // in the turn it appeared stayed open.
+            Task {
+                // Closed windows stay in the list: only one on screen or in the Dock counts.
+                if !NSApp.windows.contains(where: {
+                    $0.identifier?.rawValue.hasPrefix("main") == true && ($0.isVisible || $0.isMiniaturized)
+                }) {
+                    openWindow(id: "main")
+                }
+                dismissWindow(id: "login")
+            }
+        }
         .onAppear {
             guard let updating else { return }
             site = updating.site.absoluteString
@@ -159,13 +176,8 @@ struct LoginView: View {
                     return
                 }
                 try await session.add(account)
-                if isSheet {
-                    dismiss()
-                } else {
-                    // The first account: the list window takes over from the sign-in card.
-                    openWindow(id: "main")
-                    dismissWindow(id: "login")
-                }
+                // The first account: the onChange above hands the card over to the list window.
+                if isSheet { dismiss() }
             } catch { self.error = error.localizedDescription }
         }
     }

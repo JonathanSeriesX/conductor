@@ -410,9 +410,20 @@ struct SidebarView: View {
                             }
                             .buttonStyle(.plain).foregroundStyle(.orange)
                             .help("Showing cached data. Sign-in was rejected: click to enter a new token.")
-                        } else if let e = st.mark {
+                        } else if isDown(st) {
                             Image(systemName: "wifi.exclamationmark").foregroundStyle(.orange).help(
-                                "Showing cached data. \(e.localizedDescription)")
+                                "Showing cached data. \((st.mark ?? URLError(.cannotConnectToHost)).localizedDescription)"
+                            )
+                            // One account down gets its own retry here; two or more share Working Offline below.
+                            if downCount == 1 {
+                                Button {
+                                    Task { await session.reconnect() }
+                                } label: {
+                                    Image(systemName: "arrow.clockwise")
+                                }
+                                .buttonStyle(.plain).foregroundStyle(.secondary)
+                                .help("Try to reconnect now. Conductor also retries on its own every 20 seconds.")
+                            }
                         }
                     }
                     // Every click on the header toggles: the system's own header click skips the second click of a
@@ -517,7 +528,7 @@ struct SidebarView: View {
         .navigationSplitViewColumnWidth(min: 200, ideal: 240)
         .bottomBar {
             VStack(alignment: .leading, spacing: 10) {
-                if Connectivity.shared.isOffline {
+                if Connectivity.shared.isOffline, downCount != 1 {
                     HStack {
                         Label("Working Offline", systemImage: "wifi.slash").foregroundStyle(.secondary)
                         Spacer()
@@ -598,6 +609,12 @@ struct SidebarView: View {
             }
         #endif
     }
+
+    /// Showing cached data because its site isn't answering: its check failed, or a later read did.
+    private func isDown(_ st: AccountState) -> Bool {
+        (st.mark != nil && st.mark?.isRejectedSignIn != true) || Connectivity.shared.offlineHosts.contains(st.host)
+    }
+    private var downCount: Int { session.states.count(where: isDown) }
 
     @ViewBuilder
     private func accountContent(_ st: AccountState) -> some View {
