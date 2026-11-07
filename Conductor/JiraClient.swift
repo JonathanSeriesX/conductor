@@ -23,6 +23,11 @@ struct Account: Codable, Sendable, Equatable, Identifiable {
 
     var label: String { "\(site.host() ?? "") (\(email))" }
 
+    /// The same user on the same site: what the id says, but for an account that kept its id through a new site.
+    func isTwin(of other: Account) -> Bool {
+        site.host() == other.site.host() && email.lowercased() == other.email.lowercased()
+    }
+
     /// Jira Server / Data Center: any host Atlassian does not run. It speaks REST v2 (wiki-markup text where Cloud
     /// has ADF, usernames where Cloud has account ids) and signs in with a personal access token as a bearer.
     var isServer: Bool {

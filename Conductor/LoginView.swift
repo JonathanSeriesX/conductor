@@ -4,7 +4,8 @@ struct LoginView: View {
     /// Adds an account to those signed in: the sidebar's sheet, or the window Settings opens. `dismiss` closes
     /// either on Cancel and Add, never the main window.
     var isSheet = false
-    /// A new token for this account, Jira having rejected its own: the site and the user stay as they are.
+    /// A new token for this account, Jira having rejected its own. The user stays; the site may change (a Server that
+    /// moved host, a renamed Cloud site), and the account keeps its id.
     var updating: Account?
     @Environment(Session.self) private var session
     @Environment(\.dismiss) private var dismiss
@@ -17,6 +18,7 @@ struct LoginView: View {
 
     @State private var busy = false
     @FocusState private var editingSite: Bool
+    @FocusState private var editingToken: Bool
     private var server: Bool {
         Account.normalizeSite(site).map { Account(site: $0, email: "", token: "").isServer } ?? false
     }
@@ -44,11 +46,11 @@ struct LoginView: View {
             .foregroundStyle(.secondary).multilineTextAlignment(.center)
 
             VStack(spacing: 10) {
-                TextField("Site", text: $site, prompt: Text("yourteam.atlassian.net")).disabled(updating != nil)
-                    .focused($editingSite)
+                TextField("Site", text: $site, prompt: Text("yourteam.atlassian.net")).focused($editingSite)
                 // A personal access token names its user itself, so a Server site has no username field. While the
                 // site is typed it stays, greyed, or "acme." (a Server until ".atlassian.net") would make it blink.
-                if !server || editingSite {
+                // The Update card keeps the row of the account's own kind.
+                if updating.map({ !$0.isServer }) ?? (!server || editingSite) {
                     TextField(
                         server ? "Username" : "Email", text: server ? .constant("") : $email,
                         prompt: server ? Text("Taken from the token") : Text(verbatim: "you@company.com")
@@ -57,7 +59,9 @@ struct LoginView: View {
                 }
                 SecureField(
                     server ? "Personal access token" : "API token", text: $token,
-                    prompt: Text(server ? "Personal access token" : "API token"))
+                    prompt: Text(server ? "Personal access token" : "API token")
+                )
+                .focused($editingToken)
             }
             .textFieldStyle(.roundedBorder)
             .autocorrectionDisabled()
@@ -145,6 +149,8 @@ struct LoginView: View {
             site = updating.site.absoluteString
             // A Server account's email is its username, which the greyed field does not show.
             if !updating.isServer { email = updating.email }
+            // The token, not the site: a token pasted into the selected site would replace it.
+            editingToken = true
         }
     }
 
@@ -174,15 +180,27 @@ struct LoginView: View {
                     }
                     account = Account(site: url, email: me.accountId, token: token)
                 }
-                // A Server token names its own user: another one's would sign this account in as them.
-                if let updating, account.id != updating.id {
-                    self.error = String(localized: "This token belongs to another user.")
-                    return
+                if let updating {
+                    // A Server token names its own user: another one's would sign this account in as them.
+                    guard account.email.lowercased() == updating.email.lowercased() else {
+                        self.error = String(localized: "This token belongs to another user.")
+                        return
+                    }
+                    guard !session.accounts.contains(where: { $0.id != updating.id && $0.isTwin(of: account) }) else {
+                        self.error = String(localized: "This account is already signed in.")
+                        return
+                    }
+                    // A new site keeps the account's id, and with it its sidebar slot, name, colour and windows.
+                    account.id = updating.id
                 }
                 try await session.add(account)
                 // The first account: the onChange above hands the card over to the list window.
                 if isSheet { dismiss() }
-            } catch { self.error = error.localizedDescription }
+            } catch {
+                // A site that failed to sign in, a mistyped one too, left Working Offline up with nothing to retry.
+                if let host = url.host() { session.forget(host: host) }
+                self.error = error.localizedDescription
+            }
         }
     }
 }

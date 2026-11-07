@@ -11,11 +11,24 @@ enum DiskCache {
         return base.appending(path: "Conductor/cache", directoryHint: .isDirectory)
     }()
 
+    private static func folder(_ account: Account) -> URL {
+        root.appending(path: safe("\(account.site.host() ?? "site")|\(account.email)"), directoryHint: .isDirectory)
+    }
+
     private static func file(_ account: Account, _ name: String) -> URL {
-        let folder = root.appending(
-            path: safe("\(account.site.host() ?? "site")|\(account.email)"), directoryHint: .isDirectory)
+        let folder = folder(account)
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         return folder.appending(path: safe(name) + ".json")
+    }
+
+    /// An account given a new site (a Server that moved host) takes its copies along; nothing on the same host. What
+    /// sits at the new site is a removed account's leftover, as no two accounts share a site and user.
+    static func move(_ old: Account, to new: Account) {
+        let from = folder(old)
+        let to = folder(new)
+        guard from != to else { return }
+        try? FileManager.default.removeItem(at: to)
+        try? FileManager.default.moveItem(at: from, to: to)
     }
 
     private static func safe(_ s: String) -> String {

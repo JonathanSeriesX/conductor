@@ -763,16 +763,21 @@ final class Session {
         states.sort { (order.firstIndex(of: $0.id) ?? .max) < (order.firstIndex(of: $1.id) ?? .max) }
     }
 
-    /// Adds an account after validating it, or gives one already here its new token. By id (host + lowercased email),
-    /// as `remove` and `attach` go, and in place: the account keeps its sidebar slot, name and colour, and a live one
-    /// its state, which every list row and window holds; replaced, they went on with the rejected token (CON-285).
+    /// Adds an account after validating it, or gives one already here its new token, or its new site. By id (host +
+    /// lowercased email, kept through a new site), as `remove` and `attach` go, and in place: the account keeps its
+    /// sidebar slot, name and colour, and a live one its state, which every list row and window holds; replaced, they
+    /// went on with the rejected token (CON-285).
     @discardableResult
     func add(_ account: Account) async throws -> AccountState {
+        var account = account
+        if let twin = stored.first(where: { $0.isTwin(of: account) }) { account.id = twin.id }
         let st = state(account.id) ?? AccountState(account: account)
         let previous = st.client.account
+        DiskCache.move(previous, to: account)
         st.client.account = account
         do { try await st.load() } catch {
             st.client.account = previous
+            DiskCache.move(account, to: previous)
             throw error
         }
         if let i = stored.firstIndex(where: { $0.id == account.id }) {
@@ -780,6 +785,7 @@ final class Session {
         } else {
             stored.append(account)
         }
+        if let host = previous.site.host() { forget(host: host) }
         attach(st)
         unreachable[account.id] = nil
         Keychain.save(stored)
@@ -793,11 +799,20 @@ final class Session {
     }
 
     func remove(_ account: Account) {
-        if let host = account.site.host() { Spotlight.forget(host: host) }
         states.removeAll { $0.id == account.id }
         stored.removeAll { $0.id == account.id }
         unreachable[account.id] = nil
+        if let host = account.site.host() { forget(host: host) }
         Keychain.save(stored)
+    }
+
+    /// A host no account uses (one removed or given a new site, or a site that failed to sign in): its Spotlight
+    /// results open nothing, and its offline flag, which only a reply from it clears, kept Working Offline up for
+    /// good. Cleared as a reply would, so a request still out to it is old news.
+    func forget(host: String) {
+        guard !stored.contains(where: { $0.site.host() == host }) else { return }
+        Spotlight.forget(host: host)
+        Connectivity.shared.reportSuccess(host: host)
     }
 
     /// The sidebar's drag: reorders the live accounts and saves the order with them.
