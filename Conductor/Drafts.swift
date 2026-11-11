@@ -41,8 +41,23 @@ struct CreateDraft: Codable, Equatable, Identifiable {
 final class Drafts {
     static let shared = Drafts()
     private(set) var issues: [IssueTarget: IssueDraft] = Drafts.load("issueDrafts") ?? [:]
-    /// Newest first.
-    private(set) var creates: [CreateDraft] = Drafts.load("createDrafts") ?? []
+    /// Newest first. Not observed: the File menu reads `createTitles`, which changes only when a draft comes, goes
+    /// or is renamed. Reading this, the whole menu bar rebuilt itself on every keystroke in a New Issue window.
+    @ObservationIgnored private(set) var creates: [CreateDraft] = Drafts.load("createDrafts") ?? [] {
+        didSet {
+            let titles = creates.map(Title.init)
+            if titles != createTitles { createTitles = titles }
+        }
+    }
+    /// What File > Drafts shows of each draft.
+    struct Title: Equatable, Identifiable {
+        let request: CreateRequest
+        let title: String
+        var id: UUID { request.id }
+        init(_ d: CreateDraft) { (request, title) = (d.request, String(d.summary.prefix(60))) }
+    }
+    private(set) var createTitles: [Title] = []
+    init() { createTitles = creates.map(Title.init) }
 
     subscript(target: IssueTarget) -> IssueDraft { issues[target] ?? IssueDraft() }
 

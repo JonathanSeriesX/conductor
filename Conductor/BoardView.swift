@@ -9,9 +9,14 @@ final class BoardStore {
     var sprint: Sprint?
     var quickFilters: [QuickFilter] = []
     var activeFilters: Set<Int> = []
-    var issues: [Issue] = []
+    var issues: [Issue] = [] { didSet { keys = Set(issues.map(\.key)) } }
+    /// The keys on the board, for folding subtasks into their parents: built per column and lane of every pass, a
+    /// board with swimlanes hashed all its cards some hundred times per click.
+    @ObservationIgnored private var keys: Set<String> = []
     /// Cards on their way to another column: key → the status they will have. Drawn there at once.
     private var moving: [String: String] = [:]
+    /// Per card, which of its moves is the latest: only that one places the card and lets it go.
+    @ObservationIgnored private var turns: [String: Int] = [:]
     /// True from the start, so a window with no saved board shows a spinner rather than "No boards" first.
     var isLoading = true
     var error: String?
@@ -57,7 +62,7 @@ final class BoardStore {
     /// With `fold`, subtasks whose parent is on the board disappear into the parent card's progress count.
     func issues(in column: BoardConfiguration.Column, from list: [Issue]? = nil, fold: Bool = false) -> [Issue] {
         let ids = Set(column.statuses.map(\.id))
-        let parents = fold ? Set(issues.map(\.key)) : []
+        let parents = fold ? keys : []
         return (list ?? issues).filter { i in
             ids.contains(moving[i.key] ?? i.fields.status.id)
                 && !(fold && i.fields.issuetype.isSubtask && i.fields.parent.map { parents.contains($0.key) } == true)
@@ -143,26 +148,41 @@ final class BoardStore {
         let jql = quickFilters.filter { activeFilters.contains($0.id) }.map { "(\($0.jql))" }.joined(separator: " AND ")
         var all: [Issue] = []
         truncated = false
-        while true {
-            let page: AgileIssuePage
-            do {
-                page = try await client.boardIssues(
-                    board.id, sprint: sprint?.id, jql: jql.isEmpty ? nil : jql, startAt: all.count)
-            } catch {
-                // The cards and the snapshot on disk stay as they were; a failed page must not empty them.
-                if gen == generation, !error.isOffline, !error.isCancelled { self.error = error.localizedDescription }
-                return
-            }
-            guard gen == generation else { break }
-            all += page.issues
-            // Cards land page by page only while the board is empty; a refresh behind cards already on screen
+        let (id, sprintID, filter) = (board.id, sprint?.id, jql.isEmpty ? nil : jql)
+        do {
+            let first = try await client.boardIssues(id, sprint: sprintID, jql: filter, startAt: 0)
+            guard gen == generation else { return }
+            all = first.issues
+            // The first page lands at once only while the board is empty; a refresh behind cards already on screen
             // would otherwise shrink the board to its first page and grow it back.
             if issues.isEmpty { issues = all }
-            if page.issues.isEmpty || all.count >= page.total { break }
-            if all.count >= 2000 {
-                truncated = true
-                break
-            }  // ponytail: 20 pages; past that a board wants server-side filtering
+            // The first page says how many there are, so the rest go out four at a time rather than one after
+            // another: a sprint or quick filter picked on a 1,000-card board waited ten round trips for its cards.
+            // ponytail: 2,000 cards at most; past that a board wants server-side filtering
+            let size = all.count
+            let starts = size == 0 ? [] : Array(stride(from: size, to: min(first.total, 2000), by: size))
+            for chunk in stride(from: 0, to: starts.count, by: 4) {
+                let pages = try await withThrowingTaskGroup(of: (Int, [Issue]).self) { group in
+                    for start in starts[chunk..<min(chunk + 4, starts.count)] {
+                        group.addTask {
+                            (
+                                start,
+                                try await client.boardIssues(id, sprint: sprintID, jql: filter, startAt: start).issues
+                            )
+                        }
+                    }
+                    var got: [(Int, [Issue])] = []
+                    for try await page in group { got.append(page) }
+                    return got.sorted { $0.0 < $1.0 }
+                }
+                guard gen == generation else { return }
+                all += pages.flatMap(\.1)
+            }
+            truncated = all.count >= 2000 && all.count < first.total
+        } catch {
+            // The cards and the snapshot on disk stay as they were; a failed page must not empty them.
+            if gen == generation, !error.isOffline, !error.isCancelled { self.error = error.localizedDescription }
+            return
         }
         if gen == generation {
             issues = all
@@ -202,7 +222,10 @@ final class BoardStore {
         // The card sits in its new column from the drop on, while Jira works; a failure puts it back. Only it is
         // fetched afterwards, so the rest of the board stays exactly where it was instead of reloading page by page.
         moving[key] = column.statuses.first?.id
-        defer { moving[key] = nil }
+        // A second drop of the card while this move is out owns its place from then on.
+        let turn = (turns[key] ?? 0) + 1
+        turns[key] = turn
+        defer { if turns[key] == turn { (moving[key], turns[key]) = (nil, nil) } }
         let t: Transition
         do {
             let transitions = try await client.transitions(key)
@@ -213,7 +236,7 @@ final class BoardStore {
                 return nil
             }
             t = found
-            moving[key] = t.to.id
+            if turns[key] == turn { moving[key] = t.to.id }
             try await client.transition(key, to: t.id)
         } catch {
             self.error = error.localizedDescription

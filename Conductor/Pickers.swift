@@ -406,7 +406,8 @@ struct LinkIssueView: View {
         .onAppear { if relation.isEmpty { relation = relations.first?.id ?? "" } }
         .focusSoon($linkFocused)
         .task(id: query) {
-            try? await Task.sleep(for: .milliseconds(250))
+            // Typing is debounced; the first rows, for no query, are asked for as the popover opens.
+            if !query.isEmpty { try? await Task.sleep(for: .milliseconds(250)) }
             guard !Task.isCancelled, let c = jira?.client else { return }
             results = ((try? await c.pickIssues(query: query, excluding: key)) ?? []).filter { $0.key != key }
         }

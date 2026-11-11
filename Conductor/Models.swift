@@ -293,9 +293,9 @@ struct Issue: Codable, Hashable, Sendable, Identifiable {
         var status: Status
         var assignee: JiraUser?
         let reporter: JiraUser?
-        let priority: Priority?
+        var priority: Priority?
         let issuetype: IssueType
-        let labels: [String]?
+        var labels: [String]?
         let created: Date?
         let updated: Date?
         let lastViewed: Date?
@@ -308,9 +308,9 @@ struct Issue: Codable, Hashable, Sendable, Identifiable {
         var worklog: WorklogPage?
         let timetracking: TimeTracking?
         var watches: Watches?
-        let duedate: String?  // "2026-10-31", no time or zone
-        let components: [NamedRef]?
-        let fixVersions: [NamedRef]?
+        var duedate: String?  // "2026-10-31", no time or zone
+        var components: [NamedRef]?
+        var fixVersions: [NamedRef]?
     }
 
     let id: String

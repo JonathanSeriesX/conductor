@@ -276,7 +276,7 @@ final class IssueDetailStore {
             state.warm("assignable-\(project)") { try await client.assignableUsers(project: project, query: "") }
         }
         if full, allLabels.isEmpty, canEdit("labels") {
-            let (now, fresh) = state.memo("labels", once: true) { try await client.labels() }
+            let (now, fresh) = await state.memoOnce("labels") { try await client.labels() }
             if let now, holds(state, key) { update(\.allLabels, now) }
             if let list = await fresh.value, holds(state, key) { update(\.allLabels, list) }
         }
@@ -873,7 +873,10 @@ struct IssueDetailView: View {
                 .popover(isPresented: $showLabels, arrowEdge: labelsSide.low ? .top : .bottom) {
                     LabelsEditor(labels: labels, suggestions: store.allLabels) { new in
                         showLabels = false
-                        run { try await $0.editIssue(key, fields: ["labels": .array(new.map(JSONValue.string))]) }
+                        // Sorted, as Jira sends them back: the chips stay put when its copy lands.
+                        optimistic(\.labels, new.sorted()) {
+                            try await $0.editIssue(key, fields: ["labels": .array(new.map(JSONValue.string))])
+                        }
                     }
                 }
             }
@@ -931,14 +934,17 @@ struct IssueDetailView: View {
         }
     }
 
+    /// Shown at once, as a status is: Jira's answer took three round trips to show it.
+    private func setPriority(_ p: Priority) {
+        optimistic(\.priority, p) { try await $0.editIssue(key, fields: ["priority": .object(["id": .string(p.id)])]) }
+    }
+
     @ViewBuilder private func priorityField(_ issue: Issue) -> some View {
         field("Priority", hint: hint(.changePriority) { String(localized: "\($0) to change") }) {
             if store.canEdit("priority"), !store.priorities.isEmpty {
                 Menu {
                     ForEach(store.priorities, id: \.id) { p in
-                        Button(p.name) {
-                            run { try await $0.editIssue(key, fields: ["priority": .object(["id": .string(p.id)])]) }
-                        }
+                        Button(p.name) { setPriority(p) }
                     }
                 } label: {
                     priorityLabel(issue.fields.priority)
@@ -950,7 +956,7 @@ struct IssueDetailView: View {
                     PickList(items: store.priorities.map { ($0.id, $0.name, $0.id == issue.fields.priority?.id) }) {
                         id in
                         showPriority = false
-                        run { try await $0.editIssue(key, fields: ["priority": .object(["id": .string(id)])]) }
+                        if let p = store.priorities.first(where: { $0.id == id }) { setPriority(p) }
                     }
                 }
             } else {
@@ -986,7 +992,7 @@ struct IssueDetailView: View {
             .popover(isPresented: $showAssign, arrowEdge: embedded ? .bottom : .leading) {
                 PeoplePicker(scope: .issue(key), current: issue.fields.assignee) { user in
                     showAssign = false
-                    run { try await $0.assign(key, to: user?.accountId) }
+                    optimistic(\.assignee, user) { try await $0.assign(key, to: user?.accountId) }
                 }
             }
         }
@@ -1135,9 +1141,9 @@ struct IssueDetailView: View {
                 .popover(isPresented: $showDueDate, arrowEdge: .leading) {
                     DueDatePicker(date: due) { new in
                         showDueDate = false
-                        run {
-                            try await $0.editIssue(
-                                key, fields: ["duedate": new.map { .string(DueDate.string($0)) } ?? .null])
+                        let day = new.map { DueDate.string($0) }
+                        optimistic(\.duedate, day) {
+                            try await $0.editIssue(key, fields: ["duedate": day.map(JSONValue.string) ?? .null])
                         }
                     }
                 }
@@ -1223,7 +1229,10 @@ struct IssueDetailView: View {
                                 get: { selected.contains(o.id) },
                                 set: { on in
                                     let ids = on ? selected.union([o.id]) : selected.subtracting([o.id])
-                                    run {
+                                    optimistic(
+                                        id == "components" ? \.components : \.fixVersions,
+                                        on ? current + [o] : current.filter { $0.id != o.id }
+                                    ) {
                                         try await $0.editIssue(
                                             key, fields: [id: .array(ids.sorted().map { .object(["id": .string($0)]) })]
                                         )
@@ -2147,7 +2156,8 @@ struct IssueDetailView: View {
     private func uploadPasted(_ data: Data, _ name: String) async throws -> URL {
         guard let jira else { throw CancellationError() }
         let uploaded = try await jira.client.uploadAttachment(key, data: data, filename: name)
-        await store.load(jira, key: key, full: false)
+        // The page may show another issue by now (↓ during a large upload): loading this one pulled it back.
+        if store.holds(jira, key) { await store.load(jira, key: key, full: false) }
         guard let url = uploaded.first?.content else { throw CancellationError() }
         return url
     }

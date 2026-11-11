@@ -402,8 +402,13 @@ struct JiraClient: Sendable {
 
     /// The full record, with every comment and every work log.
     func issue(_ key: String) async throws -> Issue {
+        // Cloud takes its comments from the comment endpoint whenever there are any (see `completingComments`), so
+        // the first page goes out beside the issue instead of after it: one round trip less on every open, refresh
+        // and write. A page that fails is asked for again there, with its error.
+        async let first: CommentPage? =
+            server ? nil : try? await get("issue/\(key)/comment", query: ["startAt": "0", "maxResults": "100"])
         let i: Issue = try await get("issue/\(key)", query: ["fields": detailFields])
-        return try await completing(await withEpics([i])[0])
+        return try await completing(await withEpics([i])[0], firstComments: await first)
     }
 
     /// What Server leaves out that Cloud sends: each epic's summary, each mentioned person's name.
@@ -526,8 +531,8 @@ struct JiraClient: Sendable {
     }
 
     /// `issue` with all its comments and work logs, each fetched only when the copy lacks some, both at once.
-    func completing(_ issue: Issue) async throws -> Issue {
-        async let comments = completingComments(issue)
+    func completing(_ issue: Issue, firstComments: CommentPage? = nil) async throws -> Issue {
+        async let comments = completingComments(issue, first: firstComments)
         async let worklogs = allWorklogs(issue)
         var copy = try await comments
         if let w = try await worklogs { copy.fields.worklog = w }
@@ -593,13 +598,15 @@ struct JiraClient: Sendable {
     /// `issue` with all its comments, oldest first. Jira embeds the first 20 in a search result and the newest 100
     /// in an issue; the comment endpoint pages 100 at a time, so every page is asked for at once. On Cloud always:
     /// only the endpoint's copy of a reply names its parent.
-    private func completingComments(_ issue: Issue) async throws -> Issue {
+    /// `first` is the endpoint's first page when the caller already has it.
+    private func completingComments(_ issue: Issue, first: CommentPage? = nil) async throws -> Issue {
         guard let page = issue.fields.comment, page.comments.count < page.total || (!server && page.total > 0) else {
             return issue
         }
         let key = issue.key
         let all = try await withThrowingTaskGroup(of: [Comment].self) { group in
-            for start in stride(from: 0, to: page.total, by: 100) {
+            if let first { group.addTask { first.comments } }
+            for start in stride(from: first == nil ? 0 : 100, to: max(page.total, first?.total ?? 0), by: 100) {
                 group.addTask {
                     let p: CommentPage = try await get(
                         "issue/\(key)/comment", query: ["startAt": "\(start)", "maxResults": "100"])

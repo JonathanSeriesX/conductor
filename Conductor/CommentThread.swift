@@ -145,6 +145,10 @@ private struct HostedEditor: View {
                 if let h = heights[id] { heights[id] = (-1, h.height) }
             }
             changed = true
+        } else {
+            // Equal values in another buffer (Jira's copy after a write) were compared whole, every comment's
+            // document, on each pass of the page; taken, the next compare ends at the buffer's identity.
+            self.attachments = attachments
         }
         if comments != source || newestFirst != self.newestFirst {
             source = comments
@@ -153,6 +157,8 @@ private struct HostedEditor: View {
             self.comments = threads.map(\.comment)
             roots = threads.map(\.root)
             changed = true
+        } else {
+            source = comments
         }
         if editingID != self.editingID || replyingTo != self.replyingTo {
             self.editingID = editingID
@@ -1033,7 +1039,10 @@ struct DescriptionText: NSViewRepresentable {
     required init?(coder: NSCoder) { fatalError() }
 
     func show(_ node: ADFNode, attachments: [Attachment]) {
-        guard shown?.node != node || shown?.attachments != attachments else { return }
+        guard shown?.node != node || shown?.attachments != attachments else {
+            shown = (node, attachments)  // the same values: the next compare ends at their storage's identity
+            return
+        }
         if shown?.node != node { expanded = [] }
         shown = (node, attachments)
         render()

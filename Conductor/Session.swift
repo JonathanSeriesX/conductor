@@ -442,10 +442,19 @@ final class AccountState: Identifiable {
     @ObservationIgnored private var fetches: [String: Any] = [:]
 
     /// `memo` once a session, in the background, for a picker that should open full the first time.
+    /// The disk's copy is read off the main thread: the first issue page of a project decoded its people (up to
+    /// 1,000) on it.
     func warm<T: Codable & Sendable>(_ name: String, fetch: @escaping @Sendable () async throws -> T) {
-        guard memos[name] == nil else { return }
-        _ = memo(name, fetch: fetch)
+        guard memos[name] == nil, warmingMemos.insert(name).inserted else { return }
+        Task {
+            if let disk = await DiskCache.loadAsync(T.self, account: account, name: name), memos[name] == nil {
+                memos[name] = disk
+            }
+            warmingMemos.remove(name)
+            _ = memo(name, fetch: fetch)
+        }
     }
+    @ObservationIgnored private var warmingMemos: Set<String> = []
 
     /// `memo(once:)` for a window that must show before anything is decoded: a value not in memory yet is read from
     /// disk off the main thread first, rather than inside `memo`. A busy site's create screens and labels run to
@@ -920,8 +929,11 @@ final class Session {
 
     /// The sidebar entry these filters came from, for the window title: a saved filter by its own name, not by its
     /// project's.
-    func title(for f: ListFilters) -> String {
-        if let p = preset(matching: f) { return p.name }
+    func title(for f: ListFilters) -> String { title(for: f, preset: preset(matching: f)) }
+
+    /// With the entry already found: finding it builds every entry of every account.
+    func title(for f: ListFilters, preset: Preset?) -> String {
+        if let p = preset { return p.name }
         if let key = f.project, let st = f.account.flatMap(state) {
             return st.projects.first { $0.key == key }?.name ?? key
         }

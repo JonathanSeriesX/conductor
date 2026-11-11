@@ -151,13 +151,13 @@ struct AppCommands: Commands {
             .disabled(!session.isSignedIn)
             item("Clone Issue…", .clone, "n", [.command, .option])
             // New Issue windows closed with something in them, as Mail's Drafts; one picked reopens its window.
-            let drafts = Drafts.shared.creates
+            let drafts = Drafts.shared.createTitles
             if drafts.isEmpty {
                 Button("Drafts") {}.disabled(true)
             } else {
                 Menu("Drafts") {
                     ForEach(drafts) { d in
-                        Button(d.summary.isEmpty ? String(localized: "Untitled") : String(d.summary.prefix(60))) {
+                        Button(d.title.isEmpty ? String(localized: "Untitled") : d.title) {
                             openWindow(id: "create", value: d.request)
                         }
                     }

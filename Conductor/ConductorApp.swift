@@ -1,5 +1,6 @@
 import CoreSpotlight
 import SwiftUI
+import Synchronization
 
 struct BoardTarget: Hashable, Codable {
     let accountID: UUID
@@ -36,6 +37,11 @@ struct ConductorApp: App {
         // The account caches decode on other threads while SwiftUI sets itself up.
         Session.prepare()
         LaunchProbe.once("prepare.done")
+        // The issue page's body is one type some sixty modifiers deep, and the runtime builds that type and its View
+        // conformances the first time a page is made: on the main thread, between the window and its first issue.
+        // Built here on another thread (some 40 ms of it), the page finds them ready; the list's and the sidebar's
+        // gained nothing.
+        Task.detached(priority: .userInitiated) { warmViewType(IssueDetailView.self) }
         MenuClickThrough.install()
         PopoverFocusReturn.install()
         Shortcuts.guardTyping()
@@ -442,6 +448,13 @@ struct RootView: View {
         func start() {
             link = NSScreen.screens[0].displayLink(target: self, selector: #selector(tick))
             link?.add(to: .main, forMode: .common)
+            // Each key and click with its time, so a STALL line can be laid to the action that caused it.
+            NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .leftMouseDown, .leftMouseUp]) { e in
+                let what = e.type == .keyDown ? "key \(e.keyCode)" : e.type == .leftMouseDown ? "down" : "up"
+                FileHandle.standardError.write(
+                    String(format: "INPUT %@ at %.3f\n", what, CACurrentMediaTime()).data(using: .utf8)!)
+                return e
+            }
         }
         @objc private func tick(_ l: CADisplayLink) {
             let now = CACurrentMediaTime()
@@ -450,6 +463,11 @@ struct RootView: View {
                 n += 1
                 if dt > 0.0125 { late += 1 }
                 worst = max(worst, dt)
+                // A gap a person sees: when the main thread came back, and how long it was away.
+                if dt > 0.05 {
+                    FileHandle.standardError.write(
+                        String(format: "STALL %dms at %.3f\n", Int(dt * 1000), now).data(using: .utf8)!)
+                }
             }
             last = now
             if now - second > 1 {
@@ -471,3 +489,10 @@ struct RootView: View {
 #else
     extension ConductorApp { static let probe: Void = () }
 #endif
+
+/// Has the runtime build `V`'s body type and that type's own View conformance, as SwiftUI's first use of `V` would.
+@inline(never) nonisolated func warmViewType<V: View>(_: V.Type) {
+    warmedTypes.withLock { $0.append(bodyOf(V.Body.self)) }
+}
+@inline(never) private nonisolated func bodyOf<B: View>(_: B.Type) -> Any.Type { B.Body.self }
+private nonisolated let warmedTypes = Mutex<[Any.Type]>([])

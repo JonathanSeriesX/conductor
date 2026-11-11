@@ -252,6 +252,7 @@ final class IssueListStore {
 
     /// Changes the rows' copies of `targets` at once, ahead of Jira's answer.
     func patch(_ targets: [IssueTarget], _ change: (inout Issue) -> Void) {
+        let targets = Set(targets)  // a write to a large selection looked each row up in the array
         edit({ targets.contains($0.target) }, change)
     }
 
@@ -404,16 +405,20 @@ final class IssueListStore {
     /// One count request per account, in parallel with the page fetch; a failed site leaves the last count standing.
     private func countIssues(_ queries: [(AccountState, String)], gen: Int, cache: Bool) async {
         let tasks = queries.map { st, jql in Task { try? await st.client.approximateCount(jql: jql) } }
-        var sum = 0
+        var (sum, failed) = (0, false)
         for ((st, jql), t) in zip(queries, tasks) {
-            guard let c = await t.value else { return }
+            // The total stands, but the sites after the failed one still keep their counts.
+            guard let c = await t.value else {
+                failed = true
+                continue
+            }
             if cache {
                 st.listCounts[Self.countName(jql)] = c
                 DiskCache.saveAsync(st.listCounts, account: st.account, name: "listCounts")
             }
             sum += c
         }
-        if gen == generation, total != sum { total = sum }
+        if !failed, gen == generation, total != sum { total = sum }
     }
 
     /// Last known first pages: from memory when this session has them (no suspension, so a list opened from the
@@ -823,6 +828,8 @@ struct IssueListView: View {
     @State private var suggestions: [(display: String, completion: String)] = []
     @State private var savingFilter = false
     @State private var filterName = ""
+    /// The search text the list last loaded for: only a change to it is typing, and waits out the debounce.
+    @State private var debouncedText = ""
     @State private var chipMenus = ChipMenuController()
     /// The project's assignable people, by name: the Assignee chip's people where the site hides its own.
     @State private var assignable: [JiraUser] = []
@@ -882,7 +889,7 @@ struct IssueListView: View {
         let preset = session.preset(matching: filters)
         let cleared = self.cleared(preset)
         let canSave = canSaveFilter(preset)
-        let title = session.title(for: filters)
+        let title = session.title(for: filters, preset: preset)
         IssueRows(
             store: store, selection: $selection, expanded: $expanded,
             previewFocused: $previewFocused, subtitle: $shownSubtitle, chips: chipsHeight,
@@ -1038,9 +1045,13 @@ struct IssueListView: View {
             )
         }
         .task(id: loadKey) {
-            // Debounce typing; JQL is evaluated server-side.
-            if !filters.text.isEmpty { try? await Task.sleep(for: .milliseconds(350)) }
+            // Debounce typing; JQL is evaluated server-side. Only typing: a chip, ⌘R, a write or the periodic
+            // reload over a list with search text waited the 350 ms too.
+            if !filters.text.isEmpty, filters.text != debouncedText {
+                try? await Task.sleep(for: .milliseconds(350))
+            }
             guard !Task.isCancelled else { return }
+            debouncedText = filters.text
             await store.load(filters, session: session)
         }
         .task(id: filters.text) { await updateSuggestions() }
@@ -1559,12 +1570,19 @@ struct IssueListView: View {
     /// The five newest issues in memory whose key starts with `needle` or whose summary holds it, a key once. Kept
     /// as it goes, with no copy of every issue and no sort of every match: it runs on each keystroke.
     static func newestKnown(matching needle: String, in states: [AccountState]) -> [Issue] {
+        newestKnown(matching: needle, in: states.map(\.peek))
+    }
+
+    /// Over each account's issues by key, off the main thread: they are every issue any list, search or warm pass
+    /// has brought, and a scan of tens of thousands of summaries held each keystroke.
+    nonisolated static func newestKnown(matching needle: String, in peeks: [[String: Issue]]) -> [Issue] {
         let key = needle.uppercased()
         var (seen, top) = (Set<String>(), [Issue]())
-        for st in states {
-            for i in st.peek.values
-            where seen.insert(i.key).inserted
-                && (i.key.hasPrefix(key) || i.fields.summary.localizedCaseInsensitiveContains(needle))
+        for peek in peeks {
+            // Matched before it is counted as seen: one site's QA-14 that did not match hid the other site's that did.
+            for i in peek.values
+            where (i.key.hasPrefix(key) || i.fields.summary.localizedCaseInsensitiveContains(needle))
+                && seen.insert(i.key).inserted
             {
                 let updated = i.fields.updated ?? .distantPast
                 let at = top.firstIndex { ($0.fields.updated ?? .distantPast) < updated } ?? top.endIndex
@@ -1585,7 +1603,11 @@ struct IssueListView: View {
         // Issues the app has seen whose key or summary matches, newest first: picking one puts its key in the
         // field, and ↩ opens it. Raw JQL gets the field and value help below instead.
         if !filters.isRawJQL {
-            let hits = Self.newestKnown(matching: q.trimmingCharacters(in: .whitespaces), in: session.states)
+            let (needle, peeks) = (q.trimmingCharacters(in: .whitespaces), session.states.map(\.peek))
+            let hits = await Task.detached(priority: .userInitiated) {
+                Self.newestKnown(matching: needle, in: peeks)
+            }.value
+            guard !Task.isCancelled else { return }
             if !hits.isEmpty {
                 suggestions = hits.map { (display: "\($0.key)  \($0.fields.summary)", completion: $0.key) }
                 return
