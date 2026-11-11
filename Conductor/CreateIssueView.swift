@@ -120,10 +120,12 @@ final class CreateIssueModel {
     /// in a task), as Jira takes no other there; every type in a window with no parent.
     var offeredTypes: [IssueType] { Self.types(types, under: parentLevel) }
 
-    /// Server's types may lack a level and carry only the subtask flag. Under a parent nothing fits (a subtask's),
-    /// every type is offered, so the pop-up is never empty and Jira's own answer says why.
+    /// Server's types may lack a level and carry only the subtask flag. Nothing goes under a subtask, so a window
+    /// restored from a draft opened under one offers nothing; elsewhere, when nothing fits, every type is offered,
+    /// so the pop-up is never empty and Jira's own answer says why.
     static func types(_ all: [IssueType], under parentLevel: Int?) -> [IssueType] {
         guard let parentLevel else { return all }
+        if parentLevel < 0 { return [] }
         let fit = all.filter { ($0.hierarchyLevel ?? ($0.isSubtask ? -1 : 0)) == parentLevel - 1 }
         return fit.isEmpty ? all : fit
     }
@@ -155,7 +157,6 @@ final class CreateIssueModel {
             type =
                 candidates.first { $0.name.caseInsensitiveCompare("Task") == .orderedSame }
                 ?? candidates.first { $0.name.caseInsensitiveCompare("Epic") != .orderedSame } ?? candidates.first
-                ?? types.first
         }
         // A changed type loads its fields through the window's onChange; an unchanged one is asked for here.
         if type?.id == before { await loadFields(st) }

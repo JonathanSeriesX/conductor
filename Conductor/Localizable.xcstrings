@@ -4439,6 +4439,100 @@
         }
       }
     },
+    "A subtask can't have subtasks in Jira" : {
+      "localizations" : {
+        "ar" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "لا يمكن أن تكون للمهمة الفرعية مهام فرعية في Jira"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Eine Unteraufgabe kann in Jira keine Unteraufgaben haben"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "En Jira, una subtarea no puede tener subtareas"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dans Jira, une sous-tâche ne peut pas avoir de sous-tâches"
+          }
+        },
+        "hi" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Jira में किसी सबटास्क के सबटास्क नहीं हो सकते"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "In Jira un sottotask non può avere sottotask"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Jira ではサブタスクにサブタスクを作成できません"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Jira에서는 하위 작업에 하위 작업을 둘 수 없습니다"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "W Jira podzadanie nie może mieć podzadań"
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No Jira, uma subtarefa não pode ter subtarefas"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "В Jira у подзадачи не может быть подзадач"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Jira'da bir alt görevin alt görevi olamaz"
+          }
+        },
+        "uk" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "У Jira підзадача не може мати підзадач"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在 Jira 中，子任务不能再有子任务"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在 Jira 中，子任務不能再有子任務"
+          }
+        }
+      }
+    },
     "A summary can be 255 characters at most; this one is %lld." : {
       "localizations" : {
         "ar" : {

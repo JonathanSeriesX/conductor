@@ -19,6 +19,8 @@ struct IssueActions {
     let canEditDescription: Bool
     /// ⇧⌘N then creates a child issue rather than a subtask.
     let isEpic: Bool
+    /// Jira has no level under a subtask, so ⇧⌘N is off.
+    let isSubtask: Bool
     /// A summary, description or comment editor is open.
     let isEditing: Bool
     /// Set while the page can go back to the issue it came from.
@@ -39,7 +41,8 @@ extension IssueActions: Equatable {
     static func == (a: Self, b: Self) -> Bool {
         a.key == b.key && a.watching == b.watching && a.assignedToMe == b.assignedToMe
             && a.transitions == b.transitions && a.canEditSummary == b.canEditSummary
-            && a.canEditDescription == b.canEditDescription && a.isEpic == b.isEpic && a.isEditing == b.isEditing
+            && a.canEditDescription == b.canEditDescription && a.isEpic == b.isEpic
+            && a.isSubtask == b.isSubtask && a.isEditing == b.isEditing
             && (a.back == nil) == (b.back == nil) && a.embedded == b.embedded
     }
 }
@@ -231,6 +234,7 @@ struct AppCommands: Commands {
             item("Link Issue…", .link, "l", [.command, .shift])
             item("Log Work…", .logWork, "l", [.command, .option])
             item(issue?.isEpic == true ? "Create Child Issue…" : "Create Subtask…", .subtask, "n", [.command, .shift])
+                .disabled(issue?.isSubtask == true)
             Divider()
             item("Refresh Issue", .refresh, "r", [.command, .shift])
             item("Activity History", .history, "h", [.command, .option])

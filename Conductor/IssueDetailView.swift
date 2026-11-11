@@ -1674,8 +1674,13 @@ struct IssueDetailView: View {
                     Label("Create Subtask…", systemImage: "plus.square.on.square")
                 }
             }
-            .help(store.issue?.isEpic == true ? "Create child issue (⇧⌘N)" : "Create subtask (⇧⌘N)")
-            .disabled(store.issue == nil)
+            .help(
+                store.issue?.isEpic == true
+                    ? "Create child issue (⇧⌘N)"
+                    : store.issue?.fields.issuetype.isSubtask == true
+                        ? "A subtask can't have subtasks in Jira" : "Create subtask (⇧⌘N)"
+            )
+            .disabled(store.issue == nil || store.issue?.fields.issuetype.isSubtask == true)
         }
         ToolbarItem {
             Button {
@@ -1746,6 +1751,7 @@ struct IssueDetailView: View {
             canEditSummary: live && store.canEdit("summary"),
             canEditDescription: live && store.canEdit("description"),
             isEpic: live && issue.isEpic,
+            isSubtask: issue.fields.issuetype.isSubtask,
             isEditing: summaryDraft != nil || descriptionDraft != nil || editingCommentID != nil || replyingTo != nil,
             back: back,
             embedded: embedded,

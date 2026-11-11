@@ -2008,8 +2008,8 @@ final class SortWordsAndSignInTests: XCTestCase {
         XCTAssertEqual(names(cloud, nil), ["Epic", "Task", "Story", "Subtask"])
         XCTAssertEqual(names(cloud, 1), ["Task", "Story"])
         XCTAssertEqual(names(cloud, 0), ["Subtask"])
-        // Nothing goes under a subtask: every type stays, so the pop-up is never empty.
-        XCTAssertEqual(names(cloud, -1), ["Epic", "Task", "Story", "Subtask"])
+        // Nothing goes under a subtask.
+        XCTAssertEqual(names(cloud, -1), [])
         let server = [type("Task", nil), type("Sub-task", nil, subtask: true)]
         XCTAssertEqual(names(server, 0), ["Sub-task"])
     }
