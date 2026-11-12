@@ -133,6 +133,12 @@ final class IssueListStore {
             if all, endPending { endPending = false }
         }
     }
+    /// The lists this store was on last, as they were left, the newest last. A list come back to is whole, on its
+    /// place, in the pass that opens it: its first page from memory stood in for it until the disk gave the rest, a
+    /// few frames later for a place past that page (see `ScrollMemory`).
+    @ObservationIgnored private var left: [(key: ListKey, pages: [UUID: Page])] = []
+    /// The list `pages` are of: ahead of `shownKey` while a list opens on a place it reads the disk for.
+    @ObservationIgnored private var pagesOf: ListKey?
     private var query: (jql: String, parts: [String], cache: Bool)?
     private(set) var hasMore = false
     /// Every row of the list is here (up to `cap` an account): End can go to the last one.
@@ -293,6 +299,7 @@ final class IssueListStore {
             rows = []
             stale = []
             pages = [:]
+            pagesOf = nil
             query = nil
             total = nil
             shownKey = nil
@@ -323,6 +330,12 @@ final class IssueListStore {
         var sorted = false
         if opening {
             endPending = false
+            if let k = pagesOf, !k.typed, !pages.isEmpty {
+                left.removeAll { $0.key == k }
+                left.append((k, pages))
+                if left.count > 4 { left.removeFirst() }
+            }
+            var kept: [UUID: Page]?
             var byAccount = pages.mapValues(\.rows)
             let since = pages.mapValues(\.since)
             if resorted == f, !rows.isEmpty {
@@ -342,19 +355,30 @@ final class IssueListStore {
                     guard gen == generation else { return }
                     if !cached.isEmpty { byAccount = cached }
                 }
+            } else if let back = left.last(where: { $0.key == queryKey })?.pages {
+                kept = back
             } else {
                 byAccount = cacheable ? await Self.cachedRows(queries) : [:]
                 guard gen == generation else { return }
             }
             pages = Dictionary(
-                uniqueKeysWithValues: states.map {
-                    (
-                        $0.id,
+                uniqueKeysWithValues: states.map { st in
+                    // As it was left, a whole list still whole and current from when it was: the load brings it up
+                    // to date as it does the list on screen. A download left half-way starts again.
+                    if let k = kept?[st.id] {
+                        return (
+                            st.id,
+                            Page(state: st, rows: k.rows, more: k.more, full: k.full, since: k.full ? k.since : nil)
+                        )
+                    }
+                    return (
+                        st.id,
                         Page(
-                            state: $0, rows: byAccount[$0.id] ?? [], full: sorted,
-                            since: sorted ? since[$0.id] ?? nil : nil)
+                            state: st, rows: byAccount[st.id] ?? [], full: sorted,
+                            since: sorted ? since[st.id] ?? nil : nil)
                     )
                 })
+            pagesOf = queryKey
             // The last list's rows behind the screen are not this one's: none goes on screen under its name meanwhile.
             unshown = false
             // Its place past the rows of its first pages (see `ScrollMemory`): the whole list first, so that the list's
@@ -965,11 +989,9 @@ struct IssueListView: View {
         }
         // A pasted Jira link becomes its key at once, on the account of the link's site when one is signed in.
         .onChange(of: filters.text) { _, text in
-            guard let url = URL(string: text.trimmingCharacters(in: .whitespacesAndNewlines)),
-                url.scheme?.hasPrefix("http") == true, let key = Session.issueKey(in: url)
-            else { return }
-            if let st = session.state(host: url.host() ?? ""), filters.account != st.id { setAccounts([st.id]) }
-            filters.text = key
+            guard let link = Session.issueLink(text) else { return }
+            if let st = session.state(host: link.host), filters.account != st.id { setAccounts([st.id]) }
+            filters.text = link.key
             // A turn later: the main window drops the selection when the account changes, and this lands after it.
             DispatchQueue.main.async { openKey() }
         }
@@ -1116,7 +1138,9 @@ struct IssueListView: View {
         .onChange(of: selection) { _, new in
             cursor = new.count == 1 ? new.first : nil
             store.keep(new)
-            guard !new.isEmpty else { return }
+            let returned = Returning.selection
+            Returning.selection = false
+            guard !new.isEmpty, !returned else { return }
             searchFocused = false  // or SwiftUI hands the keyboard straight back to the search field
             NSApp.keyWindow?.focusList()
         }
@@ -1733,7 +1757,9 @@ private struct IssueRows: View {
             },
             complete: store.complete, toCome: store.toCome, pinEnd: store.endPending,
             waitForEnd: { wait in if store.endPending != wait { store.endPending = wait && !store.complete } },
-            list: store.shownKey
+            list: store.shownKey,
+            // As the Refresh button beside the list; a load on its way is as fresh.
+            refresh: { if !store.isLoading { session.listTick += 1 } }
         )
         // Under the toolbar, the chips and the sidebar, as the List lay: its insets keep the rows clear of them.
         .ignoresSafeArea()

@@ -894,10 +894,118 @@ enum ChildSorts {
 struct PageKeys: NSViewRepresentable {
     let standalone: Bool
     var reveal: PageReveal?
+    /// The issue on the page, for its place (see `Returning`).
+    var shown: IssueTarget?
+    /// The page pulled down past its top (see `PullToRefresh`).
+    var refresh: () -> Void = {}
     func makeNSView(context: Context) -> PageKeyView { PageKeyView() }
     func updateNSView(_ v: PageKeyView, context: Context) {
         v.standalone = standalone
+        v.shown = shown
+        v.refresh = refresh
         reveal?.page = v
+    }
+}
+
+/// A list the main window comes back to (see `RootView.left`) is as it was left, as a tab come back to: its issue in
+/// the preview, the list on its place (`ScrollMemory`) and the issue's page on its own. Set as the window goes back,
+/// until the list's rows and the issue's page have opened.
+@MainActor enum Returning {
+    /// The next list to open is one come back to with its selection: the selected row stays where the place has it,
+    /// in the window or out of it (see `IssueTable.Coordinator.open`).
+    static var list = false
+    /// The selection about to change is the list's own, put back, not a row picked: the keyboard stays where it is
+    /// (the sidebar, walked with the arrows), where a pick hands it to the list.
+    static var selection = false
+    /// The issue whose page opens where it was left, not at its top.
+    static var page: IssueTarget?
+    /// How far down each issue's page stood in the preview when it was last left.
+    static var places: [IssueTarget: CGFloat] = [:]
+
+    /// Where the page now showing `target` opens: its place when the window came back to it, else the top (nil).
+    static func take(_ target: IssueTarget?) -> CGFloat? {
+        defer { page = nil }
+        return target.flatMap { $0 == page ? places[$0] : nil }
+    }
+}
+
+/// Pull to refresh, as on iOS: a scroll view at its top pulled down past it by `threshold` runs `action`, once a
+/// pull. A spinner fades in over the gap as it opens and turns once the pull has fired. A scroll thrown at the top
+/// from further down bounces as far and does not count: the pull starts at the top. (Not by the event's phases: a
+/// table scrolls outside the app's event loop, where `NSApp.currentEvent` is whatever came before.)
+@MainActor final class PullToRefresh {
+    nonisolated static let threshold: CGFloat = 64
+    private weak var sv: NSScrollView?
+    private let action: @MainActor () -> Void
+    private let spinner = NSProgressIndicator()
+    private var fired = false
+    /// The scroll under way began with the view at its top.
+    private var fromTop = false
+    nonisolated(unsafe) private var observers: [Any] = []
+
+    init(_ sv: NSScrollView, action: @escaping @MainActor () -> Void) {
+        (self.sv, self.action) = (sv, action)
+        spinner.style = .spinning
+        spinner.controlSize = .small
+        spinner.isDisplayedWhenStopped = true
+        spinner.isHidden = true
+        sv.addSubview(spinner)
+        sv.contentView.postsBoundsChangedNotifications = true
+        let watch = { (name: Notification.Name, object: Any, then: @escaping @MainActor (PullToRefresh) -> Void) in
+            NotificationCenter.default.addObserver(forName: name, object: object, queue: nil) { [weak self] _ in
+                MainActor.assumeIsolated { if let self { then(self) } }
+            }
+        }
+        observers = [
+            watch(NSView.boundsDidChangeNotification, sv.contentView) { $0.scrolled() },
+            watch(NSScrollView.willStartLiveScrollNotification, sv) { $0.fromTop = $0.pull >= -1 },
+            watch(NSScrollView.didEndLiveScrollNotification, sv) { $0.fromTop = false },
+        ]
+    }
+
+    deinit { observers.forEach(NotificationCenter.default.removeObserver) }
+
+    /// The scroll view goes on without this: its spinner goes with it.
+    func detach() {
+        observers.forEach(NotificationCenter.default.removeObserver)
+        observers = []
+        spinner.removeFromSuperview()
+    }
+
+    /// Whether a pull of `pull` points fires: far enough, not fired already, and begun at the top (`fromTop`).
+    nonisolated static func fires(pull: CGFloat, fired: Bool, fromTop: Bool) -> Bool {
+        !fired && fromTop && pull >= threshold
+    }
+
+    /// How far the view is pulled down past its top; negative once scrolled down.
+    private var pull: CGFloat { sv.map { -$0.contentInsets.top - $0.contentView.bounds.minY } ?? 0 }
+
+    private func scrolled() {
+        guard let sv else { return }
+        let (top, pull) = (sv.contentInsets.top, pull)
+        guard pull > 0 else {
+            if !spinner.isHidden {
+                spinner.isHidden = true
+                spinner.stopAnimation(nil)
+            }
+            fired = false
+            return
+        }
+        // In the middle of the gap between the toolbar and the page's top.
+        let side = spinner.fittingSize.height
+        let y = top + (pull - side) / 2
+        spinner.frame = NSRect(
+            // The list's table runs under the sidebar: the middle of what shows.
+            x: sv.safeAreaRect.midX - side / 2, y: sv.isFlipped ? y : sv.bounds.height - y - side, width: side,
+            height: side)
+        spinner.isHidden = pull < side + 8
+        spinner.alphaValue = fired ? 1 : min(1, pull / Self.threshold)
+        guard Self.fires(pull: pull, fired: fired, fromTop: fromTop) else { return }
+        fired = true
+        spinner.startAnimation(nil)
+        NSHapticFeedbackManager.defaultPerformer.perform(.generic, performanceTime: .now)
+        // A turn later: this is inside the scroll.
+        DispatchQueue.main.async(execute: action)
     }
 }
 
@@ -910,7 +1018,15 @@ struct PageKeys: NSViewRepresentable {
     /// The margin a target keeps from the toolbar and the window's bottom.
     nonisolated static let room: CGFloat = 48
     fileprivate var frames: [AnyHashable: CGRect] = [:]
-    fileprivate weak var page: PageKeyView?
+    fileprivate weak var page: PageKeyView? {
+        didSet {
+            guard let page, let y = opening else { return }
+            opening = nil
+            page.open(at: y)
+        }
+    }
+    /// A place to open on (see `open`), asked for before the page's view was there.
+    private var opening: CGFloat?
 
     enum Placement {
         /// A row a popover hangs from: centred, which leaves the popover room either way.
@@ -949,8 +1065,14 @@ struct PageKeys: NSViewRepresentable {
         page.reveal(rect, placement, then: action)
     }
 
-    /// The page at its top, in the same frame: see `PageKeyView.toTop`.
-    func toTop() { page?.toTop() }
+    /// The page on the issue it now shows: at its top, in the same frame (see `PageKeyView.toTop`), or `y` down it,
+    /// where the reader left it (see `Returning`).
+    func open(at y: CGFloat?) {
+        if let page { page.open(at: y) } else { opening = y }
+    }
+
+    /// Keeps where the page stands, for its issue (see `Returning`).
+    func keep() { page?.keep() }
 }
 
 extension View {
@@ -972,7 +1094,14 @@ extension Notification.Name {
 
 final class PageKeyView: NSView {
     var standalone = false
+    var shown: IssueTarget?
+    var refresh: () -> Void = {}
+    private var pull: PullToRefresh?
+    /// Where the page opens (see `open`), how far under its top, and until when: its content is laid out, and grows
+    /// as the rest of the issue loads, after it is asked for.
+    private var opening: (y: CGFloat, until: CFTimeInterval)?
     nonisolated(unsafe) private var monitors: [Any] = []
+    nonisolated(unsafe) private var observers: [Any] = []
     private var responderWatch: NSKeyValueObservation?
     private var hadFocus = false
 
@@ -985,8 +1114,30 @@ final class PageKeyView: NSView {
         super.viewDidMoveToWindow()
         monitors.forEach(NSEvent.removeMonitor)
         monitors = []
+        observers.forEach(NotificationCenter.default.removeObserver)
+        observers = []
+        pull?.detach()
+        pull = nil
         responderWatch = nil
         guard let window else { return }
+        if let sv = enclosingScrollView {
+            pull = PullToRefresh(sv) { [weak self] in self?.refresh() }
+            // The page's content laid out, or grown: its place, while it is still opening on one.
+            sv.documentView?.postsFrameChangedNotifications = true
+            observers.append(
+                NotificationCenter.default.addObserver(
+                    forName: NSView.frameDidChangeNotification, object: sv.documentView, queue: nil
+                ) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.place() }
+                })
+            place()
+        }
+        // A scroll of the reader's own lets the place go: the trackpad's or a wheel's (a key's and a reveal's too).
+        monitors.append(
+            NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] e in
+                if let self, e.window === self.window { self.opening = nil }
+                return e
+            } as Any)
         // A click on the page's background or its text takes the keyboard from the list, as a click into a web page
         // does; a click on a control or into an editor keeps what that gives it.
         monitors.append(
@@ -1025,7 +1176,42 @@ final class PageKeyView: NSView {
         }
     }
 
-    deinit { monitors.forEach(NSEvent.removeMonitor) }
+    deinit {
+        monitors.forEach(NSEvent.removeMonitor)
+        observers.forEach(NotificationCenter.default.removeObserver)
+    }
+
+    /// The preview goes (another list with no issue picked): its page's place is kept while the scroll view is there.
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        if newWindow == nil { keep() }
+        super.viewWillMove(toWindow: newWindow)
+    }
+
+    /// Keeps how far down the preview's page stands, for its issue (see `Returning`).
+    func keep() {
+        guard !standalone, let shown, let sv = enclosingScrollView else { return }
+        Returning.places[shown] = sv.contentView.bounds.minY + sv.contentInsets.top
+    }
+
+    /// The page on the issue it now shows: at its top, or `y` under it. The content is laid out after this, and the
+    /// comments can come after that: the page goes there as soon as it is long enough, for two seconds at most.
+    func open(at y: CGFloat?) {
+        toTop()
+        opening = y.flatMap { $0 > 0 ? ($0, CACurrentMediaTime() + 2) : nil }
+        place(laidOut: false)
+    }
+
+    /// `laidOut`: the content is the issue's own, not the last one's still: long enough, the page has its place.
+    private func place(laidOut: Bool = true) {
+        guard let (y, until) = opening, let sv = enclosingScrollView, let doc = sv.documentView else { return }
+        guard CACurrentMediaTime() < until else {
+            opening = nil
+            return
+        }
+        let to = y - sv.contentInsets.top
+        sv.glide(to: to, animated: false)
+        if laidOut, doc.frame.height - sv.contentView.bounds.height >= to { opening = nil }
+    }
 
     /// The page has the keyboard: this view or the page's selectable text has it, or, in a window of its own,
     /// anything but an editor. An editor, the list and the search field keep their arrows.
@@ -1049,6 +1235,7 @@ final class PageKeyView: NSView {
 
     /// `rect` is in the page's coordinates. See `PageReveal`.
     func reveal(_ rect: CGRect, _ placement: PageReveal.Placement, then action: @escaping @MainActor () -> Void) {
+        opening = nil
         guard let sv = enclosingScrollView, let doc = sv.documentView,
             let y = PageReveal.destination(
                 showing: convert(rect, to: doc), placement, visible: sv.contentView.bounds, top: sv.contentInsets.top,
@@ -1077,6 +1264,7 @@ final class PageKeyView: NSView {
             return true
         }
         guard let sv = enclosingScrollView else { return false }
+        opening = nil
         return sv.scrollAnimated(for: e, line: 96, arrows: true)
     }
 }

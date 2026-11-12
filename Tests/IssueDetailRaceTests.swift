@@ -1,3 +1,4 @@
+import Synchronization
 import XCTest
 
 @testable import Conductor
@@ -39,5 +40,21 @@ final class IssueDetailRaceTests: XCTestCase {
         XCTAssertEqual(s.issue?.fields.summary, "Second")
         s.undo(\.summary, "Second", to: "Old", on: twin)
         XCTAssertEqual(s.issue?.fields.summary, "Second")
+    }
+
+    /// W pressed twice: the second write waits for the first, however slow that is (CON-310).
+    @MainActor func testWritesRunInTheOrderTheyWereMade() async throws {
+        let s = try store()
+        let order = Mutex<[Int]>([])
+        let first = s.inOrder("QA-1") {
+            try? await Task.sleep(for: .milliseconds(80))
+            order.withLock { $0.append(1) }
+        }
+        let second = s.inOrder("QA-1") { order.withLock { $0.append(2) } }
+        let third = s.inOrder("QA-1") { order.withLock { $0.append(3) } }
+        // Another issue's write waits for none of them: the preview's store serves one issue after another.
+        let other = s.inOrder("QA-2") { order.withLock { $0.append(0) } }
+        _ = await (first.value, second.value, third.value, other.value)
+        XCTAssertEqual(order.withLock { $0 }, [0, 1, 2, 3])
     }
 }

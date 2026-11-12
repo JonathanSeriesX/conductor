@@ -83,6 +83,12 @@ final class IssueDetailStore {
     /// A store already holding the seed's page: `load` then goes straight to the network, as for an issue it shows.
     init(seed: PageSeed? = nil) {
         guard let seed else { return }
+        show(seed)
+        LaunchProbe.once("page.seeded")
+        LaunchProbe.once("issue.shown")
+    }
+
+    private func show(_ seed: PageSeed) {
         key = seed.target.key
         account = seed.target.accountID
         issue = seed.issue
@@ -92,8 +98,22 @@ final class IssueDetailStore {
         children = seed.children
         sprints = seed.sprints
         related = seed.related
-        LaunchProbe.once("page.seeded")
-        LaunchProbe.once("issue.shown")
+    }
+
+    /// The pages shown last, in any window, the newest last. An issue come back to (a list left and returned to, ↑
+    /// after ↓) is on screen as it was in the pass that asks for it: read from the disk again, it came a few frames
+    /// after its list, the last issue still in the preview meanwhile. Jira's copy follows either way.
+    private static var recent: [PageSeed] = []
+
+    /// Keeps the page on screen for `recent`, once it is whole.
+    private func remember() {
+        guard let displayed, let issue, !isPartial else { return }
+        Self.recent.removeAll { $0.target == displayed }
+        Self.recent.append(
+            PageSeed(
+                target: displayed, issue: issue, children: children, related: related, editMeta: editMeta,
+                transitions: transitions, sprints: sprints))
+        if Self.recent.count > 20 { Self.recent.removeFirst() }
     }
 
     /// The issue the main window's preview shows, kept across launches: the next launch builds its page early.
@@ -169,13 +189,23 @@ final class IssueDetailStore {
         LaunchProbe.tick("detail.load")
         let client = state.client
         var pending: Task<Issue, Error>?
+        var gathers = false
         if !holds(state, key) {
-            // Another issue. Everything the page is built from is gathered first and put in place in one step;
-            // until then the previous issue stays on screen. Shown piecemeal (the list row's copy, then the
-            // disk's), each step pushed the cards around. Replies for an issue left meanwhile are dropped by the
-            // key checks after each await.
+            remember()  // the page this one leaves
             self.key = key
             account = state.id
+            if let seed = Self.recent.last(where: { $0.target == IssueTarget(accountID: state.id, key: key) }) {
+                show(seed)
+                (error, gone, allLabels) = (nil, false, [])
+            } else {
+                gathers = true
+            }
+        }
+        if gathers {
+            // Another issue, not shown lately. Everything the page is built from is gathered first and put in place
+            // in one step; until then the previous issue stays on screen. Shown piecemeal (the list row's copy, then
+            // the disk's), each step pushed the cards around. Replies for an issue left meanwhile are dropped by the
+            // key checks after each await.
             let account = state.account
             async let diskIssue: Issue? = DiskCache.loadAsync(account: account, name: "issue-\(key)")
             async let diskChildren: [Issue]? =
@@ -257,6 +287,7 @@ final class IssueDetailStore {
                 if let list = await types { update(\.linkTypes, list) }
                 prefetchRelated(state)
             }
+            if holds(state, key) { remember() }  // as Jira has it now, for a preview that goes before its next issue
             if let meta { await state.learnEditMeta(meta, of: fresh) }
         } catch {
             guard holds(state, key) else { return }
@@ -361,19 +392,56 @@ final class IssueDetailStore {
         return found
     }
 
+    /// Each issue's last write from this page, ended or not.
+    private var lastWrite: [String: Task<Void, Never>] = [:]
+    /// Each issue's ordered writes still out, and the issues a write changed with no refresh since.
+    private var writesOut: [String: Int] = [:]
+    private var unrefreshed: Set<String> = []
+
+    /// Runs `op` once every write to `key` made before it has ended, so an issue's writes reach Jira in the order
+    /// they were made. Two out at once could land either way round: W pressed twice sends "watch" and "stop
+    /// watching", and applied in the other order Jira kept the issue watched while the page showed it unwatched
+    /// (CON-310). Not a file going up or coming down (`perform`'s `ordered`): it changes no field, and a large one
+    /// held every write made after it.
+    func inOrder<T: Sendable>(_ key: String, _ op: @escaping @Sendable () async -> T) -> Task<T, Never> {
+        let before = lastWrite[key]
+        let task = Task {
+            await before?.value
+            return await op()
+        }
+        lastWrite[key] = Task { _ = await task.value }
+        return task
+    }
+
     /// Runs a write, then refreshes only what a write can change: the issue, its transitions and editmeta.
     /// False when the write failed, so the caller can keep the user's draft.
     @discardableResult
-    func perform(_ state: AccountState, key: String, _ op: @Sendable (JiraClient) async throws -> Void) async -> Bool {
+    func perform(
+        _ state: AccountState, key: String, ordered: Bool = true,
+        _ op: @escaping @Sendable (JiraClient) async throws -> Void
+    ) async -> Bool {
         working += 1
         defer { working -= 1 }
-        do { try await op(state.client) } catch {
-            if !error.isCancelled { self.error = error.localizedDescription }
-            return false
+        let client = state.client
+        let write: @Sendable () async -> Error? = {
+            do { try await op(client) } catch { return error }
+            return nil
         }
+        if ordered { writesOut[key, default: 0] += 1 }
+        let failure = ordered ? await inOrder(key, write).value : await write()
+        if ordered { writesOut[key, default: 1] -= 1 }
+        if let failure {
+            if !failure.isCancelled { error = failure.localizedDescription }
+        } else {
+            unrefreshed.insert(key)
+        }
+        // One refresh for a run of writes, after the last one, failed or not: an earlier write's could be answered
+        // between two writes, and showed the issue as it was before the second (the eye flicked back), or after
+        // the last one's, and left it so.
+        guard writesOut[key, default: 0] == 0, unrefreshed.remove(key) != nil else { return failure == nil }
         // The page may show another issue by now: refreshing this one would put its body under that key.
         if holds(state, key) { await load(state, key: key, full: false) }
-        return true
+        return failure == nil
     }
 }
 
@@ -533,6 +601,7 @@ struct IssueDetailView: View {
         .background(PageLoader(target: target, store: store, ownLoad: $ownLoad))
         // The same view serves one issue after another (a fresh view would take the toolbar with it for a frame).
         .onChange(of: target) { old, _ in
+            pageReveal.keep()  // the page still shows the issue it leaves, where the reader has it
             commitSummary(of: old)
             summaryDraft = nil
             caretPending = false
@@ -656,13 +725,19 @@ struct IssueDetailView: View {
                 // toolbar's buttons, which end 8 pt above the toolbar's edge: as far as the page sits in from the sides.
                 .padding(.top, embedded ? 10 : 12)
                 .coordinateSpace(.named(PageReveal.space))
-                .background(PageKeys(standalone: !embedded, reveal: pageReveal))
+                .background(
+                    PageKeys(
+                        standalone: !embedded, reveal: pageReveal, shown: store.displayed,
+                        refresh: { perform(.refresh) }))
             }
             // The toolbar has no background, so blur what scrolls under it instead of letting buttons sit on text.
             .modifier(ScrolledWatch(on: embedded))
             // When the next issue is on screen, not when it was asked for: the previous one stays until then. By
             // its id too: the same key on another site is another issue.
-            .onChange(of: store.issue.map { "\($0.id)|\($0.key)" }) { pageReveal.toTop() }
+            // From the first issue on: a preview that was empty meanwhile comes back on a new page.
+            .onChange(of: store.issue.map { "\($0.id)|\($0.key)" }, initial: true) {
+                pageReveal.open(at: embedded ? Returning.take(store.displayed) : nil)
+            }
             #if DEBUG
                 .task {
                     guard ProcessInfo.processInfo.environment["CONDUCTOR_SCROLL"] == "comments" else { return }
@@ -774,17 +849,23 @@ struct IssueDetailView: View {
                         alignSummaryEditor($0.object as? NSTextView)
                     }
             } else {
-                // A click edits, as on the web; a right-click is the issue's menu. Not selectable text, whose
-                // menu (Cut, Paste, Font…) treated the title as a writing field.
+                // A press edits, as a click does on the web, the caret under it; held and dragged, it goes on in the
+                // editor as a selection (see `placeCaret`), so a part of the title can be selected and copied. A
+                // right-click is the issue's menu. Not selectable text, whose menu (Cut, Paste, Font…) treated the
+                // title as a writing field.
                 Text(issue.fields.summary)
                     .font(.system(.largeTitle, design: .rounded, weight: .semibold))
                     .contentShape(.rect)
-                    .onTapGesture {
-                        guard store.canEdit("summary"), live else { return }
-                        editClick = NSEvent.mouseLocation
-                        caretPending = true
-                        summaryDraft = issue.fields.summary
-                    }
+                    .gesture(
+                        DragGesture(minimumDistance: 0).onChanged { _ in
+                            guard summaryDraft == nil, store.canEdit("summary"), live else { return }
+                            editClick = NSEvent.mouseLocation
+                            caretPending = true
+                            summaryDraft = issue.fields.summary
+                        }
+                    )
+                    // The press VoiceOver makes, which the tap this replaced answered.
+                    .accessibilityAction { perform(.editSummary) }
                     .contextMenu {
                         if let jira { IssueMenu(issues: [issue], state: jira) { op in run { _ in try await op() } } }
                     }
@@ -1280,7 +1361,7 @@ struct IssueDetailView: View {
                         Button("Delete", systemImage: "trash", role: .destructive) {
                             // The bytes first, so the Bin can upload them again.
                             let account = target.accountID
-                            run { c in
+                            run(ordered: false) { c in
                                 let data = try await c.data(for: a.content)
                                 try await c.deleteAttachment(id: a.id)
                                 await Bin.shared.put(
@@ -1847,13 +1928,15 @@ struct IssueDetailView: View {
 
     /// The task resolves to whether the write succeeded, so editors can keep a draft that failed to save.
     @discardableResult
-    private func run(_ op: @escaping @Sendable (JiraClient) async throws -> Void) -> Task<Bool, Never> {
+    private func run(
+        ordered: Bool = true, _ op: @escaping @Sendable (JiraClient) async throws -> Void
+    ) -> Task<Bool, Never> {
         // Every write comes through here. While the page shows another issue, what the write was built from is that
         // issue's: refused, as a failure, so editors keep their drafts.
         guard let jira, live else { return Task { false } }
         let key = key
         return Task {
-            let ok = await store.perform(jira, key: key, op)
+            let ok = await store.perform(jira, key: key, ordered: ordered, op)
             if ok {
                 ownLoad = "\(target.accountID)|\(key)|\(session.reloadTick)|\((session.writeTicks[key] ?? 0) + 1)"
                 session.touched(key)
@@ -1921,8 +2004,31 @@ struct IssueDetailView: View {
             let local = tv.convert(window.convertPoint(fromScreen: at), from: nil)
             index = tv.characterIndexForInsertion(at: local)
         }
+        let pressed = editClick != nil
         editClick = nil
         tv.setSelectedRange(NSRange(location: index, length: 0))
+        // The button still down: the press goes on as a drag that selects from the caret, as in any text field. A
+        // turn later: the loop runs until the button is let go, and this is inside the editor's selection change.
+        // The editor's own `mouseDown`, given the press again, places the caret and tracks nothing.
+        guard pressed else { return }
+        let from = index
+        DispatchQueue.main.async {
+            // Not with another press waiting (a double-click that got ahead of this): the loop would take its
+            // mouse-up, and the editor, given the press after it, would wait for one that had come.
+            guard NSEvent.pressedMouseButtons & 1 != 0, tv.window?.firstResponder === tv,
+                NSApp.nextEvent(matching: .leftMouseDown, until: .distantPast, inMode: .default, dequeue: false) == nil
+            else { return }
+            tv.window?.trackEvents(
+                matching: [.leftMouseDragged, .leftMouseUp], timeout: NSEvent.foreverDuration, mode: .eventTracking
+            ) { e, stop in
+                guard let e, e.type == .leftMouseDragged else {
+                    stop.pointee = true
+                    return
+                }
+                let to = tv.characterIndexForInsertion(at: tv.convert(e.locationInWindow, from: nil))
+                tv.setSelectedRange(NSRange(location: min(from, to), length: abs(to - from)))
+            }
+        }
     }
 
     /// ↩ saves and hands the keyboard back. `blurred`: the keyboard went elsewhere on the page and stays there, and an
@@ -2132,7 +2238,7 @@ struct IssueDetailView: View {
     private func upload(urls: [URL]) {
         let files = urls.filter(\.isFileURL)
         guard !files.isEmpty else { return }
-        run { client in
+        run(ordered: false) { client in
             for url in files {
                 let accessed = url.startAccessingSecurityScopedResource()
                 defer { if accessed { url.stopAccessingSecurityScopedResource() } }
@@ -2149,7 +2255,7 @@ struct IssueDetailView: View {
             return
         }
         guard let image = PastedImage.read() else { return }
-        run { try await $0.uploadAttachment(key, data: image.data, filename: image.name) }
+        run(ordered: false) { try await $0.uploadAttachment(key, data: image.data, filename: image.name) }
     }
 
     /// For composers: the pasted image becomes an attachment, and the draft links to it.

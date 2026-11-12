@@ -933,6 +933,12 @@ final class FilterAndDurationTests: XCTestCase {
         XCTAssertEqual(LogWorkView.parseDuration("45"), 45 * 60)
         XCTAssertNil(LogWorkView.parseDuration("soon"))
         XCTAssertNil(LogWorkView.parseDuration("1h x"))
+        // `Double` reads these, and `Int` of them trapped: the app quit as "inf" was typed.
+        for text in [
+            "inf", "-inf", "infinity", "nan", "1e400", "99999999999999999999", "99999999999999999999w", "0.001",
+        ] {
+            XCTAssertNil(LogWorkView.parseDuration(text), text)
+        }
     }
 
     func testDurationFormat() {
@@ -1062,6 +1068,13 @@ final class FilterAndDurationTests: XCTestCase {
             "ES-7")
         XCTAssertNil(Session.issueKey(in: URL(string: "https://x.atlassian.net/browse/ES")!))
         XCTAssertNil(Session.issueKey(in: URL(string: "https://x.atlassian.net/")!))
+        // Pasted into a search field (the list's, Link Issue's, Parent's).
+        let link = Session.issueLink(" https://x.atlassian.net/browse/NOC-262726\n")
+        XCTAssertEqual(link?.key, "NOC-262726")
+        XCTAssertEqual(link?.host, "x.atlassian.net")
+        XCTAssertNil(Session.issueLink("NOC-262726"))
+        XCTAssertNil(Session.issueLink("https://x.atlassian.net/browse/NOC"))
+        XCTAssertNil(Session.issueLink("ftp://x.atlassian.net/browse/NOC-1"))
     }
 }
 
@@ -1546,6 +1559,15 @@ final class LiveServerTests: XCTestCase {
 
 /// A 700-point clip under a 52-point toolbar, over a 3000-point page: the page's top is at clip y -52 and 648 points show.
 final class PageRevealTests: XCTestCase {
+    /// A pull refreshes once, from the top only: a scroll thrown at the top from further down bounces as far.
+    func testAPullRefreshesOnceFromTheTop() {
+        let far = PullToRefresh.threshold
+        XCTAssertTrue(PullToRefresh.fires(pull: far, fired: false, fromTop: true))
+        XCTAssertFalse(PullToRefresh.fires(pull: far - 1, fired: false, fromTop: true))
+        XCTAssertFalse(PullToRefresh.fires(pull: far + 40, fired: true, fromTop: true))
+        XCTAssertFalse(PullToRefresh.fires(pull: far + 40, fired: false, fromTop: false))
+    }
+
     func y(_ r: CGRect, _ p: PageReveal.Placement, from clipY: CGFloat) -> CGFloat? {
         PageReveal.destination(
             showing: r, p, visible: CGRect(x: 0, y: clipY, width: 600, height: 700), top: 52, bottom: 0, page: 3000)

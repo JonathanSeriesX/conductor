@@ -48,6 +48,9 @@ enum JSONValue: Codable, Hashable, Sendable {
         if case .number(let n) = self { return n }
         return nil
     }
+    /// The number as an integer, kept within a billion either way: `Int` of a number past its range stops the app,
+    /// and these come from documents anyone can write (a heading's level, a list's first number).
+    var int: Int? { number.flatMap { $0.isNaN ? nil : Int(max(-1e9, min(1e9, $0))) } }
     var bool: Bool? {
         if case .bool(let b) = self { return b }
         return nil

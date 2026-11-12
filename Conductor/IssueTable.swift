@@ -40,6 +40,8 @@ struct IssueTable: NSViewRepresentable {
     /// Which list the rows are of: another list's rows open on that list's place (see `ScrollMemory`), and this one's
     /// place is kept.
     var list: ListKey?
+    /// The list pulled down past its top (see `PullToRefresh`).
+    var refresh: () -> Void = {}
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -90,8 +92,8 @@ struct IssueTable: NSViewRepresentable {
         let animation = context.transaction.animation
         // The chips join the safe area, so AppKit's insets and the pocket under the toolbar take them in.
         if sv.additionalSafeAreaInsets.top != chips { sv.additionalSafeAreaInsets.top = chips }
-        context.coordinator.update(
-            self, duration: animation == nil ? nil : animation == .snappy(duration: 0.25) ? 0.25 : 0.35)
+        let fold = animation == .snappy(duration: 0.25)
+        context.coordinator.update(self, duration: animation == nil ? nil : fold ? 0.25 : 0.35, fold: fold)
     }
 
     /// Whatever it is given, as the List took. Asked, SwiftUI measured the scroll view through Auto Layout on every
@@ -416,6 +418,7 @@ extension IssueTable {
 
         /// The clip view's moves and size changes bring rows on screen: they are measured before the table lays out.
         func watch(_ sv: NSScrollView) {
+            pull = PullToRefresh(sv) { [weak self] in self?.parent?.refresh() }
             let clip = sv.contentView
             clip.postsBoundsChangedNotifications = true
             clip.postsFrameChangedNotifications = true
@@ -432,6 +435,7 @@ extension IssueTable {
                 ) { [weak self] _ in
                     MainActor.assumeIsolated {
                         self?.pinnedToEnd = false
+                        self?.offEnd = false
                         if let p = self?.parent, p.pinEnd { p.waitForEnd(false) }
                     }
                 })
@@ -472,6 +476,7 @@ extension IssueTable {
                 depth: d.depth, folds: !d.children.isEmpty, row: d.row)
         }
 
+        private var pull: PullToRefresh?
         /// The list the rows are of (see `IssueTable.list`).
         private var rowsOf: ListKey?
         /// The list's first rows are still to come: they open on its place (see `open`).
@@ -482,12 +487,12 @@ extension IssueTable {
         /// only where the rows so far stop.
         private var settled = false
 
-        /// `duration`: the change's animation, nil for none.
-        func update(_ p: IssueTable, duration: Double?) {
+        /// `duration`: the change's animation, nil for none. `fold`: a parent's subtasks folding out or in.
+        func update(_ p: IssueTable, duration: Double?, fold: Bool = false) {
             if p.list != rowsOf {
                 // Another list: the place in this one is kept for its return, before its rows go.
                 keep()
-                (rowsOf, settled, pinnedToEnd, opening) = (p.list, false, false, true)
+                (rowsOf, settled, pinnedToEnd, offEnd, opening) = (p.list, false, false, false, true)
             }
             parent = p
             guard let outline else { return }
@@ -522,6 +527,15 @@ extension IssueTable {
                 } else {
                     // The window holds on to its rows, or to the end, as rows come, go and move around it; End before
                     // the list was whole stays on the spinner at the end and lands on the last row with the rest.
+                    // A fold opens downwards, under its parent: at the list's end the window held on to the end, and the
+                    // subtasks pushed their parent and every row over it up and out of the window. It holds on to
+                    // its first row, as anywhere else in the list; folded in again, the document ends where it did.
+                    // From then on too, until the reader scrolls or presses a key: one subtask folded out leaves the
+                    // window within a row of the end, and the next rows measured took it there.
+                    if fold {
+                        (pinnedToEnd, offEnd) = (false, true)
+                        if p.pinEnd { p.waitForEnd(false) }
+                    }
                     let a = anchor(keeping: new)
                     // Rows that change places out of sight go in at once: animated, the window glided with them to
                     // stay on its anchor, never quite in step.
@@ -570,7 +584,9 @@ extension IssueTable {
             restore(place)
             // Again once the rows in the window are measured: near the end, their stand-ins cut the place short.
             restore(place)
-            revealSelection()
+            // A list come back to is as it was left, its selected row in the window or out of it.
+            if !Returning.list { revealSelection() }
+            Returning.list = false
             keepSoon()  // the list shown last is the first place (see `Session.prepare`)
         }
 
@@ -883,7 +899,7 @@ extension IssueTable {
         /// from then on (see `anchor`).
         private func scrollToEnd() {
             guard let sv = outline?.enclosingScrollView else { return }
-            pinnedToEnd = true
+            (pinnedToEnd, offEnd) = (true, false)
             outline?.tile()  // the room for rows to come goes: the end is the spinner's
             measureEnd()
             gliding = true
@@ -897,6 +913,9 @@ extension IssueTable {
         }
         /// End was pressed, and nothing the reader did since took the window off the end.
         private var pinnedToEnd = false
+        /// A fold at the list's end left the window on its rows, not on the end (see `update`), and nothing the reader
+        /// did since.
+        private var offEnd = false
         /// Room under the rows for those still to come (`IssueTable.toCome`), each at the stand-in, as the table tiles.
         /// None while End holds the window: it waits on the spinner at the rows' end, not on blank space below it.
         var reserve: CGFloat { pinnedToEnd ? 0 : CGFloat(parent?.toCome ?? 0) * standIn }
@@ -917,7 +936,7 @@ extension IssueTable {
         func endKey(_ e: NSEvent) -> Bool {
             guard e.keyCode == 119, e.modifierFlags.intersection([.command, .option, .shift, .control]).isEmpty else {
                 if e.modifierFlags.contains(.command) { return false }
-                pinnedToEnd = false
+                (pinnedToEnd, offEnd) = (false, false)
                 if let p = parent, p.pinEnd { p.waitForEnd(false) }
                 return false
             }
@@ -1031,7 +1050,7 @@ extension IssueTable {
             }
             return Self.anchor(
                 clip: clip, inset: sv.contentInsets.top, height: outline.frame.height, pinned: pinnedToEnd,
-                settled: settled, visible: visible)
+                settled: settled && !offEnd, visible: visible)
         }
 
         /// Row `k` starts under the window: the rows in it and above it are the first `k`.

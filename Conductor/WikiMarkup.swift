@@ -23,7 +23,7 @@ extension ADFNode {
         case "paragraph":
             return wikiInline(lineStart: true)
         case "heading":
-            return "h\(max(1, min(6, Int(attrs?["level"]?.number ?? 1)))). " + wikiInline(lineStart: false)
+            return "h\(max(1, min(6, attrs?["level"]?.int ?? 1))). " + wikiInline(lineStart: false)
         case "bulletList", "orderedList", "taskList":
             let marker = type == "orderedList" ? "#" : "*"
             return (content ?? []).map { item -> String in

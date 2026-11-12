@@ -1217,7 +1217,7 @@ extension ADFNode {
             paragraph(inline(node, ctx.base), ctx, before: before)
         case "heading":
             var c = ctx
-            let level = Int(node.attrs?["level"]?.number ?? 3)
+            let level = node.attrs?["level"]?.int ?? 3
             c.base = Base(size: Self.headingSize(level), weight: .semibold, extra: Self.lineExtra(level))
             paragraph(inline(node, c.base), c, before: before + 4)
         case "bulletList", "orderedList":
@@ -1333,7 +1333,7 @@ extension ADFNode {
     /// whole list 4 points in. Wrapped lines and the item's later blocks start under the text.
     private func list(_ node: ADFNode, _ ctx: Ctx, before: CGFloat, ordered: Bool) {
         let items = node.content ?? []
-        let start = Int(node.attrs?["order"]?.number ?? 1)
+        let start = node.attrs?["order"]?.int ?? 1
         let markers = items.indices.map { ordered ? "\(start + $0)." : "•" }
         let font = ctx.base.font()
         let markerW = max(16, markers.map { ($0 as NSString).size(withAttributes: [.font: font]).width }.max() ?? 0)

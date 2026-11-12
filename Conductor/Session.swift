@@ -1077,6 +1077,14 @@ final class Session {
         guard let key = raw?.uppercased(), key.wholeMatch(of: /[A-Z][A-Z0-9_]+-\d+/) != nil else { return nil }
         return key
     }
+
+    /// Text pasted into a search field that is a link to an issue, as its key and the link's site; nil for any other.
+    nonisolated static func issueLink(_ text: String) -> (key: String, host: String)? {
+        guard let url = URL(string: text.trimmingCharacters(in: .whitespacesAndNewlines)),
+            url.scheme?.hasPrefix("http") == true, let key = issueKey(in: url)
+        else { return nil }
+        return (key, url.host() ?? "")
+    }
 }
 
 /// What the last session left on disk for one account, read on any thread; `AccountState.apply` puts it in place.

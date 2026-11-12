@@ -261,7 +261,7 @@ extension ADFNode {
         case "paragraph":
             return indent + inlineMarkdown(&mentions).replacingOccurrences(of: "\n", with: "\n" + indent)
         case "heading":
-            let level = Int(attrs?["level"]?.number ?? 1)
+            let level = attrs?["level"]?.int ?? 1
             return indent + String(repeating: "#", count: max(1, min(6, level))) + " " + inlineMarkdown(&mentions)
         case "bulletList", "orderedList":
             var lines: [String] = []

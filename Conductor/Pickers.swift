@@ -281,6 +281,15 @@ struct WatchersView<Toggle: View>: View {
     }
 }
 
+/// The key of a Jira link pasted into an issue picker of `state`'s site; nil for other text, and for a link to
+/// another site, whose key here is another issue.
+@MainActor func pastedKey(_ text: String, on state: AccountState?) -> String? {
+    guard let link = Session.issueLink(text), let state, Session.state(host: link.host, in: [state]) != nil else {
+        return nil
+    }
+    return link.key
+}
+
 /// Sets or clears the parent: a key typed or picked from the search.
 struct ParentPicker: View {
     /// The issue being re-parented, left out of the results; nil while creating one.
@@ -306,6 +315,7 @@ struct ParentPicker: View {
                     let k = query.trimmingCharacters(in: .whitespaces).uppercased()
                     if let r = results.first(where: { $0.key == k }) ?? results.first { onSave(r.key) }
                 }
+                .onChange(of: query) { _, text in if let key = pastedKey(text, on: jira) { query = key } }
             List(results) { r in
                 Button {
                     onSave(r.key)
@@ -373,6 +383,9 @@ struct LinkIssueView: View {
                     if picked == nil { picked = results.first }
                     link()
                 }
+                // A pasted Jira link becomes its key, as in the list's search field: the picker searches keys and
+                // text, and found nothing for a link.
+                .onChange(of: query) { _, text in if let key = pastedKey(text, on: jira) { query = key } }
                 // ↓ and ↑ walk the results from the field, so ↩ links the one that is highlighted.
                 .onKeyPress(.downArrow) { step(1) }
                 .onKeyPress(.upArrow) { step(-1) }
@@ -410,6 +423,10 @@ struct LinkIssueView: View {
             if !query.isEmpty { try? await Task.sleep(for: .milliseconds(250)) }
             guard !Task.isCancelled, let c = jira?.client else { return }
             results = ((try? await c.pickIssues(query: query, excluding: key)) ?? []).filter { $0.key != key }
+            // A key typed or pasted whole is the issue meant: Link is ready, with no click on its row first.
+            if let exact = results.first(where: { $0.key.caseInsensitiveCompare(query) == .orderedSame }) {
+                picked = exact
+            }
         }
     }
 
@@ -472,7 +489,7 @@ struct LogWorkView: View {
     nonisolated static func parseDuration(_ text: String) -> Int? {
         let t = text.trimmingCharacters(in: .whitespaces).lowercased()
         guard !t.isEmpty else { return nil }
-        if let n = Double(t) { return n > 0 ? Int(n * 60) : nil }
+        if let n = Double(t) { return whole(n * 60) }
         var total = 0.0
         var matched = false
         for m in t.matches(of: /(\d+(?:\.\d+)?)\s*([wdhm])/) {
@@ -486,6 +503,12 @@ struct LogWorkView: View {
             }
         }
         let leftovers = t.replacing(/(\d+(?:\.\d+)?)\s*[wdhm]/, with: "").trimmingCharacters(in: .whitespaces)
-        return matched && leftovers.isEmpty && total > 0 ? Int(total) : nil
+        return matched && leftovers.isEmpty ? whole(total) : nil
+    }
+
+    /// Whole seconds of a time of a second or more and under some thirty years. `Double` reads "inf", "nan" and "1e400" as
+    /// numbers, and `Int` of one that is not finite, or past its range, stops the app.
+    private nonisolated static func whole(_ seconds: Double) -> Int? {
+        seconds >= 1 && seconds < 1e9 ? Int(seconds) : nil
     }
 }

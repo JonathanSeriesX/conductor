@@ -184,6 +184,15 @@ struct RootView: View {
     /// The list's selected rows. One row is previewed; several leave the preview column empty, as Mail does.
     @State private var selection: Set<IssueTarget> = []
     private var previewed: IssueTarget? { selection.count == 1 ? selection.first : nil }
+    /// Each list's selection as the window left it, by the list (see `list`): back on a list, the window is as it
+    /// was there (see `Returning`).
+    @State private var left: [ListFilters: Set<IssueTarget>] = [:]
+    /// The list of `f`, whatever is searched in it and in whichever order.
+    private static func list(_ f: ListFilters) -> ListFilters {
+        var f = f
+        (f.text, f.sort) = ("", ListFilters.Sort())
+        return f
+    }
     /// The list toolbar's title item, measured: the list column is never narrower than its toolbar.
     @State private var listTitleWidth: CGFloat = 0
     @State private var restored = false
@@ -279,13 +288,23 @@ struct RootView: View {
         .onChange(of: session.isRestoring) { restoreOnce() }
         .onChange(of: session.windowsRestored) { restoreOnce() }
         .onChange(of: filters) { old, new in
-            // Another list: the preview would otherwise show an issue that is not in it. A search typed or cleared
-            // is not another list: the open issue stays, so Escape clears the search first and the selection next.
-            // Nor is another order: the same issues, the selected one going to its new place, as in Mail.
-            var sameList = old
-            sameList.text = new.text
-            sameList.sort = new.sort
-            if sameList != new { selection = [] }
+            // Another list: the preview would otherwise show an issue that is not in it. A list the window has been
+            // on comes back as it was left, as a tab does: its issue in the preview, the list and the issue's page
+            // where they stood (see `Returning`). A search typed or cleared is not another list: the open issue
+            // stays, so Escape clears the search first and the selection next. Nor is another order: the same
+            // issues, the selected one going to its new place, as in Mail.
+            if Self.list(old) != Self.list(new) {
+                // Not the issue of a key search: found or not, it goes with the search (CON-268).
+                left[Self.list(old)] = old.isKey ? [] : selection
+                // Nor an issue since moved to a window of its own, or of an account signed out.
+                let back = (left[Self.list(new)] ?? []).filter {
+                    session.state($0.accountID) != nil && IssueWindows.window(for: $0) == nil
+                }
+                Returning.list = !back.isEmpty
+                Returning.page = back.count == 1 && back != selection ? back.first : nil
+                Returning.selection = !back.isEmpty && back != selection
+                selection = back
+            }
             storedFilters = (try? JSONEncoder().encode(new)).flatMap { String(data: $0, encoding: .utf8) } ?? ""
             session.lastFilters = new
         }
