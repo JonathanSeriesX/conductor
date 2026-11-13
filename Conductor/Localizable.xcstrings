@@ -596,6 +596,100 @@
         }
       }
     },
+    "%@ is assigned to you" : {
+      "localizations" : {
+        "ar" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "أُسندت إليك %@"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ wurde Ihnen zugewiesen"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ se te ha asignado"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ vous a été assigné"
+          }
+        },
+        "hi" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ आपको असाइन किया गया"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ ti è stato assegnato"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@があなたに割り当てられました"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@이(가) 나에게 할당됨"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ przypisano do ciebie"
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ foi atribuído a você"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ назначена вам"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ size atandı"
+          }
+        },
+        "uk" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ призначено вам"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ 已分配给你"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ 已指派給你"
+          }
+        }
+      }
+    },
     "%@ is now %@" : {
       "localizations" : {
         "ar" : {
@@ -7448,100 +7542,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "指派給我的"
-          }
-        }
-      }
-    },
-    "Assigned to you" : {
-      "localizations" : {
-        "ar" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "أُسندت إليك"
-          }
-        },
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Ihnen zugewiesen"
-          }
-        },
-        "es" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Asignada a ti"
-          }
-        },
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Vous a été assigné"
-          }
-        },
-        "hi" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "आपको असाइन किया गया"
-          }
-        },
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Assegnato a te"
-          }
-        },
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "あなたに割り当てられました"
-          }
-        },
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "나에게 할당됨"
-          }
-        },
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Przypisano do ciebie"
-          }
-        },
-        "pt-BR" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Atribuído a você"
-          }
-        },
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Вам назначена задача"
-          }
-        },
-        "tr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Size atandı"
-          }
-        },
-        "uk" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Вам призначено задачу"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "已分配给你"
-          }
-        },
-        "zh-Hant" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "已指派給你"
           }
         }
       }
@@ -24999,42 +24999,42 @@
         }
       }
     },
-    "New lists start on the Open status chip; switch any list to Any status or Done from the chip." : {
+    "New lists start on the Not done status chip; switch any list to Any status or Done from the chip." : {
       "localizations" : {
         "ar" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "تبدأ القوائم الجديدة بعامل تصفية الحالة «مفتوحة»؛ ويمكن تحويل أي قائمة إلى «أي حالة» أو «مكتملة» منه."
+            "value" : "تبدأ القوائم الجديدة بعامل تصفية الحالة «غير مكتملة»؛ ويمكن تحويل أي قائمة إلى «أي حالة» أو «مكتملة» منه."
           }
         },
         "de" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Neue Listen starten mit dem Statusfilter „Offen“; über den Filter lässt sich jede Liste auf „Alle Status“ oder „Fertig“ umstellen."
+            "value" : "Neue Listen starten mit dem Statusfilter „Nicht fertig“; über den Filter lässt sich jede Liste auf „Alle Status“ oder „Fertig“ umstellen."
           }
         },
         "es" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Las listas nuevas empiezan con el filtro de estado Abiertas; desde ese filtro puedes cambiar cualquier lista a Cualquier estado o a Listo."
+            "value" : "Las listas nuevas empiezan con el filtro de estado Sin terminar; desde ese filtro puedes cambiar cualquier lista a Cualquier estado o a Listo."
           }
         },
         "fr" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Les nouvelles listes démarrent sur le filtre d’état « Ouvert » ; passez une liste à « Tous les états » ou « Terminé » depuis ce filtre."
+            "value" : "Les nouvelles listes démarrent sur le filtre d’état « Non terminé » ; passez une liste à « Tous les états » ou « Terminé » depuis ce filtre."
           }
         },
         "hi" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "नई सूचियाँ “खुले” स्थिति चिप से शुरू होती हैं; किसी भी सूची को चिप से “कोई भी स्थिति” या “पूर्ण” पर बदलें।"
+            "value" : "नई सूचियाँ “अपूर्ण” स्थिति चिप से शुरू होती हैं; किसी भी सूची को चिप से “कोई भी स्थिति” या “पूर्ण” पर बदलें।"
           }
         },
         "it" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "I nuovi elenchi partono dal filtro di stato Aperti; da lì puoi passare a Qualsiasi stato o Fatto."
+            "value" : "I nuovi elenchi partono dal filtro di stato Non completati; da lì puoi passare a Qualsiasi stato o Fatto."
           }
         },
         "ja" : {
@@ -25052,31 +25052,31 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Nowe listy zaczynają od filtru statusu „Otwarte”; każdą listę można przełączyć na „Dowolny status” lub „Gotowe” w tym samym filtrze."
+            "value" : "Nowe listy zaczynają od filtru statusu „Nieukończone”; każdą listę można przełączyć na „Dowolny status” lub „Gotowe” w tym samym filtrze."
           }
         },
         "pt-BR" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Novas listas começam com o filtro de status Em aberto; mude qualquer lista para Qualquer status ou Concluído no próprio filtro."
+            "value" : "Novas listas começam com o filtro de status Não concluído; mude qualquer lista para Qualquer status ou Concluído no próprio filtro."
           }
         },
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Новые списки открываются с фильтром статуса «Открытые»; переключить любой список на «Любой статус» или «Готово» можно в этом же фильтре."
+            "value" : "Новые списки открываются с фильтром статуса «Незавершённые»; переключить любой список на «Любой статус» или «Готово» можно в этом же фильтре."
           }
         },
         "tr" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Yeni listeler Açık durum çipiyle başlar; herhangi bir listeyi çipten Tüm durumlar veya Bitti olarak değiştirebilirsiniz."
+            "value" : "Yeni listeler Bitmemiş durum çipiyle başlar; herhangi bir listeyi çipten Tüm durumlar veya Bitti olarak değiştirebilirsiniz."
           }
         },
         "uk" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Нові списки відкриваються з фільтром статусу «Відкриті»; у фільтрі будь-який список можна перемкнути на «Будь-який статус» або «Готово»."
+            "value" : "Нові списки відкриваються з фільтром статусу «Незавершені»; у фільтрі будь-який список можна перемкнути на «Будь-який статус» або «Готово»."
           }
         },
         "zh-Hans" : {
@@ -37576,50 +37576,50 @@
         }
       }
     },
-    "status.open" : {
+    "status.notDone" : {
       "comment" : "Status filter chip: issues not done yet",
       "extractionState" : "extracted_with_value",
       "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Not done"
+          }
+        },
         "ar" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "مفتوحة"
+            "value" : "غير مكتملة"
           }
         },
         "de" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Offen"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "new",
-            "value" : "Open"
+            "value" : "Nicht fertig"
           }
         },
         "es" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Abiertas"
+            "value" : "Sin terminar"
           }
         },
         "fr" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Ouvert"
+            "value" : "Non terminé"
           }
         },
         "hi" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "खुले"
+            "value" : "अपूर्ण"
           }
         },
         "it" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Aperti"
+            "value" : "Non completati"
           }
         },
         "ja" : {
@@ -37637,31 +37637,31 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Otwarte"
+            "value" : "Nieukończone"
           }
         },
         "pt-BR" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Em aberto"
+            "value" : "Não concluído"
           }
         },
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Открытые"
+            "value" : "Незавершённые"
           }
         },
         "tr" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Açık"
+            "value" : "Bitmemiş"
           }
         },
         "uk" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Відкриті"
+            "value" : "Незавершені"
           }
         },
         "zh-Hans" : {

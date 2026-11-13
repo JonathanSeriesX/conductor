@@ -673,6 +673,7 @@ extension IssueTable {
                     uniquingKeysWith: { a, _ in a })
             }
             defer { before = [:] }
+            let from = outline.enclosingScrollView?.contentView.bounds.minY
             NSAnimationContext.beginGrouping()
             NSAnimationContext.current.duration = duration ?? 0
             outline.beginUpdates()
@@ -703,7 +704,7 @@ extension IssueTable {
             }
             outline.endUpdates()
             askAll(from: k)
-            restore(anchor, animated: duration != nil)
+            restore(anchor, animated: duration != nil, from: from)
             NSAnimationContext.endGrouping()
             forget(keeping: new, from: k, last: old)
         }
@@ -1083,12 +1084,27 @@ extension IssueTable {
 
         /// Puts the window back on `anchor` once the rows changed: at once, or over the change's own animation, so a
         /// row gliding off to the top takes nothing on screen with it. End's own glide lands on the end itself.
-        private func restore(_ anchor: Anchor?, animated: Bool = false) {
+        /// `from`: where the clip view stood before an animated change.
+        private func restore(_ anchor: Anchor?, animated: Bool = false, from: CGFloat? = nil) {
             guard let anchor, anchor != .end || !gliding, let outline, let sv = outline.enclosingScrollView else {
                 return
             }
             let clip = sv.contentView
             outline.tile()  // the table's height as the rows now are, or the clip view stops at the old one
+            // A row gone near the list's end leaves the table shorter, and the clip view comes up to its new end in
+            // that frame: every row above the gap jumped down a row, then the rows under it glided up. The table's
+            // layer starts as far up as the clip view came and glides down with the rows, so those above the gap
+            // come down into it and those under it stand still. On the rows' own clock: the clip view's animator
+            // runs on another, and the rows under the gap shook by a few points.
+            if animated, let from, case let d = from - clip.bounds.minY, d != 0 {
+                let glide = CABasicAnimation(keyPath: "transform.translation.y")
+                glide.fromValue = -d
+                glide.toValue = 0
+                glide.duration = NSAnimationContext.current.duration
+                glide.timingFunction =
+                    NSAnimationContext.current.timingFunction ?? CAMediaTimingFunction(name: .default)
+                outline.layer?.add(glide, forKey: "end")
+            }
             var height = outline.frame.height
             var frame = { (id: String) in self.rowOf[id].map(outline.rect(ofRow:)) }
             if animated {

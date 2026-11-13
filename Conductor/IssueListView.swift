@@ -23,8 +23,11 @@ struct DisplayRow: Identifiable {
     var depth = 0
     var id: String { row.id }
 
-    /// `expanded` holds the ids of parents whose subtasks are shown.
-    static func nest(_ rows: [ListRow], expanded: Set<String>, sort: ListFilters.Sort) -> [DisplayRow] {
+    /// `expanded` holds the ids of parents whose subtasks are shown; `stale`, those of the greyed rows (see
+    /// `IssueListStore.stale`).
+    static func nest(
+        _ rows: [ListRow], expanded: Set<String>, sort: ListFilters.Sort, stale: Set<String> = []
+    ) -> [DisplayRow] {
         let present = Set(rows.map(\.id))
         var children: [String: [ListRow]] = [:]
         var top: [ListRow] = []
@@ -41,9 +44,15 @@ struct DisplayRow: Identifiable {
         // order is the server's and stays as it came.
         if sort.field == .updated {
             // Each row's date worked out once: in the comparison, it cost every comparison a pass over the children.
+            // A greyed row stays where it was, by the date of the row Jira had above it: fetched again (`refetch`), it
+            // carries the date of the edit that took it out of the list, and went to the list's top in one frame,
+            // the rows around it with it.
+            var above = sort.descending ? Date.distantFuture : .distantPast
             let dated: [(row: ListRow, date: Date)] = top.map { r in
+                if stale.contains(r.id) { return (r, above) }
+                above = r.issue.fields.updated ?? .distantPast
                 let kids = children[r.id]?.compactMap(\.issue.fields.updated).max() ?? .distantPast
-                return (r, max(r.issue.fields.updated ?? .distantPast, kids))
+                return (r, max(above, kids))
             }
             // Stable: rows that tie keep Jira's order, which the merge keeps too; their ids as text put KAN-88
             // between KAN-879 and KAN-883 (CON-245).
@@ -79,13 +88,13 @@ final class IssueListStore {
     func displayRows(expanded: Set<String>) -> [DisplayRow] {
         let (rows, sort) = (rows, shown.sort)  // read either way: the caller redraws when they change
         if let n = nested, n.expanded == expanded, n.sort == sort { return n.rows }
-        let out = DisplayRow.nest(rows, expanded: expanded, sort: sort)
+        let out = DisplayRow.nest(rows, expanded: expanded, sort: sort, stale: stale)
         nested = (expanded, sort, out)
         return out
     }
     /// Ids of selected rows a reload no longer brings (an edit took them out of the list): they stay where they
     /// were, greyed, until the selection leaves them, so the preview's issue keeps its place for the arrows.
-    private(set) var stale: Set<String> = []
+    private(set) var stale: Set<String> = [] { didSet { nested = nil } }
     /// The list's selection, as `keep` was last told.
     private var kept: Set<IssueTarget> = []
     /// Issues with a write on its way to Jira.

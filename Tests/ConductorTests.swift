@@ -21,7 +21,7 @@ final class JQLTests: XCTestCase {
 
     func testFreeTextBecomesTextSearch() {
         var f = Smart.assigned.filters(account: account)
-        f.status = .open
+        f.status = .notDone
         f.text = "billing \"engine\""
         XCTAssertEqual(
             f.jql,
@@ -37,7 +37,7 @@ final class JQLTests: XCTestCase {
         XCTAssertEqual(f.jql, "(text ~ \"fil\" OR text ~ \"fil*\") ORDER BY updated DESC")
         f.text = "  login fail "
         XCTAssertEqual(f.jql, "(text ~ \"login fail\" OR text ~ \"login fail*\") ORDER BY updated DESC")
-        f.status = .open
+        f.status = .notDone
         f.text = "Ошибка"
         XCTAssertEqual(
             f.jql, "statusCategory != Done AND (text ~ \"Ошибка\" OR text ~ \"Ошибка*\") ORDER BY updated DESC")
@@ -343,7 +343,7 @@ final class JQLTests: XCTestCase {
             [
                 "project = \"QA\" AND statusCategory != Done AND duedate IS NOT EMPTY ORDER BY duedate DESC, key DESC",
                 "project = \"QA\" AND statusCategory != Done AND duedate IS EMPTY ORDER BY key DESC",
-            ].map { f.status == .open ? $0 : $0.replacingOccurrences(of: " AND statusCategory != Done", with: "") })
+            ].map { f.status == .notDone ? $0 : $0.replacingOccurrences(of: " AND statusCategory != Done", with: "") })
         f.sort.field = .updated
         XCTAssertEqual(f.jqlParts, [f.jql], "any other order is one query")
     }
@@ -901,8 +901,9 @@ final class FilterAndDurationTests: XCTestCase {
         f.text = "status = Done"
         XCTAssertEqual(f.jql, "status = Done", "raw JQL ignores chips")
         f = Smart.assigned.filters(account: nil)
-        f.status = .open
+        f.status = .notDone
         XCTAssertEqual(f.jql, "statusCategory != Done AND assignee = currentUser() ORDER BY updated DESC")
+        XCTAssertEqual(ListFilters.Status(rawValue: "Open"), .notDone, "lists saved while the chip said Open")
         f.status = .any
         XCTAssertEqual(
             f.jql, "assignee = currentUser() ORDER BY updated DESC", "Done is a filter, not baked into the list")
@@ -1649,6 +1650,12 @@ final class NestAndBoardColumnTests: XCTestCase {
         XCTAssertEqual(
             DisplayRow.nest(rows, expanded: [], sort: byCreated).map(\.row.issue.key), ["A-1", "A-2", "A-4"],
             "any other order is the server's")
+        // A-4, marked done while selected, stays greyed where it was though its fresh copy was touched last.
+        let done = rows.dropLast() + [ListRow(issue: try issue("A-4", parent: "A-9", minute: 59), state: state)]
+        XCTAssertEqual(DisplayRow.nest(Array(done), expanded: [], sort: byUpdate).first?.row.issue.key, "A-4")
+        XCTAssertEqual(
+            DisplayRow.nest(Array(done), expanded: [], sort: byUpdate, stale: ["\(state.id)|A-4"]).map(\.row.issue.key),
+            ["A-2", "A-1", "A-4"], "a greyed row keeps its place")
     }
 
     /// Rows that tie on the update keep the order they came in, Jira's within an account (key descending, here)

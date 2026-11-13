@@ -78,7 +78,7 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
             for i in page.issues
             where announced.insert("\(host)|\(i.key)|assigned|\(i.fields.updated?.timeIntervalSince1970 ?? 0)").inserted
             {
-                notify(String(localized: "Assigned to you"), "\(i.key)  \(i.fields.summary)", host: host, key: i.key)
+                notify(String(localized: "\(i.key) is assigned to you"), i.fields.summary, host: host, key: i.key)
             }
         }
         if let page = try? await client.search(

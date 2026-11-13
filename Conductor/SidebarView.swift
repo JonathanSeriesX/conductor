@@ -18,17 +18,18 @@ struct ListFilters: Hashable, Codable {
     }
     enum Status: String, CaseIterable, Codable {
         case any = "Any status"
-        case open = "Open"
+        /// Every status but the done ones. Its raw value is from when the chip said "Open": saved lists hold it.
+        case notDone = "Open"
         case todo = "To Do"
         case inProgress = "In Progress"
         case done = "Done"
         var title: String {
             switch self {
             case .any: String(localized: "Any status")
-            // Its own key: "Open" alone is the verb on menus.
-            case .open:
+            case .notDone:
                 String(
-                    localized: "status.open", defaultValue: "Open", comment: "Status filter chip: issues not done yet")
+                    localized: "status.notDone", defaultValue: "Not done",
+                    comment: "Status filter chip: issues not done yet")
             case .todo: String(localized: "To Do", comment: "Jira status category")
             case .inProgress: String(localized: "In Progress", comment: "Jira status category")
             case .done: String(localized: "Done", comment: "Jira status category")
@@ -211,8 +212,8 @@ struct ListFilters: Hashable, Codable {
     var project: String? { didSet { if project != oldValue { assignedTo = nil } } }
     var jiraFilter: Filter?
     var scope: Scope = .all
-    /// Every list starts on Open unless the Hide Done setting is off; the chip changes it per list.
-    var status: Status = (UserDefaults.standard.object(forKey: "hideDone") as? Bool ?? true) ? .open : .any
+    /// Every list starts on Not done unless the Hide Done setting is off; the chip changes it per list.
+    var status: Status = (UserDefaults.standard.object(forKey: "hideDone") as? Bool ?? true) ? .notDone : .any
     var assignee: Assignee = .any
     /// One of the project's people instead of `assignee`'s built-ins: dropped with the project or account it came from.
     var assignedTo: Person?
@@ -278,7 +279,7 @@ struct ListFilters: Hashable, Codable {
         }
         switch status {
         case .any: break
-        case .open: c.append("statusCategory != Done")
+        case .notDone: c.append("statusCategory != Done")
         default: c.append("statusCategory = \"\(status.rawValue)\"")
         }
         switch assignee {

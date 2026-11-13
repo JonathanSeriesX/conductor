@@ -39,8 +39,10 @@ private struct GeneralSettings: View {
                     ForEach(Smart.allCases, id: \.rawValue) { Text($0.title).tag($0.rawValue) }
                 }
                 Toggle("Hide Done issues by default", isOn: $hideDone)
-                Text("New lists start on the Open status chip; switch any list to Any status or Done from the chip.")
-                    .font(.caption).foregroundStyle(.secondary)
+                Text(
+                    "New lists start on the Not done status chip; switch any list to Any status or Done from the chip."
+                )
+                .font(.caption).foregroundStyle(.secondary)
                 if !session.hiddenPresets.isEmpty {
                     Button("Show \(session.hiddenPresets.count) Hidden Sidebar Items") { session.showHiddenPresets() }
                 }
